@@ -35,7 +35,6 @@ internal static class MultiEnchantmentSupport
 
     private static readonly ConditionalWeakTable<CardModel, CardEnchantmentState> CardStates = new();
     private static readonly ConditionalWeakTable<NCard, CardUiState> CardUiStates = new();
-    private static readonly ConditionalWeakTable<CombatState, CombatTestState> CombatTestStates = new();
     private static readonly ConditionalWeakTable<Node, EnchantmentVfxSnapshotState> PendingEnchantVfxSnapshots = new();
 
     private static readonly FieldInfo? CardEnchantmentChangedField =
@@ -741,11 +740,6 @@ internal static class MultiEnchantmentSupport
         return hash.ToHashCode();
     }
 
-    public static bool MarkOpeningHandTestApplied(CombatState combatState, Player player)
-    {
-        return CombatTestStates.GetOrCreateValue(combatState).PlayersWithOpeningHandTest.Add(player.NetId);
-    }
-
     private static bool HaveSameEnchantmentState(EnchantmentModel left, EnchantmentModel right)
     {
         // Multiplayer card grouping must compare gameplay-relevant state, not just model ID.
@@ -986,11 +980,6 @@ internal static class MultiEnchantmentSupport
     {
         public List<Control> ExtraTabs { get; } = new();
         public Dictionary<EnchantmentModel, Action> StatusHandlers { get; } = new(ReferenceEqualityComparer.Instance);
-    }
-
-    private sealed class CombatTestState
-    {
-        public HashSet<ulong> PlayersWithOpeningHandTest { get; } = new();
     }
 
     private sealed class EnchantmentVfxSnapshotState
