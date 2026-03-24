@@ -304,6 +304,18 @@ internal static class MultiEnchantmentPatches
         return false;
     }
 
+    [HarmonyPatch(typeof(Goopy), nameof(Goopy.AfterCardPlayed))]
+    [HarmonyPrefix]
+    private static bool GoopyAfterCardPlayedPrefix(Goopy __instance, PlayerChoiceContext context, CardPlay cardPlay, ref Task __result)
+    {
+        // Base-game source: Goopy.AfterCardPlayed.
+        // Vanilla assumes Goopy is always the primary deck enchantment. In multi-enchantment combat
+        // that is no longer guaranteed, and a mid-combat-added Goopy may not exist on DeckVersion
+        // unless the mod mirrors it. Resolve the matching Goopy instance explicitly.
+        __result = MultiEnchantmentSupport.HandleGoopyAfterCardPlayed(__instance, context, cardPlay);
+        return false;
+    }
+
     [HarmonyPatch(typeof(PlayerCombatState), nameof(PlayerCombatState.RecalculateCardValues))]
     [HarmonyPostfix]
     private static void RecalculateCardValuesPostfix(PlayerCombatState __instance)

@@ -19,6 +19,7 @@ using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
@@ -184,6 +185,7 @@ internal static class MultiEnchantmentSupport
         {
             existing.Amount += (int)amount;
             existing.RecalculateValues();
+            SyncDeckVersionEnchantment(card, existing.GetType(), (int)amount);
             card.DynamicVars.RecalculateForUpgradeOrEnchant();
             card.FinalizeUpgradeInternal();
             RememberLastAppliedEnchantment(card, existing);
@@ -207,6 +209,7 @@ internal static class MultiEnchantmentSupport
             applied = AddAdditionalEnchantment(card, enchantment, amount, modifyCard: true, triggerChanged: true);
         }
 
+        SyncDeckVersionEnchantment(card, applied.GetType(), (int)amount);
         card.FinalizeUpgradeInternal();
         RecordEnchantmentHistory(card, enchantment.Id);
         return applied;
@@ -827,6 +830,60 @@ internal static class MultiEnchantmentSupport
     private static void RememberLastAppliedEnchantment(CardModel card, EnchantmentModel enchantment)
     {
         CardStates.GetOrCreateValue(card).LastAppliedEnchantment = enchantment;
+    }
+
+    private static void SyncDeckVersionEnchantment(CardModel card, Type enchantmentType, int amount)
+    {
+        CardModel? deckVersion = card.DeckVersion;
+        if (deckVersion == null || ReferenceEquals(deckVersion, card) || amount == 0)
+        {
+            return;
+        }
+
+        EnchantmentModel? existing = GetEnchantment(deckVersion, enchantmentType);
+        if (existing != null)
+        {
+            existing.Amount += amount;
+            existing.RecalculateValues();
+            RememberLastAppliedEnchantment(deckVersion, existing);
+        }
+        else
+        {
+            EnchantmentModel mirrored =
+                ModelDb.GetById<EnchantmentModel>(ModelDb.GetId(enchantmentType)).ToMutable();
+            if (deckVersion.Enchantment == null)
+            {
+                deckVersion.EnchantInternal(mirrored, amount);
+                mirrored.ModifyCard();
+                RememberLastAppliedEnchantment(deckVersion, mirrored);
+            }
+            else
+            {
+                AddAdditionalEnchantment(deckVersion, mirrored, amount, modifyCard: true, triggerChanged: false);
+            }
+        }
+
+        deckVersion.DynamicVars.RecalculateForUpgradeOrEnchant();
+        deckVersion.FinalizeUpgradeInternal();
+        TriggerEnchantmentChanged(deckVersion);
+    }
+
+    public static Task HandleGoopyAfterCardPlayed(Goopy goopy, PlayerChoiceContext context, CardPlay cardPlay)
+    {
+        if (cardPlay.Card != goopy.Card)
+        {
+            return Task.CompletedTask;
+        }
+
+        goopy.Amount++;
+        // Base-game source: Goopy.AfterCardPlayed.
+        // Vanilla increments DeckVersion.Enchantment directly, which breaks once Goopy can live in
+        // either the primary slot or any extra slot. Reuse the mod's mirror-sync path so the deck
+        // copy is updated or created consistently, especially for combat-time enchanting tests.
+        SyncDeckVersionEnchantment(goopy.Card, typeof(Goopy), 1);
+        TriggerEnchantmentChanged(goopy.Card);
+
+        return Task.CompletedTask;
     }
 
     private static List<EnchantmentVfxBadgeState> ConsumeEnchantVfxSnapshot(Node vfxNode, CardModel card)
