@@ -539,6 +539,29 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentSupport.ClearCardUi(__instance);
     }
 
+    [HarmonyPatch(typeof(NHandCardHolder), nameof(NHandCardHolder.SetTargetPosition))]
+    [HarmonyPostfix]
+    private static void HandCardHolderTargetPositionPostfix(NHandCardHolder __instance)
+    {
+        // CenterCard and related targeting flows animate the holder without necessarily refreshing
+        // the card's enchantment visuals again. Mirror the primary tab state here so extra tabs
+        // keep following the centered card.
+        if (__instance.CardNode != null)
+        {
+            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance.CardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NHandCardHolder), nameof(NHandCardHolder.SetTargetScale))]
+    [HarmonyPostfix]
+    private static void HandCardHolderTargetScalePostfix(NHandCardHolder __instance)
+    {
+        if (__instance.CardNode != null)
+        {
+            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance.CardNode);
+        }
+    }
+
     [HarmonyPatch(typeof(NCard), "UnsubscribeFromModel")]
     [HarmonyPostfix]
     private static void CardUnsubscribePostfix(NCard __instance)

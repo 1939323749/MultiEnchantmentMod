@@ -449,9 +449,17 @@ internal static class MultiEnchantmentSupport
             return;
         }
 
-        Vector2 primaryPosition = (model.HasStarCostX || model.CurrentStarCost >= 0)
+        // Base-game source: NCard.UpdateEnchantmentVisuals.
+        // Reconstruct the primary tab layout exactly like vanilla, then anchor extra tabs to the
+        // live primary tab rect so centered/targeting cards keep the full stack visible even when
+        // other gameplay code moves or reuses the same card node without re-running our sync.
+        Vector2 expectedPrimaryPosition = (model.HasStarCostX || model.CurrentStarCost >= 0)
             ? defaultPosition
             : defaultPosition + Vector2.Up * 45f;
+        Vector2 primaryPosition = primaryTab.Position == Vector2.Zero && expectedPrimaryPosition != Vector2.Zero
+            ? expectedPrimaryPosition
+            : primaryTab.Position;
+        float rowOffset = GetExtraEnchantmentRowOffset(primaryTab);
 
         while (uiState.ExtraTabs.Count < extras.Count)
         {
@@ -479,8 +487,14 @@ internal static class MultiEnchantmentSupport
             TextureRect? icon = tab.GetNodeOrNull<TextureRect>("Icon");
             MegaLabel? label = tab.GetNodeOrNull<MegaLabel>("Label");
 
-            tab.Visible = true;
-            tab.Position = primaryPosition + Vector2.Down * ((i + 1) * ExtraSlotYOffset);
+            tab.Visible = primaryTab.Visible;
+            tab.Position = primaryPosition + Vector2.Down * ((i + 1) * rowOffset);
+            tab.Scale = primaryTab.Scale;
+            tab.Rotation = primaryTab.Rotation;
+            tab.PivotOffset = primaryTab.PivotOffset;
+            tab.Modulate = primaryTab.Modulate;
+            tab.ZIndex = primaryTab.ZIndex;
+            tab.TopLevel = primaryTab.TopLevel;
 
             if (icon != null)
             {
@@ -941,6 +955,11 @@ internal static class MultiEnchantmentSupport
     private static float GetEnchantVfxRowOffset(TextureRect badge)
     {
         return Math.Max(ExtraSlotYOffset, badge.Size.Y * badge.Scale.Y);
+    }
+
+    private static float GetExtraEnchantmentRowOffset(Control primaryTab)
+    {
+        return Math.Max(ExtraSlotYOffset, primaryTab.Size.Y * primaryTab.Scale.Y);
     }
 
     private static void ResizeEnchantVfxViewport(
