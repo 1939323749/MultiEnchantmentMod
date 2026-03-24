@@ -97,6 +97,11 @@ internal static class MultiEnchantmentSupport
         return GetEnchantments(card).Any(static enchantment => enchantment is T);
     }
 
+    public static bool ShouldOfferCloneRestSiteOption(Player player)
+    {
+        return player.Deck.Cards.Any(HasEnchantment<Clone>);
+    }
+
     public static EnchantmentModel? GetEnchantment(CardModel? card, Type enchantmentType)
     {
         return GetEnchantments(card).FirstOrDefault(enchantment => enchantment.GetType() == enchantmentType);

@@ -638,6 +638,27 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentSupport.CaptureEnchantVfxSnapshot(__result, card);
     }
 
+    [HarmonyPatch(typeof(RestSiteOption), nameof(RestSiteOption.Generate))]
+    [HarmonyPostfix]
+    private static void RestSiteOptionGeneratePostfix(Player player, ref List<RestSiteOption> __result)
+    {
+        // Base-game source: RestSiteOption.Generate.
+        // Vanilla only gets the clone fire option from PaelsGrowth's hook. Console-added Clone
+        // enchantments bypass that source, so add the option whenever any deck card currently has
+        // Clone, regardless of whether Clone is the primary or an extra enchantment.
+        if (!MultiEnchantmentSupport.ShouldOfferCloneRestSiteOption(player))
+        {
+            return;
+        }
+
+        if (__result.Any(static option => option.OptionId == "CLONE"))
+        {
+            return;
+        }
+
+        __result.Add(new CloneRestSiteOption(player));
+    }
+
     private static DynamicVar GetCalculatedBaseVar(CalculatedVar calculatedVar)
     {
         if (CalculatedVarGetBaseVarMethod?.Invoke(calculatedVar, null) is DynamicVar baseVar)
