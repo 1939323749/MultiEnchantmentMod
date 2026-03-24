@@ -3,7 +3,7 @@
   "name": "MultiEnchantmentMod",
   "author": "Snowline",
   "description": "卡牌多次附魔mod。满足附魔要求的已附魔卡牌可以再次被附魔。\n\nAllows already-enchanted cards to be re-enchanted as long as they meet the enchantment requirements.",
-  "version": "v1.0-RC1",
+  "version": "v1.0-RC2",
   "has_pck": true,
   "has_dll": true,
   "dependencies": [],

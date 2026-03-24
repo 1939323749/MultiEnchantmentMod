@@ -557,6 +557,16 @@ internal static class MultiEnchantmentSupport
         }
     }
 
+    public static void RefreshExtraEnchantmentTabs(NCard? cardNode)
+    {
+        if (cardNode == null || !GodotObject.IsInstanceValid(cardNode))
+        {
+            return;
+        }
+
+        SyncExtraEnchantmentTabs(cardNode);
+    }
+
     public static void CaptureEnchantVfxSnapshot(Node? vfxNode, CardModel? card)
     {
         if (vfxNode == null || card == null)

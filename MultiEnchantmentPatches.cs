@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
@@ -572,6 +573,91 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance.CardNode);
         }
+    }
+
+    [HarmonyPatch(typeof(NCardPlayQueue), "TweenCardToQueuePosition")]
+    [HarmonyPostfix]
+    private static void CardPlayQueueTweenPostfix(object item)
+    {
+        // Base-game source: NCardPlayQueue.TweenCardToQueuePosition.
+        // Queue cards are re-scaled and moved by tween without a fresh card-visual pass. Mirror
+        // the primary enchant tab state here so extra enchant tabs stay visible on queued cards.
+        if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NCardPlayQueue), "UpdateCardVisuals")]
+    [HarmonyPostfix]
+    private static void CardPlayQueueUpdateCardVisualsPostfix(object item)
+    {
+        // Base-game source: NCardPlayQueue.UpdateCardVisuals.
+        // Queue entries can swap to a new combat-card model before execution. Refresh after the
+        // model swap so extra enchantment tabs are recreated for the active queued card instance.
+        if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NCombatUi), nameof(NCombatUi.AddToPlayContainer))]
+    [HarmonyPostfix]
+    private static void CombatUiAddToPlayContainerPostfix(NCard card)
+    {
+        // Base-game source: NCombatUi.AddToPlayContainer.
+        // Reparenting into PlayContainer is another path that can reuse an existing NCard without
+        // recreating visuals. Refresh here so extra tabs survive hand -> queue -> play moves.
+        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(card);
+    }
+
+    [HarmonyPatch(typeof(NCombatUi), "OnPeekButtonToggled")]
+    [HarmonyPostfix]
+    private static void CombatUiPeekButtonToggledPostfix(NCombatUi __instance)
+    {
+        // Base-game source: NCombatUi.OnPeekButtonToggled.
+        // Peeking recenters cards already in PlayContainer without rerunning NCard visuals.
+        // Refresh the extra enchantment tabs after the toggle so the full stack stays visible.
+        foreach (NCard cardNode in __instance.PlayContainer.GetChildren().OfType<NCard>())
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NPlayerHand), nameof(NPlayerHand.Add))]
+    [HarmonyPostfix]
+    private static void PlayerHandAddPostfix(ref NHandCardHolder __result)
+    {
+        // Base-game source: NPlayerHand.Add.
+        // Cards can be reattached to the hand after queue cancellation or other UI flows while
+        // keeping the same NCard instance. Refresh the extra tabs after the holder is rebuilt.
+        if (__result?.CardNode != null)
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__result.CardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NSelectedHandCardContainer), nameof(NSelectedHandCardContainer.Add))]
+    [HarmonyPostfix]
+    private static void SelectedHandCardContainerAddPostfix(ref NSelectedHandCardHolder __result)
+    {
+        // Base-game source: NSelectedHandCardContainer.Add.
+        // Multi-select UI reparents live card nodes into a separate container. Mirror the primary
+        // enchant tab again so centered/selected cards keep the full enchantment stack visible.
+        if (__result?.CardNode != null)
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__result.CardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NCard), nameof(NCard.AnimCardToPlayPile))]
+    [HarmonyPostfix]
+    private static void CardAnimToPlayPilePostfix(NCard __instance)
+    {
+        // Base-game source: NCard.AnimCardToPlayPile.
+        // The played-card animation shrinks and moves the same node. Refresh immediately before the
+        // tween runs so any reused card node keeps its extra enchantment tabs attached.
+        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__instance);
     }
 
     [HarmonyPatch(typeof(NCard), "UnsubscribeFromModel")]
