@@ -74,7 +74,13 @@ internal static class MultiEnchantmentPatches
             return false;
         }
 
-        __result = MultiEnchantmentSupport.GetEnchantment(card, __instance.GetType()) == null || __instance.IsStackable;
+        if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card))
+        {
+            __result = false;
+            return false;
+        }
+
+        __result = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
         return false;
     }
 
@@ -93,13 +99,30 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: card.Enchantment == null);
     }
 
+    [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
+    [HarmonyPostfix]
+    private static void ClearEnchantmentPostfix(CardModel card)
+    {
+        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+    }
+
     [HarmonyPatch(typeof(AbstractModel), nameof(AbstractModel.MutableClone))]
     [HarmonyPostfix]
     private static void MutableClonePostfix(AbstractModel __instance, AbstractModel __result)
     {
+        if (__instance is EnchantmentModel sourceEnchantment && __result is EnchantmentModel cloneEnchantment)
+        {
+            MultiEnchantmentStackSupport.CloneRuntimeProps(sourceEnchantment, cloneEnchantment);
+        }
+
         if (__instance is CardModel source && __result is CardModel clone)
         {
             MultiEnchantmentSupport.CloneAdditionalEnchantments(source, clone);
+            if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(clone))
+            {
+                clone.FinalizeUpgradeInternal();
+                MultiEnchantmentStackSupport.RefreshDerivedState(clone);
+            }
         }
     }
 
@@ -123,6 +146,25 @@ internal static class MultiEnchantmentPatches
     private static void FromSerializablePostfix(SerializableCard save, ref CardModel __result)
     {
         MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
+        if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
+        {
+            __result.FinalizeUpgradeInternal();
+            MultiEnchantmentStackSupport.RefreshDerivedState(__result);
+        }
+    }
+
+    [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable))]
+    [HarmonyPostfix]
+    private static void EnchantmentToSerializablePostfix(EnchantmentModel __instance, ref SerializableEnchantment __result)
+    {
+        MultiEnchantmentStackSupport.WriteSerializedProps(__instance, ref __result);
+    }
+
+    [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable))]
+    [HarmonyPostfix]
+    private static void EnchantmentFromSerializablePostfix(SerializableEnchantment save, ref EnchantmentModel __result)
+    {
+        MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
     }
 
     [HarmonyPatch(typeof(CardModel), "get_HoverTips")]
@@ -299,9 +341,33 @@ internal static class MultiEnchantmentPatches
     private static bool HookAfterCardPlayedPrefix(CombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay, ref Task __result)
     {
         // Base-game source: Hook.AfterCardPlayed.
-        // This remains a full replacement because the extra enchantments need their own OnPlay pass
-        // before the normal AfterCardPlayed / Late listener sweeps.
-        __result = MultiEnchantmentSupport.AfterCardPlayedWithAdditionalEnchantments(combatState, choiceContext, cardPlay);
+        // Restore vanilla listener order exactly. Extra enchantment OnPlay execution now happens in
+        // the CardModel.OnPlayWrapper patch at the same timing as the primary enchantment OnPlay.
+        __result = HookAfterCardPlayedVanilla(combatState, choiceContext, cardPlay);
+        return false;
+    }
+
+    [HarmonyPatch(typeof(CardModel), nameof(CardModel.OnPlayWrapper))]
+    [HarmonyPrefix]
+    private static bool CardModelOnPlayWrapperPrefix(
+        CardModel __instance,
+        PlayerChoiceContext choiceContext,
+        Creature? target,
+        bool isAutoPlay,
+        ResourceInfo resources,
+        bool skipCardPileVisuals,
+        ref Task __result)
+    {
+        // Base-game source: CardModel.OnPlayWrapper.
+        // Keep the original control flow, but execute extra enchantments in the same phase as the
+        // primary enchantment OnPlay instead of the later AfterCardPlayed hook sweep.
+        __result = MultiEnchantmentSupport.OnPlayWrapperWithMultiEnchantments(
+            __instance,
+            choiceContext,
+            target,
+            isAutoPlay,
+            resources,
+            skipCardPileVisuals);
         return false;
     }
 
@@ -545,11 +611,26 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
     }
 
+    [HarmonyPatch(typeof(NCard), "OnEnchantmentStatusChanged")]
+    [HarmonyPostfix]
+    private static void CardEnchantmentStatusChangedPostfix(NCard __instance)
+    {
+        // Base-game source: NCard.OnEnchantmentStatusChanged only updates the primary enchantment
+        // tab. Multi-stack visuals that expand one enchantment into several tabs, such as stacked
+        // Sown, must resync the extra tabs too so queued/replay cards reflect the consumed state.
+        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__instance);
+    }
+
     [HarmonyPatch(typeof(NCard), nameof(NCard.OnReturnedFromPool))]
     [HarmonyPostfix]
     private static void CardReturnedPostfix(NCard __instance)
     {
-        MultiEnchantmentSupport.ClearCardUi(__instance);
+        // Base-game source: NCard.OnReturnedFromPool only resets ready nodes. Match that boundary
+        // here so pooled-but-not-ready cards never hit the mod's cleanup path.
+        if (__instance.IsNodeReady())
+        {
+            MultiEnchantmentSupport.ClearCardUi(__instance);
+        }
     }
 
     [HarmonyPatch(typeof(NHandCardHolder), nameof(NHandCardHolder.SetTargetPosition))]
@@ -702,9 +783,9 @@ internal static class MultiEnchantmentPatches
     private static void CardEnchantVfxPostfix(NCardEnchantVfx __instance)
     {
         // Base-game source: NCardEnchantVfx._Ready.
-        // Vanilla only renders one enchantment icon/label. For multi-enchanted cards we expand the
-        // VFX to show the full current enchantment stack, with the existing template node reused for
-        // the first entry and duplicated for the rest.
+        // Vanilla animates exactly one enchantment badge. Preserve that animated path for only the
+        // newest enchantment, then render older enchantment badges as static card-local copies so
+        // the shader sweep no longer affects the entire stack at once.
         CardModel? card = NCardEnchantVfxCardModelField?.GetValue(__instance) as CardModel;
         NCard? cardNode = NCardEnchantVfxCardNodeField?.GetValue(__instance) as NCard;
         TextureRect? icon = NCardEnchantVfxIconField?.GetValue(__instance) as TextureRect;
@@ -712,7 +793,7 @@ internal static class MultiEnchantmentPatches
         // embedded NCard. The mod's extra tabs need to be hidden too so only the VFX badge stack
         // remains visible during the enchant animation.
         MultiEnchantmentSupport.HideExtraEnchantmentTabs(cardNode);
-        MultiEnchantmentSupport.SyncEnchantVfxBadges(__instance, card, icon);
+        MultiEnchantmentSupport.SyncEnchantVfxPresentation(__instance, card, cardNode, icon);
     }
 
     [HarmonyPatch(typeof(NCardEnchantVfx), nameof(NCardEnchantVfx.Create))]
@@ -765,8 +846,12 @@ internal static class MultiEnchantmentPatches
 
         foreach (CardModel card in cloneCards)
         {
-            CardModel clone = owner.RunState.CloneCard(card);
-            results.Add(await CardPileCmd.Add(clone, PileType.Deck));
+            int cloneCount = Math.Max(1, MultiEnchantmentStackSupport.GetTotalAmount(card, typeof(Clone)));
+            for (int i = 0; i < cloneCount; i++)
+            {
+                CardModel clone = owner.RunState.CloneCard(card);
+                results.Add(await CardPileCmd.Add(clone, PileType.Deck));
+            }
         }
 
         CardCmd.PreviewCardPileAdd(results, 1.2f, CardPreviewStyle.MessyLayout);
@@ -871,6 +956,28 @@ internal static class MultiEnchantmentPatches
         }
 
         return value;
+    }
+
+    private static async Task HookAfterCardPlayedVanilla(
+        CombatState combatState,
+        PlayerChoiceContext choiceContext,
+        CardPlay cardPlay)
+    {
+        foreach (AbstractModel model in combatState.IterateHookListeners())
+        {
+            choiceContext.PushModel(model);
+            await model.AfterCardPlayed(choiceContext, cardPlay);
+            model.InvokeExecutionFinished();
+            choiceContext.PopModel(model);
+        }
+
+        foreach (AbstractModel model in combatState.IterateHookListeners())
+        {
+            choiceContext.PushModel(model);
+            await model.AfterCardPlayedLate(choiceContext, cardPlay);
+            model.InvokeExecutionFinished();
+            choiceContext.PopModel(model);
+        }
     }
 
     private static decimal ModifyBlockInternal(
