@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Enchantments;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Saves.Runs;
@@ -13,53 +14,107 @@ internal static class MultiEnchantmentStackSupport
 {
     private const string MergedStackAmountsPropertyName = "MultiEnchantmentMergedStackAmounts";
 
+    public static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
+    {
+        if (MultiEnchantmentStackApi.ResolveDefinitionProvider(enchantmentType) is { } provider)
+        {
+            return provider.GetDefinition();
+        }
+
+        return GetBuiltInDefinition(enchantmentType);
+    }
+
     public static EnchantmentStackBehavior GetBehavior(Type enchantmentType)
     {
-        if (MultiEnchantmentStackApi.ResolveProvider(enchantmentType) is IEnchantmentStackBehaviorProvider provider)
+        return GetDefinition(enchantmentType).Behavior;
+    }
+
+    public static EnchantmentExecutionPolicy GetExecutionPolicy(Type enchantmentType)
+    {
+        EnchantmentExecutionPolicy builtIn = GetBuiltInExecutionPolicy(enchantmentType);
+        if (MultiEnchantmentStackApi.ResolveExecutionPolicyProvider(enchantmentType) is not { } provider)
         {
-            return provider.GetBehavior(enchantmentType);
+            return builtIn;
         }
 
-        // Mod source: explicit duplicate-enchantment policy for multi-enchantment support.
-        // The rule is "merge gameplay state only when the merged representation is semantically
-        // correct, then expand UI badges from the merged amount".
-        if (enchantmentType == typeof(Adroit) ||
-            enchantmentType == typeof(Clone) ||
-            enchantmentType == typeof(Favored) ||
-            enchantmentType == typeof(Glam) ||
-            enchantmentType == typeof(Imbued) ||
-            enchantmentType == typeof(Instinct) ||
-            enchantmentType == typeof(Momentum) ||
-            enchantmentType == typeof(Nimble) ||
-            enchantmentType == typeof(Sharp) ||
-            enchantmentType == typeof(Slither) ||
-            enchantmentType == typeof(SlumberingEssence) ||
-            enchantmentType == typeof(SoulsPower) ||
-            enchantmentType == typeof(Sown) ||
-            enchantmentType == typeof(Spiral) ||
-            enchantmentType == typeof(Swift) ||
-            enchantmentType == typeof(Vigorous))
+        EnchantmentExecutionPolicy custom = provider.GetExecutionPolicy();
+        return new EnchantmentExecutionPolicy(
+            DefaultMode: custom.DefaultMode == HookExecutionMode.Default ? builtIn.DefaultMode : custom.DefaultMode,
+            OnEnchant: custom.OnEnchant,
+            OnPlay: custom.OnPlay,
+            AfterCardPlayed: custom.AfterCardPlayed,
+            AfterCardDrawn: custom.AfterCardDrawn,
+            AfterPlayerTurnStart: custom.AfterPlayerTurnStart,
+            BeforeFlush: custom.BeforeFlush);
+    }
+
+    public static HookExecutionMode GetExecutionMode(Type enchantmentType, EnchantmentHookKind hookKind)
+    {
+        HookExecutionMode mode = GetExecutionPolicy(enchantmentType).GetExecutionMode(hookKind);
+        return mode == HookExecutionMode.Default
+            ? GetBuiltInExecutionPolicy(enchantmentType).GetExecutionMode(hookKind)
+            : mode;
+    }
+
+    public static EnchantmentStackSnapshot GetSnapshot(EnchantmentModel enchantment)
+    {
+        CardModel? card = enchantment.Card;
+        List<EnchantmentModel> liveInstances = card == null
+            ? new List<EnchantmentModel> { enchantment }
+            : MultiEnchantmentSupport.GetEnchantments(card)
+                .Where(instance => instance.GetType() == enchantment.GetType())
+                .Cast<EnchantmentModel>()
+                .ToList();
+
+        if (liveInstances.Count == 0)
         {
-            return EnchantmentStackBehavior.MergeAmount;
+            liveInstances.Add(enchantment);
         }
 
-        if (enchantmentType == typeof(Goopy))
+        EnchantmentModel anchorInstance = liveInstances[0];
+        EnchantmentStackDefinition definition = GetDefinition(anchorInstance.GetType());
+        int[] defaultSliceAmounts = GetDefaultGameplaySliceAmounts(anchorInstance, liveInstances, definition);
+        List<EnchantmentStackSlice> gameplaySlices =
+            BuildSlices(anchorInstance, liveInstances, definition, defaultSliceAmounts);
+        int totalAmount = Math.Max(1, defaultSliceAmounts.Sum());
+        EnchantmentStackSnapshot defaultSnapshot = new(
+            card,
+            anchorInstance.GetType(),
+            anchorInstance,
+            definition,
+            totalAmount,
+            gameplaySlices,
+            gameplaySlices,
+            liveInstances);
+
+        int[] sliceAmounts = ResolveVisualSliceAmounts(defaultSnapshot, defaultSliceAmounts);
+        List<EnchantmentStackSlice> visualSlices =
+            ReferenceEquals(sliceAmounts, defaultSliceAmounts)
+                ? gameplaySlices
+                : BuildSlices(anchorInstance, liveInstances, definition, sliceAmounts);
+
+        return new EnchantmentStackSnapshot(
+            card,
+            anchorInstance.GetType(),
+            anchorInstance,
+            definition,
+            totalAmount,
+            gameplaySlices,
+            visualSlices,
+            liveInstances);
+    }
+
+    public static IReadOnlyList<EnchantmentStackSnapshot> GetSnapshots(CardModel? card)
+    {
+        if (card == null)
         {
-            // Goopy's Amount is live gameplay state that grows after each play. Keeping one Goopy
-            // instance per stack preserves correct Exhaust netting and permanent block growth.
-            return EnchantmentStackBehavior.DuplicateInstance;
+            return Array.Empty<EnchantmentStackSnapshot>();
         }
 
-        if (enchantmentType == typeof(PerfectFit) ||
-            enchantmentType == typeof(RoyallyApproved) ||
-            enchantmentType == typeof(Steady) ||
-            enchantmentType == typeof(TezcatarasEmber))
-        {
-            return EnchantmentStackBehavior.ExistenceStack;
-        }
-        
-        // Corrupted enchantment: HP loss is hardcoded to 2, ONLY Casey Yano KNOWS
-        return EnchantmentStackBehavior.DisallowDuplicate;
+        return MultiEnchantmentSupport.GetEnchantments(card)
+            .GroupBy(static enchantment => enchantment.GetType())
+            .Select(static group => GetSnapshot(group.First()))
+            .ToList();
     }
 
     public static bool CanApply(CardModel card, Type enchantmentType)
@@ -122,18 +177,8 @@ internal static class MultiEnchantmentStackSupport
 
     public static int GetVisualStackCount(EnchantmentModel enchantment)
     {
-        if (MultiEnchantmentStackApi.ResolveProvider(enchantment.GetType()) is IEnchantmentStackBehaviorProvider provider)
-        {
-            return Math.Max(1, provider.GetVisualStackCount(enchantment));
-        }
-
-        if (GetBehavior(enchantment.GetType()) != EnchantmentStackBehavior.MergeAmount)
-        {
-            return 1;
-        }
-
-        return TryGetValidMergedStackAmounts(enchantment, out int[] stackAmounts)
-            ? Math.Max(1, stackAmounts.Length)
+        return GetBehavior(enchantment.GetType()) == EnchantmentStackBehavior.MergeAmount
+            ? Math.Max(1, GetSnapshot(enchantment).VisualSlices.Count)
             : 1;
     }
 
@@ -144,23 +189,20 @@ internal static class MultiEnchantmentStackSupport
 
     public static bool TryGetMergedStackAmounts(EnchantmentModel enchantment, out int[] stackAmounts)
     {
-        return TryGetValidMergedStackAmounts(enchantment, out stackAmounts);
+        EnchantmentStackSnapshot snapshot = GetSnapshot(enchantment);
+        if (snapshot.Definition.Behavior != EnchantmentStackBehavior.MergeAmount)
+        {
+            stackAmounts = Array.Empty<int>();
+            return false;
+        }
+
+        stackAmounts = snapshot.GameplaySlices.Select(static slice => slice.Amount).ToArray();
+        return stackAmounts.Length > 0;
     }
 
     public static int GetResolvedMergedTotalAmount(EnchantmentModel enchantment)
     {
-        if (GetBehavior(enchantment.GetType()) != EnchantmentStackBehavior.MergeAmount)
-        {
-            return Math.Max(1, enchantment.Amount);
-        }
-
-        int[]? rawStackAmounts = GetSavedIntArray(enchantment.Props, MergedStackAmountsPropertyName);
-        if (rawStackAmounts is { Length: > 0 } && rawStackAmounts.All(static amount => amount > 0))
-        {
-            return Math.Max(1, rawStackAmounts.Sum());
-        }
-
-        return Math.Max(1, enchantment.Amount);
+        return GetSnapshot(enchantment).TotalAmount;
     }
 
     public static void ClearMergedStackMetadata(EnchantmentModel enchantment)
@@ -241,7 +283,7 @@ internal static class MultiEnchantmentStackSupport
             return;
         }
 
-        if (MultiEnchantmentStackApi.ResolveProvider(enchantment.GetType()) is IEnchantmentStackBehaviorProvider provider)
+        if (MultiEnchantmentStackApi.ResolveMergedStateProvider(enchantment.GetType()) is { } provider)
         {
             provider.ApplyMergedAmountDelta(enchantment, addedAmount);
             return;
@@ -263,7 +305,7 @@ internal static class MultiEnchantmentStackSupport
 
     public static void RefreshMergedEnchantmentState(EnchantmentModel enchantment)
     {
-        if (MultiEnchantmentStackApi.ResolveProvider(enchantment.GetType()) is IEnchantmentStackBehaviorProvider provider)
+        if (MultiEnchantmentStackApi.ResolveMergedStateProvider(enchantment.GetType()) is { } provider)
         {
             provider.RefreshMergedState(enchantment);
             return;
@@ -278,6 +320,17 @@ internal static class MultiEnchantmentStackSupport
         }
 
         enchantment.Card.DynamicVars.RecalculateForUpgradeOrEnchant();
+    }
+
+    public static bool TryFormatExtraCardText(EnchantmentModel enchantment, string defaultText, out string formattedText)
+    {
+        formattedText = defaultText;
+        if (MultiEnchantmentStackApi.ResolvePresentationProvider(enchantment.GetType()) is not { } provider)
+        {
+            return false;
+        }
+
+        return provider.TryFormatExtraCardText(GetSnapshot(enchantment), defaultText, out formattedText);
     }
 
     public static void RefreshDerivedState(CardModel card)
@@ -309,12 +362,13 @@ internal static class MultiEnchantmentStackSupport
     {
         HashSet<CardKeyword> trackedKeywords = new();
 
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card))
+        foreach (EnchantmentStackSnapshot snapshot in GetSnapshots(card))
         {
-            trackedKeywords.UnionWith(GetBuiltInTrackedKeywords(enchantment));
-            foreach (IEnchantmentKeywordSourceProvider provider in MultiEnchantmentStackApi.ResolveKeywordProviders(enchantment.GetType()))
+            trackedKeywords.UnionWith(GetBuiltInTrackedKeywords(snapshot.EnchantmentType));
+            foreach (MultiEnchantmentStackApi.IKeywordSourceProviderRegistration provider in
+                     MultiEnchantmentStackApi.ResolveKeywordProviders(snapshot.EnchantmentType))
             {
-                trackedKeywords.UnionWith(provider.GetTrackedKeywords(enchantment.GetType()));
+                trackedKeywords.UnionWith(provider.GetTrackedKeywords());
             }
         }
 
@@ -324,42 +378,205 @@ internal static class MultiEnchantmentStackSupport
     private static int GetKeywordSourceAmount(CardModel card, CardKeyword keyword)
     {
         int result = 0;
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card))
+        foreach (EnchantmentStackSnapshot snapshot in GetSnapshots(card))
         {
-            result += GetBuiltInKeywordSourceAmount(enchantment, keyword);
-            foreach (IEnchantmentKeywordSourceProvider provider in MultiEnchantmentStackApi.ResolveKeywordProviders(enchantment.GetType()))
+            result += GetBuiltInKeywordSourceAmount(snapshot, keyword);
+            foreach (MultiEnchantmentStackApi.IKeywordSourceProviderRegistration provider in
+                     MultiEnchantmentStackApi.ResolveKeywordProviders(snapshot.EnchantmentType))
             {
-                result += provider.GetKeywordSourceAmount(enchantment, keyword);
+                result += provider.GetKeywordSourceAmount(snapshot, keyword);
             }
         }
 
         return result;
     }
 
-    private static int GetBuiltInKeywordSourceAmount(EnchantmentModel enchantment, CardKeyword keyword)
+    private static int GetBuiltInKeywordSourceAmount(EnchantmentStackSnapshot snapshot, CardKeyword keyword)
     {
-        return (enchantment, keyword) switch
+        return (snapshot.EnchantmentType, keyword) switch
         {
-            (Goopy, CardKeyword.Exhaust) => 1,
-            (SoulsPower soulsPower, CardKeyword.Exhaust) => -soulsPower.Amount,
-            (Steady, CardKeyword.Retain) => 1,
-            (RoyallyApproved, CardKeyword.Retain) => 1,
-            (RoyallyApproved, CardKeyword.Innate) => 1,
-            (TezcatarasEmber, CardKeyword.Eternal) => 1,
+            ({ } type, CardKeyword.Exhaust) when type == typeof(Goopy) => snapshot.ActiveInstanceCount,
+            ({ } type, CardKeyword.Exhaust) when type == typeof(SoulsPower) => -snapshot.ActiveTotalAmount,
+            ({ } type, CardKeyword.Retain) when type == typeof(Steady) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
+            ({ } type, CardKeyword.Retain) when type == typeof(RoyallyApproved) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
+            ({ } type, CardKeyword.Innate) when type == typeof(RoyallyApproved) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
+            ({ } type, CardKeyword.Eternal) when type == typeof(TezcatarasEmber) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
             _ => 0,
         };
     }
 
-    private static IEnumerable<CardKeyword> GetBuiltInTrackedKeywords(EnchantmentModel enchantment)
+    private static IEnumerable<CardKeyword> GetBuiltInTrackedKeywords(Type enchantmentType)
     {
-        return enchantment switch
+        if (enchantmentType == typeof(Goopy) || enchantmentType == typeof(SoulsPower))
         {
-            Goopy => new[] { CardKeyword.Exhaust },
-            SoulsPower => new[] { CardKeyword.Exhaust },
-            Steady => new[] { CardKeyword.Retain },
-            RoyallyApproved => new[] { CardKeyword.Innate, CardKeyword.Retain },
-            TezcatarasEmber => new[] { CardKeyword.Eternal },
-            _ => Array.Empty<CardKeyword>(),
+            return new[] { CardKeyword.Exhaust };
+        }
+
+        if (enchantmentType == typeof(Steady))
+        {
+            return new[] { CardKeyword.Retain };
+        }
+
+        if (enchantmentType == typeof(RoyallyApproved))
+        {
+            return new[] { CardKeyword.Innate, CardKeyword.Retain };
+        }
+
+        if (enchantmentType == typeof(TezcatarasEmber))
+        {
+            return new[] { CardKeyword.Eternal };
+        }
+
+        return Array.Empty<CardKeyword>();
+    }
+
+    private static EnchantmentStackDefinition GetBuiltInDefinition(Type enchantmentType)
+    {
+        // Mod source: explicit duplicate-enchantment policy for multi-enchantment support.
+        // The rule is "merge gameplay state only when the merged representation is semantically
+        // correct, then expand UI badges from the merged amount".
+        if (enchantmentType == typeof(Adroit) ||
+            enchantmentType == typeof(Clone) ||
+            enchantmentType == typeof(Favored) ||
+            enchantmentType == typeof(Glam) ||
+            enchantmentType == typeof(Imbued) ||
+            enchantmentType == typeof(Instinct) ||
+            enchantmentType == typeof(Momentum) ||
+            enchantmentType == typeof(Nimble) ||
+            enchantmentType == typeof(Sharp) ||
+            enchantmentType == typeof(Slither) ||
+            enchantmentType == typeof(SlumberingEssence) ||
+            enchantmentType == typeof(SoulsPower) ||
+            enchantmentType == typeof(Sown) ||
+            enchantmentType == typeof(Spiral) ||
+            enchantmentType == typeof(Swift) ||
+            enchantmentType == typeof(Vigorous))
+        {
+            return new EnchantmentStackDefinition(
+                EnchantmentStackBehavior.MergeAmount,
+                EnchantmentStatusAggregation.Shared);
+        }
+
+        if (enchantmentType == typeof(Goopy))
+        {
+            // Goopy's Amount is live gameplay state that grows after each play. Keeping one Goopy
+            // instance per stack preserves correct Exhaust netting and permanent block growth.
+            return new EnchantmentStackDefinition(
+                EnchantmentStackBehavior.DuplicateInstance,
+                EnchantmentStatusAggregation.PerInstance);
+        }
+
+        if (enchantmentType == typeof(PerfectFit) ||
+            enchantmentType == typeof(RoyallyApproved) ||
+            enchantmentType == typeof(Steady) ||
+            enchantmentType == typeof(TezcatarasEmber))
+        {
+            return new EnchantmentStackDefinition(
+                EnchantmentStackBehavior.ExistenceStack,
+                EnchantmentStatusAggregation.PresenceOnly);
+        }
+
+        return new EnchantmentStackDefinition(
+            EnchantmentStackBehavior.DisallowDuplicate,
+            EnchantmentStatusAggregation.PresenceOnly);
+    }
+
+    private static EnchantmentExecutionPolicy GetBuiltInExecutionPolicy(Type enchantmentType)
+    {
+        return GetBehavior(enchantmentType) switch
+        {
+            EnchantmentStackBehavior.MergeAmount => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.MergedTotal),
+            EnchantmentStackBehavior.DuplicateInstance => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.PerLiveInstance),
+            EnchantmentStackBehavior.ExistenceStack => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.FirstActiveInstanceOnly),
+            _ => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.FirstActiveInstanceOnly),
+        };
+    }
+
+    private static int[] GetDefaultGameplaySliceAmounts(
+        EnchantmentModel anchor,
+        IReadOnlyList<EnchantmentModel> liveInstances,
+        EnchantmentStackDefinition definition)
+    {
+        if (definition.Behavior == EnchantmentStackBehavior.MergeAmount)
+        {
+            return liveInstances
+                .SelectMany(static instance => GetRawMergedStackAmounts(instance))
+                .DefaultIfEmpty(Math.Max(1, anchor.Amount))
+                .ToArray();
+        }
+
+        return liveInstances
+            .Select(static enchantment => Math.Max(1, enchantment.Amount))
+            .DefaultIfEmpty(1)
+            .ToArray();
+    }
+
+    private static int[] ResolveVisualSliceAmounts(
+        EnchantmentStackSnapshot defaultSnapshot,
+        int[] defaultSliceAmounts)
+    {
+        if (MultiEnchantmentStackApi.ResolvePresentationProvider(defaultSnapshot.EnchantmentType) is not { } provider)
+        {
+            return defaultSliceAmounts;
+        }
+
+        IReadOnlyList<int>? customSliceAmounts = provider.GetVisualSliceAmounts(defaultSnapshot);
+        if (customSliceAmounts == null ||
+            customSliceAmounts.Count == 0 ||
+            customSliceAmounts.Any(static amount => amount <= 0))
+        {
+            return defaultSliceAmounts;
+        }
+
+        return customSliceAmounts.ToArray();
+    }
+
+    private static List<EnchantmentStackSlice> BuildSlices(
+        EnchantmentModel anchor,
+        IReadOnlyList<EnchantmentModel> liveInstances,
+        EnchantmentStackDefinition definition,
+        IReadOnlyList<int> sliceAmounts)
+    {
+        List<EnchantmentStackSlice> slices = new(sliceAmounts.Count);
+        if (definition.StatusAggregation == EnchantmentStatusAggregation.PerInstance &&
+            definition.Behavior != EnchantmentStackBehavior.MergeAmount &&
+            liveInstances.Count == sliceAmounts.Count)
+        {
+            for (int i = 0; i < sliceAmounts.Count; i++)
+            {
+                slices.Add(new EnchantmentStackSlice(
+                    sliceAmounts[i],
+                    liveInstances[i].Status,
+                    i));
+            }
+
+            return slices;
+        }
+
+        EnchantmentStatus sharedStatus = ResolveSharedStatus(anchor, liveInstances, definition.StatusAggregation);
+        for (int i = 0; i < sliceAmounts.Count; i++)
+        {
+            slices.Add(new EnchantmentStackSlice(
+                sliceAmounts[i],
+                sharedStatus,
+                i));
+        }
+
+        return slices;
+    }
+
+    private static EnchantmentStatus ResolveSharedStatus(
+        EnchantmentModel anchor,
+        IReadOnlyList<EnchantmentModel> liveInstances,
+        EnchantmentStatusAggregation aggregation)
+    {
+        return aggregation switch
+        {
+            EnchantmentStatusAggregation.PresenceOnly => liveInstances.Any(static instance => instance.Status != EnchantmentStatus.Disabled)
+                ? EnchantmentStatus.Normal
+                : EnchantmentStatus.Disabled,
+            EnchantmentStatusAggregation.None => EnchantmentStatus.Normal,
+            _ => liveInstances.FirstOrDefault()?.Status ?? anchor.Status,
         };
     }
 
@@ -399,6 +616,13 @@ internal static class MultiEnchantmentStackSupport
         stackAmounts = Array.Empty<int>();
         return TryGetSavedIntArray(enchantment.Props, MergedStackAmountsPropertyName, out stackAmounts) &&
                AreMergedStackAmountsValid(stackAmounts, enchantment.Amount);
+    }
+
+    private static IEnumerable<int> GetRawMergedStackAmounts(EnchantmentModel enchantment)
+    {
+        return TryGetValidMergedStackAmounts(enchantment, out int[] stackAmounts)
+            ? stackAmounts
+            : new[] { Math.Max(1, enchantment.Amount) };
     }
 
     private static bool AreMergedStackAmountsValid(IReadOnlyCollection<int> stackAmounts, int expectedTotalAmount)

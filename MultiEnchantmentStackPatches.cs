@@ -79,7 +79,9 @@ internal static class MultiEnchantmentStackPatches
             return Task.CompletedTask;
         }
 
-        int stackAmount = MultiEnchantmentStackSupport.GetResolvedMergedTotalAmount(slither);
+        int stackAmount = MultiEnchantmentStackApi.GetHookExecutionCount(
+            slither,
+            EnchantmentHookKind.AfterCardDrawn);
         for (int i = 0; i < stackAmount; i++)
         {
             int energyCost = slither.TestEnergyCostOverride >= 0
@@ -99,7 +101,9 @@ internal static class MultiEnchantmentStackPatches
             return;
         }
 
-        int stackAmount = MultiEnchantmentStackSupport.GetResolvedMergedTotalAmount(imbued);
+        int stackAmount = MultiEnchantmentStackApi.GetHookExecutionCount(
+            imbued,
+            EnchantmentHookKind.AfterPlayerTurnStart);
         for (int i = 0; i < stackAmount; i++)
         {
             await CardCmd.AutoPlay(choiceContext, imbued.Card, null);
@@ -119,7 +123,9 @@ internal static class MultiEnchantmentStackPatches
             return Task.CompletedTask;
         }
 
-        int stackAmount = MultiEnchantmentStackSupport.GetResolvedMergedTotalAmount(slumberingEssence);
+        int stackAmount = MultiEnchantmentStackApi.GetHookExecutionCount(
+            slumberingEssence,
+            EnchantmentHookKind.BeforeFlush);
         for (int i = 0; i < stackAmount; i++)
         {
             slumberingEssence.Card.EnergyCost.AddUntilPlayed(-1);

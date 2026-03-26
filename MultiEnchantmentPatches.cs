@@ -19,7 +19,6 @@ using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Enchantments;
-using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
@@ -37,8 +36,6 @@ internal static class MultiEnchantmentPatches
 {
     private static readonly MethodInfo? CalculatedVarGetBaseVarMethod =
         AccessTools.Method(typeof(CalculatedVar), "GetBaseVar");
-    private static readonly PropertyInfo? ArchaicToothTranscendenceUpgradesProperty =
-        AccessTools.Property(typeof(ArchaicTooth), "TranscendenceUpgrades");
     private static readonly PropertyInfo? RestSiteOptionOwnerProperty =
         AccessTools.Property(typeof(RestSiteOption), "Owner");
     private static readonly FieldInfo? NCardEnchantVfxCardModelField =
@@ -758,26 +755,6 @@ internal static class MultiEnchantmentPatches
         return false;
     }
 
-    [HarmonyPatch(typeof(ArchaicTooth), "GetTranscendenceTransformedCard")]
-    [HarmonyPrefix]
-    private static bool ArchaicToothPrefix(ArchaicTooth __instance, CardModel starterCard, ref CardModel __result)
-    {
-        // Base-game source: ArchaicTooth.GetTranscendenceTransformedCard.
-        // Preserve the vanilla transform result, then copy over every compatible enchantment.
-        __result = GetTranscendenceTransformedCardWithMultiEnchantments(__instance, starterCard);
-        return false;
-    }
-
-    [HarmonyPatch(typeof(Claws), "CreateMaulFromOriginal")]
-    [HarmonyPrefix]
-    private static bool ClawsPrefix(Claws __instance, CardModel original, bool forPreview, ref CardModel __result)
-    {
-        // Base-game source: Claws.CreateMaulFromOriginal.
-        // Preserve the vanilla Maul creation/upgrade rules, then copy compatible enchantments.
-        __result = CreateMaulFromOriginalWithMultiEnchantments(__instance, original, forPreview);
-        return false;
-    }
-
     [HarmonyPatch(typeof(NCardEnchantVfx), nameof(NCardEnchantVfx._Ready))]
     [HarmonyPostfix]
     private static void CardEnchantVfxPostfix(NCardEnchantVfx __instance)
@@ -862,43 +839,6 @@ internal static class MultiEnchantmentPatches
     {
         return RestSiteOptionOwnerProperty?.GetValue(option) as Player
             ?? throw new InvalidOperationException("Failed to access RestSiteOption owner.");
-    }
-
-    private static CardModel GetTranscendenceTransformedCardWithMultiEnchantments(ArchaicTooth relic, CardModel starterCard)
-    {
-        if (ArchaicToothTranscendenceUpgradesProperty?.GetValue(null) is Dictionary<ModelId, CardModel> upgrades &&
-            upgrades.TryGetValue(starterCard.Id, out CardModel? upgradedCard))
-        {
-            CardModel result = starterCard.Owner.RunState.CreateCard(upgradedCard, starterCard.Owner);
-            if (starterCard.IsUpgraded)
-            {
-                CardCmd.Upgrade(result);
-            }
-
-            MultiEnchantmentSupport.CloneCompatibleEnchantments(starterCard, result);
-            return result;
-        }
-
-        return relic.Owner.RunState.CreateCard<Doubt>(starterCard.Owner);
-    }
-
-    private static CardModel CreateMaulFromOriginalWithMultiEnchantments(Claws relic, CardModel original, bool forPreview)
-    {
-        CardModel result = forPreview ? ModelDb.Card<Maul>().ToMutable() : relic.Owner.RunState.CreateCard<Maul>(relic.Owner);
-        if (original.IsUpgraded && result.IsUpgradable)
-        {
-            if (forPreview)
-            {
-                result.UpgradeInternal();
-            }
-            else
-            {
-                CardCmd.Upgrade(result);
-            }
-        }
-
-        MultiEnchantmentSupport.CloneCompatibleEnchantments(original, result);
-        return result;
     }
 
     private static decimal ModifyDamageInternal(

@@ -1260,10 +1260,17 @@ internal static class MultiEnchantmentSupport
     private static List<OrderedEnchantmentEntry> GetDefaultOrderedEnchantmentEntries(CardModel? card)
     {
         List<OrderedEnchantmentEntry> entries = new();
+        HashSet<Type> handledMergedTypes = new();
         foreach (EnchantmentModel enchantment in GetEnchantments(card))
         {
-            if (MultiEnchantmentStackSupport.TryGetMergedStackAmounts(enchantment, out int[] stackAmounts))
+            if (MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType()) == EnchantmentStackBehavior.MergeAmount)
             {
+                if (!handledMergedTypes.Add(enchantment.GetType()) ||
+                    !MultiEnchantmentStackSupport.TryGetMergedStackAmounts(enchantment, out int[] stackAmounts))
+                {
+                    continue;
+                }
+
                 entries.AddRange(stackAmounts.Select(stackAmount => new OrderedEnchantmentEntry(enchantment, stackAmount)));
                 continue;
             }
@@ -1277,35 +1284,24 @@ internal static class MultiEnchantmentSupport
     private static List<OrderedVisualEntry> GetDefaultOrderedVisualEntries(CardModel? card)
     {
         List<OrderedVisualEntry> entries = new();
+        HashSet<Type> handledTypes = new();
         foreach (EnchantmentModel enchantment in GetEnchantments(card))
         {
-            if (MultiEnchantmentStackSupport.TryGetMergedStackAmounts(enchantment, out int[] stackAmounts))
+            if (!handledTypes.Add(enchantment.GetType()))
             {
-                foreach (int stackAmount in stackAmounts)
-                {
-                    entries.Add(new OrderedVisualEntry(
-                        enchantment.Id,
-                        new EnchantmentVisualState(
-                            enchantment.Icon,
-                            GetDisplayAmount(enchantment, stackAmount),
-                            enchantment.ShowAmount,
-                            enchantment.Status)));
-                }
-
                 continue;
             }
 
-            int visualCount = MultiEnchantmentStackSupport.GetVisualStackCount(enchantment);
-            int displayAmount = enchantment.DisplayAmount;
-            for (int i = 0; i < visualCount; i++)
+            EnchantmentStackSnapshot snapshot = MultiEnchantmentStackSupport.GetSnapshot(enchantment);
+            foreach (EnchantmentStackSlice slice in snapshot.VisualSlices)
             {
                 entries.Add(new OrderedVisualEntry(
                     enchantment.Id,
                     new EnchantmentVisualState(
                         enchantment.Icon,
-                        displayAmount,
+                        GetDisplayAmount(enchantment, slice.Amount),
                         enchantment.ShowAmount,
-                        enchantment.Status)));
+                        slice.Status)));
             }
         }
 
@@ -1503,6 +1499,13 @@ internal static class MultiEnchantmentSupport
         if (!TryGetFormattedExtraCardText(enchantment, out text))
         {
             return false;
+        }
+
+        if (enchantment != null &&
+            MultiEnchantmentStackSupport.TryFormatExtraCardText(enchantment, text, out string formattedText))
+        {
+            text = formattedText;
+            return true;
         }
 
         if (enchantment is Goopy)
