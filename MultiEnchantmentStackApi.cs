@@ -258,6 +258,29 @@ public static class MultiEnchantmentStackApi
         UnregisterProvider(PresentationProviders, provider, typeof(TEnchantment));
     }
 
+    public static int RegisterCompanionProviders<TEnchantment>(Assembly? assembly = null)
+        where TEnchantment : EnchantmentModel
+    {
+        return RegisterCompanionProviders(typeof(TEnchantment), assembly);
+    }
+
+    public static int RegisterCompanionProviders(Type enchantmentType, Assembly? assembly = null)
+    {
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
+        {
+            throw new ArgumentException(
+                $"Companion providers can only target {nameof(EnchantmentModel)} types.",
+                nameof(enchantmentType));
+        }
+
+        Assembly targetAssembly = assembly ?? enchantmentType.Assembly;
+        lock (DiscoveryLock)
+        {
+            return DiscoverProvidersFromAssembly(targetAssembly, enchantmentType);
+        }
+    }
+
     public static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
@@ -348,62 +371,78 @@ public static class MultiEnchantmentStackApi
                     continue;
                 }
 
-                Type[] types;
-                try
-                {
-                    types = assembly.GetTypes();
-                }
-                catch (ReflectionTypeLoadException ex)
-                {
-                    types = ex.Types.Where(static type => type != null).Cast<Type>().ToArray();
-                }
-                catch
-                {
-                    continue;
-                }
-
-                foreach (Type type in types)
-                {
-                    if (type.IsAbstract ||
-                        type.IsInterface ||
-                        type.ContainsGenericParameters ||
-                        !AutoRegisteredProviderTypes.Add(type))
-                    {
-                        continue;
-                    }
-
-                    List<(Type InterfaceType, Type EnchantmentType)> supportedInterfaces =
-                        GetSupportedProviderInterfaces(type);
-                    if (supportedInterfaces.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    ConstructorInfo? ctor = type.GetConstructor(Type.EmptyTypes);
-                    if (ctor == null)
-                    {
-                        continue;
-                    }
-
-                    object? instance;
-                    try
-                    {
-                        instance = ctor.Invoke(null);
-                    }
-                    catch (Exception ex)
-                    {
-                        MultiEnchantmentMod.Logger.Warn(
-                            $"[StackApi] Failed to instantiate provider {type.FullName} from {assembly.GetName().Name}: {ex.GetBaseException().Message}");
-                        continue;
-                    }
-
-                    foreach ((Type interfaceType, Type enchantmentType) in supportedInterfaces)
-                    {
-                        RegisterDiscoveredProvider(instance, interfaceType, enchantmentType);
-                    }
-                }
+                DiscoverProvidersFromAssembly(assembly);
             }
         }
+    }
+
+    private static int DiscoverProvidersFromAssembly(Assembly assembly, Type? targetEnchantmentType = null)
+    {
+        Type[] types;
+        try
+        {
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            types = ex.Types.Where(static type => type != null).Cast<Type>().ToArray();
+        }
+        catch
+        {
+            return 0;
+        }
+
+        int registeredCount = 0;
+        foreach (Type type in types)
+        {
+            if (type.IsAbstract ||
+                type.IsInterface ||
+                type.ContainsGenericParameters ||
+                !AutoRegisteredProviderTypes.Add(type))
+            {
+                continue;
+            }
+
+            List<(Type InterfaceType, Type EnchantmentType)> supportedInterfaces =
+                GetSupportedProviderInterfaces(type);
+            if (targetEnchantmentType != null)
+            {
+                supportedInterfaces = supportedInterfaces
+                    .Where(pair => pair.EnchantmentType == targetEnchantmentType)
+                    .ToList();
+            }
+
+            if (supportedInterfaces.Count == 0)
+            {
+                continue;
+            }
+
+            ConstructorInfo? ctor = type.GetConstructor(Type.EmptyTypes);
+            if (ctor == null)
+            {
+                continue;
+            }
+
+            object? instance;
+            try
+            {
+                instance = ctor.Invoke(null);
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[StackApi] Failed to instantiate provider {type.FullName} from {assembly.GetName().Name}: {ex.GetBaseException().Message}");
+                continue;
+            }
+
+            foreach ((Type interfaceType, Type enchantmentType) in supportedInterfaces)
+            {
+                RegisterDiscoveredProvider(instance, interfaceType, enchantmentType);
+                registeredCount++;
+            }
+        }
+
+        return registeredCount;
     }
 
     private static bool CouldContainStackProviders(Assembly assembly)
@@ -523,7 +562,7 @@ public static class MultiEnchantmentStackApi
     {
         if (registrations.Any(existing =>
                 existing.EnchantmentType == registration.EnchantmentType &&
-                existing.ProviderType == registration.ProviderType))
+                ReferenceEquals(existing.ProviderInstance, registration.ProviderInstance)))
         {
             return;
         }
@@ -545,7 +584,7 @@ public static class MultiEnchantmentStackApi
     {
         if (registrations.Any(existing =>
                 existing.EnchantmentType == registration.EnchantmentType &&
-                existing.ProviderType == registration.ProviderType))
+                ReferenceEquals(existing.ProviderInstance, registration.ProviderInstance)))
         {
             return;
         }
@@ -572,7 +611,7 @@ public static class MultiEnchantmentStackApi
 
         registrations.RemoveAll(existing =>
             existing.EnchantmentType == enchantmentType &&
-            existing.ProviderType == provider.GetType());
+            ReferenceEquals(existing.ProviderInstance, provider));
     }
 
     private static TRegistration? ResolveSingleProvider<TRegistration>(

@@ -409,9 +409,16 @@ internal static class MultiEnchantmentPatches
     private static bool DamageVarUpdateCardPreviewPrefix(DamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
-        if (!card.IsEnchantmentPreview && MultiEnchantmentSupport.HasAnyEnchantments(card))
+        if (!card.IsEnchantmentPreview)
         {
-            MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            {
+                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            }
+            else
+            {
+                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+            }
         }
 
         if (runGlobalHooks)
@@ -428,9 +435,16 @@ internal static class MultiEnchantmentPatches
     private static bool BlockVarUpdateCardPreviewPrefix(BlockVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
         decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, __instance.BaseValue, __instance.Props);
-        if (!card.IsEnchantmentPreview && MultiEnchantmentSupport.HasAnyEnchantments(card))
+        if (!card.IsEnchantmentPreview)
         {
-            MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            {
+                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            }
+            else
+            {
+                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+            }
         }
 
         if (runGlobalHooks)
@@ -464,6 +478,10 @@ internal static class MultiEnchantmentPatches
         else if (MultiEnchantmentSupport.HasAnyEnchantments(card))
         {
             MultiEnchantmentSupport.SetEnchantedValue(__instance, enchantedBase);
+        }
+        else
+        {
+            MultiEnchantmentSupport.ResetEnchantedValue(__instance);
         }
 
         decimal value = __instance.Calculate(target);
@@ -513,6 +531,10 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentSupport.SetEnchantedValue(__instance, enchantedBase);
         }
+        else
+        {
+            MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+        }
 
         decimal value = __instance.Calculate(target);
         if (runGlobalHooks)
@@ -539,9 +561,16 @@ internal static class MultiEnchantmentPatches
         bool runGlobalHooks)
     {
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, ValueProp.Move, ModifyDamageHookType.Multiplicative);
-        if (!card.IsEnchantmentPreview && MultiEnchantmentSupport.HasAnyEnchantments(card))
+        if (!card.IsEnchantmentPreview)
         {
-            MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            {
+                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            }
+            else
+            {
+                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+            }
         }
 
         __instance.PreviewValue = value;
@@ -553,9 +582,16 @@ internal static class MultiEnchantmentPatches
     private static bool OstyDamageVarUpdateCardPreviewPrefix(OstyDamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
-        if (!card.IsEnchantmentPreview && MultiEnchantmentSupport.HasAnyEnchantments(card))
+        if (!card.IsEnchantmentPreview)
         {
-            MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            {
+                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+            }
+            else
+            {
+                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+            }
         }
 
         if (runGlobalHooks)

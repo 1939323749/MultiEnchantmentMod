@@ -270,6 +270,7 @@ internal static class MultiEnchantmentSupport
     public static EnchantmentModel ApplyEnchantment(EnchantmentModel enchantment, CardModel card, decimal amount)
     {
         enchantment.AssertMutable();
+        int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
         if (!enchantment.CanEnchant(card))
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
@@ -278,7 +279,6 @@ internal static class MultiEnchantmentSupport
         SeedMissingApplicationOrder(card);
 
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
-        int appliedAmount = (int)amount;
         EnchantmentModel? existing = GetEnchantment(card, enchantment.GetType());
         if (existing != null && behavior == EnchantmentStackBehavior.MergeAmount)
         {
@@ -321,7 +321,7 @@ internal static class MultiEnchantmentSupport
         return AttachNewAdditionalEnchantmentStacks(
             card,
             enchantment,
-            (int)amount,
+            ValidateAndConvertStackAmount(amount, nameof(amount)),
             modifyCard,
             triggerChanged);
     }
@@ -955,9 +955,15 @@ internal static class MultiEnchantmentSupport
         foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(cardPlay.Card).ToList())
         {
             choiceContext.PushModel(enchantment);
-            await enchantment.OnPlay(choiceContext, cardPlay);
-            enchantment.InvokeExecutionFinished();
-            choiceContext.PopModel(enchantment);
+            try
+            {
+                await enchantment.OnPlay(choiceContext, cardPlay);
+                enchantment.InvokeExecutionFinished();
+            }
+            finally
+            {
+                choiceContext.PopModel(enchantment);
+            }
         }
     }
 
@@ -1103,6 +1109,11 @@ internal static class MultiEnchantmentSupport
     public static void SetEnchantedValue(DynamicVar dynamicVar, decimal value)
     {
         EnchantedValueProperty?.SetValue(dynamicVar, value);
+    }
+
+    public static void ResetEnchantedValue(DynamicVar dynamicVar)
+    {
+        SetEnchantedValue(dynamicVar, dynamicVar.BaseValue);
     }
 
     public static void SyncEnchantVfxPresentation(
@@ -1448,9 +1459,7 @@ internal static class MultiEnchantmentSupport
             return false;
         }
 
-        string leftProps = left.Enchantment.Props == null ? string.Empty : JsonSerializer.Serialize(left.Enchantment.Props);
-        string rightProps = right.Enchantment.Props == null ? string.Empty : JsonSerializer.Serialize(right.Enchantment.Props);
-        return leftProps == rightProps;
+        return SavedPropertiesComparer.HaveSame(left.Enchantment.Props, right.Enchantment.Props);
     }
 
     private static void AddEnchantmentStateToHash(ref HashCode hash, OrderedEnchantmentEntry enchantment)
@@ -1458,7 +1467,7 @@ internal static class MultiEnchantmentSupport
         hash.Add(enchantment.Enchantment.Id);
         hash.Add(enchantment.EffectiveAmount);
         hash.Add(enchantment.Enchantment.Status);
-        hash.Add(enchantment.Enchantment.Props == null ? string.Empty : JsonSerializer.Serialize(enchantment.Enchantment.Props));
+        hash.Add(SavedPropertiesComparer.GetHashCode(enchantment.Enchantment.Props));
     }
 
     private static bool TryGetSavedString(SavedProperties? properties, string propertyName, out string value)
@@ -1728,6 +1737,26 @@ internal static class MultiEnchantmentSupport
     private static bool ShouldFanOutAppliedStacks(EnchantmentStackBehavior behavior)
     {
         return behavior is EnchantmentStackBehavior.DuplicateInstance or EnchantmentStackBehavior.ExistenceStack;
+    }
+
+    private static int ValidateAndConvertStackAmount(decimal amount, string paramName)
+    {
+        if (amount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(paramName, amount, "Enchantment amount must be a positive integer.");
+        }
+
+        if (decimal.Truncate(amount) != amount)
+        {
+            throw new ArgumentOutOfRangeException(paramName, amount, "Enchantment amount must be a positive integer.");
+        }
+
+        if (amount > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(paramName, amount, "Enchantment amount is too large.");
+        }
+
+        return decimal.ToInt32(amount);
     }
 
     public static Task HandleGoopyAfterCardPlayed(Goopy goopy, PlayerChoiceContext context, CardPlay cardPlay)

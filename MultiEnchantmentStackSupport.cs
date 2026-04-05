@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
@@ -333,6 +334,8 @@ internal static class MultiEnchantmentStackSupport
         return provider.TryFormatExtraCardText(GetSnapshot(enchantment), defaultText, out formattedText);
     }
 
+    private static readonly ConditionalWeakTable<CardModel, HashSet<CardKeyword>> RememberedTrackedKeywords = new();
+
     public static void RefreshDerivedState(CardModel card)
     {
         RefreshDerivedKeywords(card);
@@ -340,7 +343,14 @@ internal static class MultiEnchantmentStackSupport
 
     private static void RefreshDerivedKeywords(CardModel card)
     {
-        foreach (CardKeyword keyword in GetTrackedKeywords(card))
+        HashSet<CardKeyword> currentTrackedKeywords = GetTrackedKeywords(card).ToHashSet();
+        HashSet<CardKeyword> keywordsToRefresh = currentTrackedKeywords.ToHashSet();
+        if (RememberedTrackedKeywords.TryGetValue(card, out HashSet<CardKeyword>? rememberedTrackedKeywords))
+        {
+            keywordsToRefresh.UnionWith(rememberedTrackedKeywords);
+        }
+
+        foreach (CardKeyword keyword in keywordsToRefresh)
         {
             int baselineCount = card.CanonicalKeywords.Contains(keyword) ? 1 : 0;
             int netKeywordSources = GetKeywordSourceAmount(card, keyword);
@@ -356,6 +366,16 @@ internal static class MultiEnchantmentStackSupport
                 card.RemoveKeyword(keyword);
             }
         }
+
+        if (currentTrackedKeywords.Count == 0)
+        {
+            RememberedTrackedKeywords.Remove(card);
+            return;
+        }
+
+        HashSet<CardKeyword> trackedKeywords = RememberedTrackedKeywords.GetOrCreateValue(card);
+        trackedKeywords.Clear();
+        trackedKeywords.UnionWith(currentTrackedKeywords);
     }
 
     private static IEnumerable<CardKeyword> GetTrackedKeywords(CardModel card)
@@ -523,7 +543,8 @@ internal static class MultiEnchantmentStackSupport
         IReadOnlyList<int>? customSliceAmounts = provider.GetVisualSliceAmounts(defaultSnapshot);
         if (customSliceAmounts == null ||
             customSliceAmounts.Count == 0 ||
-            customSliceAmounts.Any(static amount => amount <= 0))
+            customSliceAmounts.Any(static amount => amount <= 0) ||
+            customSliceAmounts.Sum() != defaultSnapshot.TotalAmount)
         {
             return defaultSliceAmounts;
         }
