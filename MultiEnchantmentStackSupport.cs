@@ -46,6 +46,7 @@ internal static class MultiEnchantmentStackSupport
             AfterCardPlayed: custom.AfterCardPlayed,
             AfterCardDrawn: custom.AfterCardDrawn,
             AfterPlayerTurnStart: custom.AfterPlayerTurnStart,
+            BeforePlayPhaseStart: custom.BeforePlayPhaseStart,
             BeforeFlush: custom.BeforeFlush);
     }
 
@@ -457,7 +458,6 @@ internal static class MultiEnchantmentStackSupport
         // correct, then expand UI badges from the merged amount".
         if (enchantmentType == typeof(Adroit) ||
             enchantmentType == typeof(Clone) ||
-            enchantmentType == typeof(Favored) ||
             enchantmentType == typeof(Glam) ||
             enchantmentType == typeof(Imbued) ||
             enchantmentType == typeof(Instinct) ||

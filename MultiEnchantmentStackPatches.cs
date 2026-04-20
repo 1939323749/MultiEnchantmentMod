@@ -34,16 +34,6 @@ internal static class MultiEnchantmentStackPatches
         return false;
     }
 
-    [HarmonyPatch(typeof(Favored), nameof(Favored.EnchantDamageMultiplicative))]
-    [HarmonyPrefix]
-    private static bool FavoredEnchantDamageMultiplicativePrefix(Favored __instance, decimal originalDamage, ValueProp props, ref decimal __result)
-    {
-        __result = props.IsPoweredAttack()
-            ? (decimal)Math.Pow(2d, __instance.Amount)
-            : 1m;
-        return false;
-    }
-
     [HarmonyPatch(typeof(Slither), nameof(Slither.AfterCardDrawn))]
     [HarmonyPrefix]
     private static bool SlitherAfterCardDrawnPrefix(Slither __instance, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw, ref Task __result)
@@ -52,11 +42,11 @@ internal static class MultiEnchantmentStackPatches
         return false;
     }
 
-    [HarmonyPatch(typeof(Imbued), nameof(Imbued.AfterPlayerTurnStart))]
+    [HarmonyPatch(typeof(Imbued), nameof(Imbued.BeforePlayPhaseStart))]
     [HarmonyPrefix]
-    private static bool ImbuedAfterPlayerTurnStartPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
+    private static bool ImbuedBeforePlayPhaseStartPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
-        __result = HandleStackedImbuedAfterPlayerTurnStart(__instance, choiceContext, player);
+        __result = HandleStackedImbuedBeforePlayPhaseStart(__instance, choiceContext, player);
         return false;
     }
 
@@ -94,7 +84,7 @@ internal static class MultiEnchantmentStackPatches
         return Task.CompletedTask;
     }
 
-    private static async Task HandleStackedImbuedAfterPlayerTurnStart(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
+    private static async Task HandleStackedImbuedBeforePlayPhaseStart(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
     {
         if (player != imbued.Card.Owner || imbued.Card.CombatState.RoundNumber != 1)
         {
@@ -103,7 +93,7 @@ internal static class MultiEnchantmentStackPatches
 
         int stackAmount = MultiEnchantmentStackApi.GetHookExecutionCount(
             imbued,
-            EnchantmentHookKind.AfterPlayerTurnStart);
+            EnchantmentHookKind.BeforePlayPhaseStart);
         for (int i = 0; i < stackAmount; i++)
         {
             await CardCmd.AutoPlay(choiceContext, imbued.Card, null);

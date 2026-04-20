@@ -1282,7 +1282,9 @@ internal static class MultiEnchantmentSupport
                     continue;
                 }
 
-                entries.AddRange(stackAmounts.Select(stackAmount => new OrderedEnchantmentEntry(enchantment, stackAmount)));
+                // Merge all stack slices into one entry with the total amount, so each
+                // enchantment contributes exactly once to replay count.
+                entries.Add(new OrderedEnchantmentEntry(enchantment, stackAmounts.Sum()));
                 continue;
             }
 
@@ -1395,6 +1397,7 @@ internal static class MultiEnchantmentSupport
 
         int originalAmount = enchantment.Amount;
         enchantment.Amount = entry.EffectiveAmount;
+        SyncAmountDependentDynamicVars(enchantment);
         try
         {
             return evaluator(enchantment);
@@ -1402,6 +1405,21 @@ internal static class MultiEnchantmentSupport
         finally
         {
             enchantment.Amount = originalAmount;
+            SyncAmountDependentDynamicVars(enchantment);
+        }
+    }
+
+    /// <summary>
+    /// Keeps DynamicVars in sync with Amount for enchantments whose vanilla EnchantPlayCount
+    /// reads DynamicVars instead of Amount.  Without this, EvaluateWithEffectiveAmount would
+    /// temporarily change Amount while DynamicVars["Times"] stayed at the merged total, causing
+    /// per-slice evaluations to add the full total each time (e.g. Spiral ×2 → replay 4).
+    /// </summary>
+    private static void SyncAmountDependentDynamicVars(EnchantmentModel enchantment)
+    {
+        if (enchantment is Glam or Spiral)
+        {
+            enchantment.DynamicVars["Times"].BaseValue = enchantment.Amount;
         }
     }
 

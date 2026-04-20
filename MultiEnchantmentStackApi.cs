@@ -31,6 +31,7 @@ public enum EnchantmentHookKind
     AfterCardPlayed,
     AfterCardDrawn,
     AfterPlayerTurnStart,
+    BeforePlayPhaseStart,
     BeforeFlush,
 }
 
@@ -54,6 +55,7 @@ public sealed record EnchantmentExecutionPolicy(
     HookExecutionMode AfterCardPlayed = HookExecutionMode.Default,
     HookExecutionMode AfterCardDrawn = HookExecutionMode.Default,
     HookExecutionMode AfterPlayerTurnStart = HookExecutionMode.Default,
+    HookExecutionMode BeforePlayPhaseStart = HookExecutionMode.Default,
     HookExecutionMode BeforeFlush = HookExecutionMode.Default)
 {
     public HookExecutionMode GetExecutionMode(EnchantmentHookKind hookKind)
@@ -65,6 +67,7 @@ public sealed record EnchantmentExecutionPolicy(
             EnchantmentHookKind.AfterCardPlayed => AfterCardPlayed,
             EnchantmentHookKind.AfterCardDrawn => AfterCardDrawn,
             EnchantmentHookKind.AfterPlayerTurnStart => AfterPlayerTurnStart,
+            EnchantmentHookKind.BeforePlayPhaseStart => BeforePlayPhaseStart,
             EnchantmentHookKind.BeforeFlush => BeforeFlush,
             _ => HookExecutionMode.Default,
         };
