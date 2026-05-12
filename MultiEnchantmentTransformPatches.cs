@@ -22,6 +22,9 @@ internal static class MultiEnchantmentTransformPatches
     {
         // Base-game source: ArchaicTooth.GetTranscendenceTransformedCard.
         // Preserve the vanilla transform result, then copy over every compatible enchantment.
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting ArchaicTooth.GetTranscendenceTransformedCard. " +
+            $"StarterCard={starterCard.Id}");
         if (!TryGetTranscendenceTransformedCardWithMultiEnchantments(__instance, starterCard, out CardModel? result))
         {
             LogArchaicToothReflectionFallback();
@@ -38,8 +41,21 @@ internal static class MultiEnchantmentTransformPatches
     {
         // Base-game source: Claws.CreateMaulFromOriginal.
         // Preserve the vanilla Maul creation/upgrade rules, then copy compatible enchantments.
-        __result = CreateMaulFromOriginalWithMultiEnchantments(__instance, original, forPreview);
-        return false;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting Claws.CreateMaulFromOriginal. " +
+            $"Original={original.Id} ForPreview={forPreview}");
+        try
+        {
+            __result = CreateMaulFromOriginalWithMultiEnchantments(__instance, original, forPreview);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Claws.CreateMaulFromOriginal failed for Card={original.Id}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     private static bool TryGetTranscendenceTransformedCardWithMultiEnchantments(ArchaicTooth relic, CardModel starterCard, out CardModel result)

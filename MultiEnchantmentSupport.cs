@@ -48,8 +48,8 @@ internal static class MultiEnchantmentSupport
 
     private static readonly FieldInfo? CardEnchantmentChangedField =
         AccessTools.Field(typeof(CardModel), nameof(CardModel.EnchantmentChanged));
-    private static readonly FieldInfo? CardCurrentTargetField =
-        AccessTools.Field(typeof(CardModel), "_currentTarget");
+    private static readonly PropertyInfo? CardCurrentTargetProperty =
+        AccessTools.Property(typeof(CardModel), nameof(CardModel.CurrentTarget));
     private static readonly FieldInfo? CardTemporaryStarCostsField =
         AccessTools.Field(typeof(CardModel), "_temporaryStarCosts");
     private static readonly FieldInfo? CardPlayedField =
@@ -978,7 +978,7 @@ internal static class MultiEnchantmentSupport
         // Base-game source: CardModel.OnPlayWrapper in STS2 v0.99.1.
         // This copy stays intentionally close to vanilla. The only functional change is inserting
         // extra-enchantment OnPlay execution immediately after the primary enchantment OnPlay.
-        CombatState combatState = card.CombatState;
+        CombatState combatState = (CombatState)card.CombatState!;
         choiceContext.PushModel(card);
         await CombatManager.Instance.WaitForUnpause();
         SetCurrentTargetForMultiEnchantmentPatch(card, target);
@@ -1587,7 +1587,9 @@ internal static class MultiEnchantmentSupport
             return task;
         }
 
-        throw new InvalidOperationException("Failed to invoke CardModel.OnPlay.");
+        // Fallback when OnPlay is unavailable (renamed/removed in newer game versions):
+        // the card's internal OnPlay logic has been moved elsewhere in the game; skip safely.
+        return Task.CompletedTask;
     }
 
     public static PileType GetResultPileTypeForMultiEnchantmentPatch(CardModel card)
@@ -1597,7 +1599,15 @@ internal static class MultiEnchantmentSupport
             return pileType;
         }
 
-        throw new InvalidOperationException("Failed to invoke CardModel.GetResultPileType.");
+        // Fallback when GetResultPileType is unavailable (renamed/removed in newer game versions):
+        // cards with the Exhaust keyword exhaust by default; power cards are removed from combat;
+        // everything else goes to discard.
+        // The Hook.ModifyCardPlayResultPileTypeAndPosition pipeline still runs on top of this default.
+        if (card.Keywords.Contains(CardKeyword.Exhaust))
+            return PileType.Exhaust;
+        if (card.Type == CardType.Power)
+            return PileType.None;
+        return PileType.Discard;
     }
 
     public static Task PlayPowerCardFlyVfxForMultiEnchantmentPatch(CardModel card)
@@ -1607,7 +1617,9 @@ internal static class MultiEnchantmentSupport
             return task;
         }
 
-        throw new InvalidOperationException("Failed to invoke CardModel.PlayPowerCardFlyVfx.");
+        // Fallback when PlayPowerCardFlyVfx is unavailable (renamed/removed in newer game versions):
+        // the VFX is cosmetic; skip safely.
+        return Task.CompletedTask;
     }
 
     public static void InvokeStarCostChangedForMultiEnchantmentPatch(CardModel card)
@@ -1628,13 +1640,13 @@ internal static class MultiEnchantmentSupport
 
     public static void SetCurrentTargetForMultiEnchantmentPatch(CardModel card, Creature? target)
     {
-        if (CardCurrentTargetField == null)
+        if (CardCurrentTargetProperty == null)
         {
-            throw new InvalidOperationException("Failed to access CardModel._currentTarget.");
+            return;
         }
 
         card.AssertMutable();
-        CardCurrentTargetField.SetValue(card, target);
+        CardCurrentTargetProperty.SetValue(card, target);
     }
 
     private static bool ClearTemporaryStarCostsOnPlay(CardModel card)

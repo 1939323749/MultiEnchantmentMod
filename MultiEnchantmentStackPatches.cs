@@ -20,9 +20,13 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPrefix]
     private static bool GlamEnchantPlayCountPrefix(Glam __instance, int originalPlayCount, ref int __result)
     {
-        __result = __instance.Status == EnchantmentStatus.Disabled
+        int result = __instance.Status == EnchantmentStatus.Disabled
             ? originalPlayCount
             : originalPlayCount + __instance.Amount;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting Glam.EnchantPlayCount. " +
+            $"Card={__instance.Card?.Id} Original={originalPlayCount} Result={result} Disabled={__instance.Status == EnchantmentStatus.Disabled}");
+        __result = result;
         return false;
     }
 
@@ -30,7 +34,11 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPrefix]
     private static bool SpiralEnchantPlayCountPrefix(Spiral __instance, int originalPlayCount, ref int __result)
     {
-        __result = originalPlayCount + __instance.Amount;
+        int result = originalPlayCount + __instance.Amount;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting Spiral.EnchantPlayCount. " +
+            $"Card={__instance.Card?.Id} Original={originalPlayCount} Amount={__instance.Amount} Result={result}");
+        __result = result;
         return false;
     }
 
@@ -38,16 +46,42 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPrefix]
     private static bool SlitherAfterCardDrawnPrefix(Slither __instance, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw, ref Task __result)
     {
-        __result = HandleStackedSlitherAfterCardDrawn(__instance, card);
-        return false;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting Slither.AfterCardDrawn. " +
+            $"Card={card.Id} FromHandDraw={fromHandDraw} SlitherCard={__instance.Card?.Id}");
+        try
+        {
+            __result = HandleStackedSlitherAfterCardDrawn(__instance, card);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Slither.AfterCardDrawn failed for Card={card.Id}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
-    [HarmonyPatch(typeof(Imbued), nameof(Imbued.BeforePlayPhaseStart))]
+    [HarmonyPatch(typeof(Imbued), nameof(Imbued.AfterAutoPrePlayPhaseEntered))]
     [HarmonyPrefix]
-    private static bool ImbuedBeforePlayPhaseStartPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
+    private static bool ImbuedAfterAutoPrePlayPhaseEnteredPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
-        __result = HandleStackedImbuedBeforePlayPhaseStart(__instance, choiceContext, player);
-        return false;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting Imbued.AfterAutoPrePlayPhaseEntered. " +
+            $"Player={player.NetId} ImbuedCard={__instance.Card?.Id} Round={__instance.Card?.CombatState?.RoundNumber}");
+        try
+        {
+            __result = HandleStackedImbuedAfterAutoPrePlayPhaseEntered(__instance, choiceContext, player);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Imbued.AfterAutoPrePlayPhaseEntered failed. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(SlumberingEssence), nameof(SlumberingEssence.BeforeFlush))]
@@ -58,8 +92,21 @@ internal static class MultiEnchantmentStackPatches
         Player player,
         ref Task __result)
     {
-        __result = HandleStackedSlumberingEssenceBeforeFlush(__instance, player);
-        return false;
+        MultiEnchantmentMod.Logger.Info(
+            $"[MultiEnchantment] Intercepting SlumberingEssence.BeforeFlush. " +
+            $"Player={player.NetId} SlumberingCard={__instance.Card?.Id}");
+        try
+        {
+            __result = HandleStackedSlumberingEssenceBeforeFlush(__instance, player);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] SlumberingEssence.BeforeFlush failed. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     private static Task HandleStackedSlitherAfterCardDrawn(Slither slither, CardModel card)
@@ -84,7 +131,7 @@ internal static class MultiEnchantmentStackPatches
         return Task.CompletedTask;
     }
 
-    private static async Task HandleStackedImbuedBeforePlayPhaseStart(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
+    private static async Task HandleStackedImbuedAfterAutoPrePlayPhaseEntered(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
     {
         if (player != imbued.Card.Owner || imbued.Card.CombatState.RoundNumber != 1)
         {
