@@ -37,6 +37,7 @@ internal static class MultiEnchantmentSupport
     private const float ExtraSlotYOffset = 44f;
     private const string EnchantVfxViewportBadgePrefix = "MultiEnchantVfxViewportBadge";
     private const string EnchantVfxStaticBadgePrefix = "MultiEnchantVfxStaticBadge";
+    private const string ExtraEnchantmentTabPrefix = "MultiEnchantmentTab";
     private const string EnchantVfxSparklesBasePositionMeta = "_multi_enchant_sparkles_base_position";
     private const string EnchantVfxOverrideRestorePositionMeta = "_multi_enchant_vfx_override_restore_position";
     private const string EnchantVfxOverrideRestoreSizeMeta = "_multi_enchant_vfx_override_restore_size";
@@ -808,6 +809,8 @@ internal static class MultiEnchantmentSupport
             return;
         }
 
+        RemoveOrphanedExtraEnchantmentTabs(primaryTab.GetParent(), uiState.ExtraTabs);
+
         if (visualStates.Count == 0)
         {
             ClearCardUi(cardNode);
@@ -829,7 +832,7 @@ internal static class MultiEnchantmentSupport
         while (uiState.ExtraTabs.Count < visualStates.Count - 1)
         {
             Control tab = (Control)primaryTab.Duplicate();
-            tab.Name = $"MultiEnchantmentTab{uiState.ExtraTabs.Count + 1}";
+            tab.Name = $"{ExtraEnchantmentTabPrefix}{uiState.ExtraTabs.Count + 1}";
             if (tab.Material != null)
             {
                 tab.Material = (Material)tab.Material.Duplicate();
@@ -857,6 +860,13 @@ internal static class MultiEnchantmentSupport
     public static void ClearCardUi(NCard cardNode)
     {
         ClearTransientEnchantVfxUi(cardNode);
+
+        Control? primaryTab = NCardEnchantmentTabField?.GetValue(cardNode) as Control;
+        Node? badgeRoot = primaryTab?.GetParent();
+        if (badgeRoot != null)
+        {
+            ClearNamedChildren(badgeRoot, ExtraEnchantmentTabPrefix);
+        }
 
         if (!CardUiStates.TryGetValue(cardNode, out CardUiState? state))
         {
@@ -2015,6 +2025,20 @@ internal static class MultiEnchantmentSupport
             if (child.Name.ToString().StartsWith(prefix, StringComparison.Ordinal))
             {
                 child.QueueFreeSafely();
+            }
+        }
+    }
+
+    private static void RemoveOrphanedExtraEnchantmentTabs(Node parent, IReadOnlyCollection<Control> trackedTabs)
+    {
+        HashSet<Control> trackedTabSet = trackedTabs.Where(GodotObject.IsInstanceValid).ToHashSet();
+        foreach (Node child in parent.GetChildren())
+        {
+            if (child is Control tab &&
+                tab.Name.ToString().StartsWith(ExtraEnchantmentTabPrefix, StringComparison.Ordinal) &&
+                !trackedTabSet.Contains(tab))
+            {
+                tab.QueueFreeSafely();
             }
         }
     }
