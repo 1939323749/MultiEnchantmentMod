@@ -358,6 +358,12 @@ internal static class MultiEnchantmentPatches
         // Base-game source: CardModel.OnPlayWrapper.
         // Keep the original control flow, but execute extra enchantments in the same phase as the
         // primary enchantment OnPlay instead of the later AfterCardPlayed hook sweep.
+        bool hasExtraEnchantments = MultiEnchantmentSupport.GetAdditionalEnchantments(__instance).Count > 0;
+        if (!hasExtraEnchantments)
+        {
+            return true;
+        }
+
         __result = MultiEnchantmentSupport.OnPlayWrapperWithMultiEnchantments(
             __instance,
             choiceContext,

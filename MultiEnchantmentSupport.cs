@@ -271,7 +271,13 @@ internal static class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
-        if (!enchantment.CanEnchant(card))
+
+        // Validate eligibility. CanEnchant now mirrors vanilla "no existing same-type" semantics
+        // so external relics/UI behave correctly, but legitimate same-type merge calls must still
+        // be accepted here even though CanEnchant will reject them. Detect that case via
+        // CanStackOnto and bypass the gate when the merge path will run below.
+        bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
+        if (!isStackingExisting && !enchantment.CanEnchant(card))
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
@@ -1592,12 +1598,20 @@ internal static class MultiEnchantmentSupport
 
     public static PileType GetResultPileTypeForMultiEnchantmentPatch(CardModel card)
     {
+        // Dispatch to vanilla CardModel.GetResultPileType via reflection so subclass overrides
+        // continue to match base-game behavior exactly on the stable game version.
         if (CardModelGetResultPileTypeMethod?.Invoke(card, null) is PileType pileType)
         {
             return pileType;
         }
 
-        throw new InvalidOperationException("Failed to invoke CardModel.GetResultPileType.");
+        // Fallback when GetResultPileType is unavailable: replicate the base-game branches as
+        // best we can for the stable line.
+        if (card.IsDupe || card.Type == CardType.Power)
+            return PileType.None;
+        if (card.Keywords.Contains(CardKeyword.Exhaust))
+            return PileType.Exhaust;
+        return PileType.Discard;
     }
 
     public static Task PlayPowerCardFlyVfxForMultiEnchantmentPatch(CardModel card)

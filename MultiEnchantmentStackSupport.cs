@@ -121,7 +121,23 @@ internal static class MultiEnchantmentStackSupport
 
     public static bool CanApply(CardModel card, Type enchantmentType)
     {
-        return GetEnchantmentCount(card, enchantmentType) == 0 ||
+        // Match vanilla EnchantmentModel.CanEnchant semantics: external callers (relics like
+        // FresnelLens / Kifuda, card-select UIs filtering enchantable cards, etc.) expect
+        // "no existing enchantment of this type" to mean "can be enchanted". Otherwise relics
+        // that auto-enchant via both card-reward and card-being-added hooks would double-apply
+        // and produce duplicate enchantment icons.
+        //
+        // The mod's internal merge-on-reapply behavior is preserved by ApplyEnchantment, which
+        // bypasses this gate when an existing same-type instance is being merged on purpose.
+        return GetEnchantmentCount(card, enchantmentType) == 0;
+    }
+
+    public static bool CanStackOnto(CardModel card, Type enchantmentType)
+    {
+        // Internal predicate for "is it legal to merge another instance of this type onto an
+        // existing one on the card". Returns true only for behaviors that explicitly support
+        // duplicates / merging.
+        return GetEnchantmentCount(card, enchantmentType) > 0 &&
                GetBehavior(enchantmentType) != EnchantmentStackBehavior.DisallowDuplicate;
     }
 
