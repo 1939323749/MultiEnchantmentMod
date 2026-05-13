@@ -71,7 +71,7 @@ internal static class MultiEnchantmentSupport
     private static readonly MethodInfo? CardModelOnPlayMethod =
         AccessTools.Method(typeof(CardModel), "OnPlay");
     private static readonly MethodInfo? CardModelGetResultPileTypeMethod =
-        AccessTools.Method(typeof(CardModel), "GetResultPileType");
+        AccessTools.Method(typeof(CardModel), "GetResultPileTypeForCardPlay");
     private static readonly MethodInfo? CardModelPlayPowerCardFlyVfxMethod =
         AccessTools.Method(typeof(CardModel), "PlayPowerCardFlyVfx");
 
@@ -271,7 +271,13 @@ internal static class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
-        if (!enchantment.CanEnchant(card))
+
+        // Validate eligibility. CanEnchant now mirrors vanilla "no existing same-type" semantics
+        // so external relics/UI behave correctly, but legitimate same-type merge calls must still
+        // be accepted here even though CanEnchant will reject them. Detect that case via
+        // CanStackOnto and bypass the gate when the merge path will run below.
+        bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
+        if (!isStackingExisting && !enchantment.CanEnchant(card))
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
@@ -1594,19 +1600,21 @@ internal static class MultiEnchantmentSupport
 
     public static PileType GetResultPileTypeForMultiEnchantmentPatch(CardModel card)
     {
+        // Dispatch to vanilla CardModel.GetResultPileTypeForCardPlay via reflection so subclass
+        // overrides (e.g., ParticleWall returning to Hand) AND the ExhaustOnNextPlay side effect
+        // both match base-game behavior exactly.
         if (CardModelGetResultPileTypeMethod?.Invoke(card, null) is PileType pileType)
         {
             return pileType;
         }
 
-        // Fallback when GetResultPileType is unavailable (renamed/removed in newer game versions):
-        // cards with the Exhaust keyword exhaust by default; power cards are removed from combat;
-        // everything else goes to discard.
-        // The Hook.ModifyCardPlayResultPileTypeAndPosition pipeline still runs on top of this default.
+        // Fallback when GetResultPileTypeForCardPlay is unavailable (renamed/removed in newer
+        // game versions): replicate the base-game branches as best we can. NOTE: this path
+        // cannot clear ExhaustOnNextPlay because the field is not reachable from here.
+        if (card.IsDupe || card.Type == CardType.Power)
+            return PileType.None;
         if (card.Keywords.Contains(CardKeyword.Exhaust))
             return PileType.Exhaust;
-        if (card.Type == CardType.Power)
-            return PileType.None;
         return PileType.Discard;
     }
 
