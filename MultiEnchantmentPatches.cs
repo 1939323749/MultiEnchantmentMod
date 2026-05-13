@@ -230,7 +230,7 @@ internal static class MultiEnchantmentPatches
         __result = __result || MultiEnchantmentSupport.ShouldGlowRed(__instance);
     }
 
-    [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn")]
+    [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn", new[] { typeof(Player), typeof(HookPlayerChoiceContext) })]
     [HarmonyPrefix]
     private static bool SetupPlayerTurnPrefix(
         CombatManager __instance,
@@ -315,7 +315,7 @@ internal static class MultiEnchantmentPatches
     [HarmonyPrefix]
     private static bool HookModifyDamagePrefix(
         IRunState runState,
-        CombatState? combatState,
+        ICombatState? combatState,
         Creature? target,
         Creature? dealer,
         decimal damage,
@@ -446,6 +446,11 @@ internal static class MultiEnchantmentPatches
             $"[MultiEnchantment] Intercepting CardModel.OnPlayWrapper. " +
             $"Card={__instance.Id} AutoPlay={isAutoPlay} HasExtraEnchantments={hasExtraEnchantments} " +
             $"SkipVisuals={skipCardPileVisuals}");
+
+        if (!hasExtraEnchantments)
+        {
+            return true;
+        }
 
         try
         {
@@ -1037,7 +1042,7 @@ internal static class MultiEnchantmentPatches
 
     private static decimal ModifyDamageInternal(
         IRunState runState,
-        CombatState? combatState,
+        ICombatState? combatState,
         Creature? target,
         Creature? dealer,
         decimal damage,
@@ -1164,7 +1169,7 @@ internal static class MultiEnchantmentPatches
             return;
         }
 
-        if (Hook.ShouldPlayerResetEnergy(state, player))
+        if (Hook.ShouldPlayerResetEnergy((ICombatState)state, player))
         {
             SfxCmd.Play("event:/sfx/ui/gain_energy");
             player.PlayerCombatState.ResetEnergy();
