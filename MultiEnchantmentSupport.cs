@@ -272,13 +272,7 @@ internal static class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
-
-        // Validate eligibility. CanEnchant now mirrors vanilla "no existing same-type" semantics
-        // so external relics/UI behave correctly, but legitimate same-type merge calls must still
-        // be accepted here even though CanEnchant will reject them. Detect that case via
-        // CanStackOnto and bypass the gate when the merge path will run below.
-        bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
-        if (!isStackingExisting && !enchantment.CanEnchant(card))
+        if (!enchantment.CanEnchant(card))
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
