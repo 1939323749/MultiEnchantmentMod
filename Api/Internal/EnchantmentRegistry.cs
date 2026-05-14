@@ -56,7 +56,16 @@ internal static class EnchantmentRegistry
                 LegacyStackApi.RegisterExecutionPolicyProvider(shims.Execution);
             }
 
-            if (entry.OnMergedDelta != null || entry.OnMergedRefresh != null)
+            // Merged-state shim is only meaningful for MergeAmount stacks — the underlying
+            // ApplyMergedAmountDelta / RefreshMergedEnchantmentState helpers in the legacy
+            // support layer short-circuit non-MergeAmount enchantments before consulting any
+            // provider. Skipping the shim outright on the other behaviors prevents
+            // EnchantmentDefinition<T>.Register from installing a no-op shim just because its
+            // trampoline delegates are non-null.
+            bool wantsMergedShim =
+                (entry.OnMergedDelta != null || entry.OnMergedRefresh != null) &&
+                entry.Definition?.Behavior == StackBehavior.MergeAmount;
+            if (wantsMergedShim)
             {
                 shims.Merged = new AdapterMergedStateProvider<TEnchantment> { Entry = entry };
                 LegacyStackApi.RegisterMergedStateProvider(shims.Merged);

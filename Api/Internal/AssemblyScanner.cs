@@ -29,7 +29,7 @@ internal static class AssemblyScanner
     private static readonly object Sync = new();
     private static readonly HashSet<Assembly> ScannedAssemblies = new();
     private static bool _sealed;
-    private static bool _lazyScanCompleted;
+    private static int _lastSeenAssemblyCount;
 
     /// <summary>
     /// Scans <paramref name="assembly"/> for v2 definitions / attributes and v1 providers.
@@ -64,26 +64,43 @@ internal static class AssemblyScanner
     }
 
     /// <summary>
-    /// One-shot lazy scan triggered the first time the v1 <see cref="LegacyStackApi.Resolve*"/>
-    /// helpers run. Walks every loaded assembly that references this mod, then sets the
-    /// "already scanned" flag so subsequent hot-path Resolve calls don't repeat the work.
-    /// Subsequent <see cref="ScanAssembly"/> calls remain effective for late-loaded code.
+    /// Lazy scan triggered from the v1 <see cref="LegacyStackApi.Resolve*"/> helpers. Walks
+    /// every loaded assembly that references this mod and that hasn't been scanned yet.
     /// </summary>
+    /// <remarks>
+    /// Re-runs whenever the <see cref="AppDomain.CurrentDomain"/>'s assembly count grows since
+    /// the previous scan — picks up mods that load AFTER first Resolve without forcing every
+    /// such mod to call <see cref="ScanAssembly"/> explicitly. The hot-path cost is a cheap
+    /// integer compare; only when the count actually grows do we acquire the lock and reflect.
+    /// </remarks>
     public static void EnsureScanned()
     {
-        if (_lazyScanCompleted || _sealed)
+        if (_sealed)
+        {
+            return;
+        }
+
+        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        if (assemblies.Length == _lastSeenAssemblyCount)
         {
             return;
         }
 
         lock (Sync)
         {
-            if (_lazyScanCompleted || _sealed)
+            if (_sealed)
             {
                 return;
             }
 
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            // Re-read in case other threads loaded more assemblies while we waited for the lock.
+            assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            if (assemblies.Length == _lastSeenAssemblyCount)
+            {
+                return;
+            }
+
+            foreach (Assembly assembly in assemblies)
             {
                 if (ScannedAssemblies.Contains(assembly))
                 {
@@ -105,7 +122,7 @@ internal static class AssemblyScanner
                 ScanCore(assembly);
             }
 
-            _lazyScanCompleted = true;
+            _lastSeenAssemblyCount = assemblies.Length;
         }
     }
 
@@ -331,8 +348,14 @@ internal static class AssemblyScanner
 
         if (attribute.MaxVersion > 0 && attribute.MaxVersion < MultiEnchantmentApiVersion.Current)
         {
-            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Scanning {assembly.GetName().Name} which declares MaxVersion={attribute.MaxVersion} but runtime is v{MultiEnchantmentApiVersion.Current}; behavior may drift.");
+            // Suppress the warning for the mod's own assembly — it's authoritatively the
+            // runtime, and if the version bumped the new code edited this attribute too. Any
+            // other assembly genuinely is out-of-date and deserves a heads-up.
+            if (assembly != typeof(MultiEnchantmentApi).Assembly)
+            {
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                    $"[StackApi] Scanning {assembly.GetName().Name} which declares MaxVersion={attribute.MaxVersion} but runtime is v{MultiEnchantmentApiVersion.Current}; behavior may drift.");
+            }
         }
 
         return true;
