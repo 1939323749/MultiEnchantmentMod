@@ -9,9 +9,10 @@ using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
-// Each adapter implements one of the legacy v1 provider interfaces (still public on
-// MultiEnchantmentMod.IEnchantment*Provider<T>) and forwards every call to the v2
-// EnchantmentEntry it was constructed with.
+// Each adapter implements one of the legacy v1 provider interfaces (now internal on
+// MultiEnchantmentMod.IEnchantment*Provider<T> after Step 9) and forwards every call to the
+// v2 EnchantmentEntry it was constructed with. Both the shims and the interfaces live in the
+// main mod assembly, so the internal accessibility is enough for the adapter pipeline to work.
 //
 // The interfaces are generic on T : EnchantmentModel, but EnchantmentEntry erases T to
 // EnchantmentModel for storage. The strong type only matters when registering against the

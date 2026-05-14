@@ -51,7 +51,7 @@ public static class MultiEnchantmentTransformApi
     public static TReplacement CopyCompatibleEnchantments<TReplacement>(CardModel source, TReplacement replacement)
         where TReplacement : CardModel
     {
-        TryCopyCompatibleEnchantments(source, replacement, out _);
+        TryCopyCompatibleEnchantments(source, replacement, out TReplacement _);
         return replacement;
     }
 

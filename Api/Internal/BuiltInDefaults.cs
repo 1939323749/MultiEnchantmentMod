@@ -4,14 +4,19 @@ using LegacyExecutionPolicy = MultiEnchantmentMod.EnchantmentExecutionPolicy;
 namespace MultiEnchantmentMod.Api.Internal;
 
 /// <summary>
-/// Source of default <see cref="StackDefinition"/> / <see cref="LegacyExecutionPolicy"/>
-/// values for unknown enchantment types and for the legacy mod-built-in matrix.
+/// Last-resort defaults consulted by <see cref="EnchantmentDefinition{TEnchantment}"/>'s
+/// virtual fallback chain when the model type carries no <see cref="EnchantmentAttribute"/>
+/// or <see cref="EnchantmentExecutionAttribute"/>. Built-in vanilla enchantments go through
+/// <c>BuiltInRegistrations.RegisterAll()</c> instead, so this only fires for third-party
+/// definition classes whose author left those attributes off the model.
 /// </summary>
 /// <remarks>
-/// Step 1 stub: every type maps to <see cref="StackDefinition.Default"/>. Step 4 will populate
-/// the table by porting <c>MultiEnchantmentStackSupport.GetBuiltInDefinition</c> /
-/// <c>GetBuiltInExecutionPolicy</c> into <c>BuiltInRegistrations.RegisterAll()</c> and routing
-/// the lookups here through the v2 registry.
+/// The defaults are deliberately conservative: <see cref="StackBehavior.DisallowDuplicate"/>
+/// + <see cref="StatusAggregation.AnyInstanceCountsAsOne"/>, and an all-Default execution
+/// policy. If a future refactor wants to consult <c>EnchantmentRegistry</c> here to discover
+/// values previously committed for the same type, this is the place — but doing so would
+/// blur the "registration-time" vs "definition-time" separation, so keep the API simple by
+/// preferring attributes / explicit <see cref="EnchantmentDefinition{TEnchantment}"/> overrides.
 /// </remarks>
 internal static class BuiltInDefaults
 {

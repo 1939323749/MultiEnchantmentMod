@@ -23,10 +23,6 @@ namespace MultiEnchantmentMod.Api;
 ///     MultiEnchantmentApi.ScanCallingAssembly();
 /// }
 /// </code>
-/// <para>
-/// Scan methods are wired up in Step 3 of the v2 rollout; right now the facade exposes the
-/// fluent builder and the version-check helper.
-/// </para>
 /// </remarks>
 public static class MultiEnchantmentApi
 {

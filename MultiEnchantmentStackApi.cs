@@ -260,29 +260,6 @@ public static class MultiEnchantmentStackApi
         UnregisterProvider(PresentationProviders, provider, typeof(TEnchantment));
     }
 
-    internal static int RegisterCompanionProviders<TEnchantment>(Assembly? assembly = null)
-        where TEnchantment : EnchantmentModel
-    {
-        return RegisterCompanionProviders(typeof(TEnchantment), assembly);
-    }
-
-    internal static int RegisterCompanionProviders(Type enchantmentType, Assembly? assembly = null)
-    {
-        ArgumentNullException.ThrowIfNull(enchantmentType);
-        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
-        {
-            throw new ArgumentException(
-                $"Companion providers can only target {nameof(EnchantmentModel)} types.",
-                nameof(enchantmentType));
-        }
-
-        Assembly targetAssembly = assembly ?? enchantmentType.Assembly;
-        lock (DiscoveryLock)
-        {
-            return DiscoverProvidersFromAssembly(targetAssembly, enchantmentType);
-        }
-    }
-
     internal static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
@@ -436,28 +413,6 @@ public static class MultiEnchantmentStackApi
         }
 
         return registeredCount;
-    }
-
-    private static bool CouldContainStackProviders(Assembly assembly)
-    {
-        Assembly apiAssembly = typeof(MultiEnchantmentStackApi).Assembly;
-        if (assembly == apiAssembly)
-        {
-            return true;
-        }
-
-        try
-        {
-            return assembly.GetReferencedAssemblies()
-                .Any(reference => string.Equals(
-                    reference.Name,
-                    apiAssembly.GetName().Name,
-                    StringComparison.Ordinal));
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static List<(Type InterfaceType, Type EnchantmentType)> GetSupportedProviderInterfaces(Type type)
