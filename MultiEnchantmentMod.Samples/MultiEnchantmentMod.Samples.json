@@ -1,0 +1,12 @@
+{
+  "id": "MultiEnchantmentMod.Samples",
+  "name": "MultiEnchantmentMod Samples",
+  "author": "Snowline",
+  "description": "Reference samples for MultiEnchantmentMod's v2 stacking API. Defines throwaway enchantment classes that are NOT registered with the game's model database; the assembly is here solely as a compilable cookbook for third-party mods.",
+  "version": "v2.0.0",
+  "has_pck": false,
+  "has_dll": true,
+  "dependencies": ["MultiEnchantmentMod"],
+  "affects_gameplay": false,
+  "min_game_version": "0.105.1"
+}

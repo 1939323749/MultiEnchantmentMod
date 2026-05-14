@@ -87,10 +87,17 @@
         <Compile Remove="materials/**"/>
         <Compile Remove="shaders/**"/>
         <Compile Remove="images/**"/>
+        <!-- Sibling sub-projects own their own .cs files. -->
+        <Compile Remove="MultiEnchantmentMod.Samples/**"/>
+        <Compile Remove="MultiEnchantmentMod.Analyzers/**"/>
         <EmbeddedResource Remove="MultiEnchantmentMod/**"/>
         <EmbeddedResource Remove="materials/**"/>
         <EmbeddedResource Remove="shaders/**"/>
         <EmbeddedResource Remove="images/**"/>
+        <EmbeddedResource Remove="MultiEnchantmentMod.Samples/**"/>
+        <EmbeddedResource Remove="MultiEnchantmentMod.Analyzers/**"/>
+        <None Remove="MultiEnchantmentMod.Samples/**"/>
+        <None Remove="MultiEnchantmentMod.Analyzers/**"/>
     </ItemGroup>
 
     <ItemGroup>
