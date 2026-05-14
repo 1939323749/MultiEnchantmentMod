@@ -169,7 +169,6 @@ public static class MultiEnchantmentStackApi
     private static readonly List<IExecutionPolicyProviderRegistration> ExecutionPolicyProviders = new();
     private static readonly List<IKeywordSourceProviderRegistration> KeywordProviders = new();
     private static readonly List<IPresentationProviderRegistration> PresentationProviders = new();
-    private static int _lastAssemblyCount = -1;
 
     public static void RegisterDefinitionProvider<TEnchantment>(
         IEnchantmentStackDefinitionProvider<TEnchantment> provider)
@@ -328,54 +327,45 @@ public static class MultiEnchantmentStackApi
 
     internal static IStackDefinitionProviderRegistration? ResolveDefinitionProvider(Type enchantmentType)
     {
-        DiscoverProvidersFromLoadedAssemblies();
+        Api.Internal.AssemblyScanner.EnsureScanned();
         return ResolveSingleProvider(DefinitionProviders, enchantmentType);
     }
 
     internal static IMergedStateProviderRegistration? ResolveMergedStateProvider(Type enchantmentType)
     {
-        DiscoverProvidersFromLoadedAssemblies();
+        Api.Internal.AssemblyScanner.EnsureScanned();
         return ResolveSingleProvider(MergedStateProviders, enchantmentType);
     }
 
     internal static IExecutionPolicyProviderRegistration? ResolveExecutionPolicyProvider(Type enchantmentType)
     {
-        DiscoverProvidersFromLoadedAssemblies();
+        Api.Internal.AssemblyScanner.EnsureScanned();
         return ResolveSingleProvider(ExecutionPolicyProviders, enchantmentType);
     }
 
     internal static IEnumerable<IKeywordSourceProviderRegistration> ResolveKeywordProviders(Type enchantmentType)
     {
-        DiscoverProvidersFromLoadedAssemblies();
+        Api.Internal.AssemblyScanner.EnsureScanned();
         return KeywordProviders.Where(provider => provider.EnchantmentType == enchantmentType);
     }
 
     internal static IPresentationProviderRegistration? ResolvePresentationProvider(Type enchantmentType)
     {
-        DiscoverProvidersFromLoadedAssemblies();
+        Api.Internal.AssemblyScanner.EnsureScanned();
         return ResolveSingleProvider(PresentationProviders, enchantmentType);
     }
 
-    private static void DiscoverProvidersFromLoadedAssemblies()
+    /// <summary>
+    /// Scans <paramref name="assembly"/> for v1-style <c>IEnchantment*Provider&lt;T&gt;</c>
+    /// implementers and registers them. Used by the v2 <c>AssemblyScanner</c> to preserve
+    /// backward compatibility for third-party mods built against the legacy surface, until
+    /// Step 9 retires the v1 entry points entirely.
+    /// </summary>
+    internal static int DiscoverV1ProvidersFromAssembly(Assembly assembly)
     {
         lock (DiscoveryLock)
         {
-            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            if (assemblies.Length == _lastAssemblyCount)
-            {
-                return;
-            }
-
-            _lastAssemblyCount = assemblies.Length;
-            foreach (Assembly assembly in assemblies)
-            {
-                if (!CouldContainStackProviders(assembly))
-                {
-                    continue;
-                }
-
-                DiscoverProvidersFromAssembly(assembly);
-            }
+            return DiscoverProvidersFromAssembly(assembly);
         }
     }
 

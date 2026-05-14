@@ -1,5 +1,7 @@
 using System;
 using System.ComponentModel;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api.Internal;
 
@@ -75,6 +77,35 @@ public static class MultiEnchantmentApi
     {
         return CurrentVersion >= minimum;
     }
+
+    /// <summary>
+    /// Scans <paramref name="assembly"/> for v2 enchantment registrations (attribute-tagged
+    /// <see cref="EnchantmentModel"/> subclasses and <see cref="EnchantmentDefinition{TEnchantment}"/>
+    /// subclasses) and legacy v1 provider implementations. Idempotent: re-scanning the same
+    /// assembly does nothing. Returns the number of new registrations performed.
+    /// </summary>
+    public static int ScanAssembly(Assembly assembly) =>
+        AssemblyScanner.ScanAssembly(assembly);
+
+    /// <summary>
+    /// Convenience wrapper that scans the caller's assembly. The recommended integration point
+    /// for third-party mods: call this from <c>[ModInitializer]</c>.
+    /// </summary>
+    public static int ScanCallingAssembly([CallerFilePath] string? _ = null)
+    {
+        // [CallerFilePath] is unused — we resolve the caller via Assembly.GetCallingAssembly().
+        // The parameter exists only so signature-based analyzers / docs distinguish this from
+        // the explicit ScanAssembly overload.
+        return AssemblyScanner.ScanAssembly(Assembly.GetCallingAssembly());
+    }
+
+    /// <summary>
+    /// Freezes the registry. After this call, <see cref="ScanAssembly"/> logs a warning and
+    /// does nothing, and the lazy first-Resolve scan becomes a no-op. Use it once the game has
+    /// entered active gameplay and no further mod loading is expected.
+    /// </summary>
+    public static void SealRegistry() =>
+        AssemblyScanner.Seal();
 
     // --- Advanced read-only snapshot API -----------------------------------------------------
 

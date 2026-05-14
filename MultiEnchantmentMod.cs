@@ -24,6 +24,12 @@ public partial class MultiEnchantmentMod : Node
         MultiEnchantmentSupport.Initialize();
         new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
         PatchThievingHopperPriorities();
+        // Pre-scan our own assembly so any v2 attributes / EnchantmentDefinition<T> classes the
+        // mod itself ships pick up registrations before the first Resolve* call. Third-party
+        // mods are expected to call MultiEnchantmentApi.ScanCallingAssembly() from their own
+        // [ModInitializer]; the v1 lazy fallback in MultiEnchantmentStackApi covers anyone who
+        // forgets.
+        Api.MultiEnchantmentApi.ScanAssembly(Assembly.GetExecutingAssembly());
     }
 
     private static void PatchThievingHopperPriorities()
