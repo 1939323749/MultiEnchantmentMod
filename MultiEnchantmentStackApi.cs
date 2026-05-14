@@ -114,7 +114,7 @@ public sealed record EnchantmentStackSnapshot(
     }
 }
 
-public interface IEnchantmentStackDefinitionProvider<TEnchantment>
+internal interface IEnchantmentStackDefinitionProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     int Priority { get; }
@@ -122,7 +122,7 @@ public interface IEnchantmentStackDefinitionProvider<TEnchantment>
     EnchantmentStackDefinition GetDefinition();
 }
 
-public interface IEnchantmentMergedStateProvider<TEnchantment>
+internal interface IEnchantmentMergedStateProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     int Priority { get; }
@@ -132,7 +132,7 @@ public interface IEnchantmentMergedStateProvider<TEnchantment>
     void RefreshMergedState(TEnchantment enchantment);
 }
 
-public interface IEnchantmentExecutionPolicyProvider<TEnchantment>
+internal interface IEnchantmentExecutionPolicyProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     int Priority { get; }
@@ -140,7 +140,7 @@ public interface IEnchantmentExecutionPolicyProvider<TEnchantment>
     EnchantmentExecutionPolicy GetExecutionPolicy();
 }
 
-public interface IEnchantmentKeywordSourceProvider<TEnchantment>
+internal interface IEnchantmentKeywordSourceProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     int Priority { get; }
@@ -150,7 +150,7 @@ public interface IEnchantmentKeywordSourceProvider<TEnchantment>
     int GetKeywordSourceAmount(EnchantmentStackSnapshot snapshot, CardKeyword keyword);
 }
 
-public interface IEnchantmentPresentationProvider<TEnchantment>
+internal interface IEnchantmentPresentationProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     int Priority { get; }
@@ -170,7 +170,7 @@ public static class MultiEnchantmentStackApi
     private static readonly List<IKeywordSourceProviderRegistration> KeywordProviders = new();
     private static readonly List<IPresentationProviderRegistration> PresentationProviders = new();
 
-    public static void RegisterDefinitionProvider<TEnchantment>(
+    internal static void RegisterDefinitionProvider<TEnchantment>(
         IEnchantmentStackDefinitionProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
@@ -181,14 +181,14 @@ public static class MultiEnchantmentStackApi
             "definition");
     }
 
-    public static void UnregisterDefinitionProvider<TEnchantment>(
+    internal static void UnregisterDefinitionProvider<TEnchantment>(
         IEnchantmentStackDefinitionProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
         UnregisterProvider(DefinitionProviders, provider, typeof(TEnchantment));
     }
 
-    public static void RegisterMergedStateProvider<TEnchantment>(
+    internal static void RegisterMergedStateProvider<TEnchantment>(
         IEnchantmentMergedStateProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
@@ -199,14 +199,14 @@ public static class MultiEnchantmentStackApi
             "merged-state");
     }
 
-    public static void UnregisterMergedStateProvider<TEnchantment>(
+    internal static void UnregisterMergedStateProvider<TEnchantment>(
         IEnchantmentMergedStateProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
         UnregisterProvider(MergedStateProviders, provider, typeof(TEnchantment));
     }
 
-    public static void RegisterExecutionPolicyProvider<TEnchantment>(
+    internal static void RegisterExecutionPolicyProvider<TEnchantment>(
         IEnchantmentExecutionPolicyProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
@@ -217,14 +217,14 @@ public static class MultiEnchantmentStackApi
             "execution-policy");
     }
 
-    public static void UnregisterExecutionPolicyProvider<TEnchantment>(
+    internal static void UnregisterExecutionPolicyProvider<TEnchantment>(
         IEnchantmentExecutionPolicyProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
         UnregisterProvider(ExecutionPolicyProviders, provider, typeof(TEnchantment));
     }
 
-    public static void RegisterKeywordProvider<TEnchantment>(
+    internal static void RegisterKeywordProvider<TEnchantment>(
         IEnchantmentKeywordSourceProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
@@ -235,14 +235,14 @@ public static class MultiEnchantmentStackApi
             "keyword");
     }
 
-    public static void UnregisterKeywordProvider<TEnchantment>(
+    internal static void UnregisterKeywordProvider<TEnchantment>(
         IEnchantmentKeywordSourceProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
         UnregisterProvider(KeywordProviders, provider, typeof(TEnchantment));
     }
 
-    public static void RegisterPresentationProvider<TEnchantment>(
+    internal static void RegisterPresentationProvider<TEnchantment>(
         IEnchantmentPresentationProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
@@ -253,20 +253,20 @@ public static class MultiEnchantmentStackApi
             "presentation");
     }
 
-    public static void UnregisterPresentationProvider<TEnchantment>(
+    internal static void UnregisterPresentationProvider<TEnchantment>(
         IEnchantmentPresentationProvider<TEnchantment> provider)
         where TEnchantment : EnchantmentModel
     {
         UnregisterProvider(PresentationProviders, provider, typeof(TEnchantment));
     }
 
-    public static int RegisterCompanionProviders<TEnchantment>(Assembly? assembly = null)
+    internal static int RegisterCompanionProviders<TEnchantment>(Assembly? assembly = null)
         where TEnchantment : EnchantmentModel
     {
         return RegisterCompanionProviders(typeof(TEnchantment), assembly);
     }
 
-    public static int RegisterCompanionProviders(Type enchantmentType, Assembly? assembly = null)
+    internal static int RegisterCompanionProviders(Type enchantmentType, Assembly? assembly = null)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
         if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
@@ -283,36 +283,36 @@ public static class MultiEnchantmentStackApi
         }
     }
 
-    public static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
+    internal static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
         return MultiEnchantmentStackSupport.GetDefinition(enchantmentType);
     }
 
-    public static EnchantmentExecutionPolicy GetExecutionPolicy(Type enchantmentType)
+    internal static EnchantmentExecutionPolicy GetExecutionPolicy(Type enchantmentType)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
         return MultiEnchantmentStackSupport.GetExecutionPolicy(enchantmentType);
     }
 
-    public static HookExecutionMode GetExecutionMode(Type enchantmentType, EnchantmentHookKind hookKind)
+    internal static HookExecutionMode GetExecutionMode(Type enchantmentType, EnchantmentHookKind hookKind)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
         return MultiEnchantmentStackSupport.GetExecutionMode(enchantmentType, hookKind);
     }
 
-    public static EnchantmentStackSnapshot GetSnapshot(EnchantmentModel enchantment)
+    internal static EnchantmentStackSnapshot GetSnapshot(EnchantmentModel enchantment)
     {
         ArgumentNullException.ThrowIfNull(enchantment);
         return MultiEnchantmentStackSupport.GetSnapshot(enchantment);
     }
 
-    public static IReadOnlyList<EnchantmentStackSnapshot> GetSnapshots(CardModel? card)
+    internal static IReadOnlyList<EnchantmentStackSnapshot> GetSnapshots(CardModel? card)
     {
         return MultiEnchantmentStackSupport.GetSnapshots(card);
     }
 
-    public static int GetHookExecutionCount(EnchantmentModel enchantment, EnchantmentHookKind hookKind)
+    internal static int GetHookExecutionCount(EnchantmentModel enchantment, EnchantmentHookKind hookKind)
     {
         ArgumentNullException.ThrowIfNull(enchantment);
         EnchantmentStackSnapshot snapshot = GetSnapshot(enchantment);
