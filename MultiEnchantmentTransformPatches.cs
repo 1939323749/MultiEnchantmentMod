@@ -18,6 +18,7 @@ internal static class MultiEnchantmentTransformPatches
 
     [HarmonyPatch(typeof(ArchaicTooth), "GetTranscendenceTransformedCard")]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool ArchaicToothPrefix(ArchaicTooth __instance, CardModel starterCard, ref CardModel __result)
     {
         // Base-game source: ArchaicTooth.GetTranscendenceTransformedCard.
@@ -37,6 +38,7 @@ internal static class MultiEnchantmentTransformPatches
 
     [HarmonyPatch(typeof(Claws), "CreateMaulFromOriginal")]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool ClawsPrefix(Claws __instance, CardModel original, bool forPreview, ref CardModel __result)
     {
         // Base-game source: Claws.CreateMaulFromOriginal.

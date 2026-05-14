@@ -18,6 +18,7 @@ internal static class MultiEnchantmentStackPatches
 {
     [HarmonyPatch(typeof(Glam), nameof(Glam.EnchantPlayCount))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool GlamEnchantPlayCountPrefix(Glam __instance, int originalPlayCount, ref int __result)
     {
         int result = __instance.Status == EnchantmentStatus.Disabled
@@ -32,6 +33,7 @@ internal static class MultiEnchantmentStackPatches
 
     [HarmonyPatch(typeof(Spiral), nameof(Spiral.EnchantPlayCount))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool SpiralEnchantPlayCountPrefix(Spiral __instance, int originalPlayCount, ref int __result)
     {
         int result = originalPlayCount + __instance.Amount;
@@ -44,6 +46,7 @@ internal static class MultiEnchantmentStackPatches
 
     [HarmonyPatch(typeof(Slither), nameof(Slither.AfterCardDrawn))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool SlitherAfterCardDrawnPrefix(Slither __instance, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw, ref Task __result)
     {
         MultiEnchantmentMod.Logger.Info(
@@ -65,6 +68,7 @@ internal static class MultiEnchantmentStackPatches
 
     [HarmonyPatch(typeof(Imbued), nameof(Imbued.AfterAutoPrePlayPhaseEntered))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool ImbuedAfterAutoPrePlayPhaseEnteredPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
         MultiEnchantmentMod.Logger.Info(
@@ -86,6 +90,7 @@ internal static class MultiEnchantmentStackPatches
 
     [HarmonyPatch(typeof(SlumberingEssence), nameof(SlumberingEssence.BeforeFlush))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool SlumberingEssenceBeforeFlushPrefix(
         SlumberingEssence __instance,
         PlayerChoiceContext choiceContext,

@@ -45,59 +45,54 @@ internal static class MultiEnchantmentPatches
     private static readonly FieldInfo? NCardEnchantVfxIconField =
         AccessTools.Field(typeof(NCardEnchantVfx), "_enchantmentIcon");
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant))]
-    [HarmonyPrefix]
-    private static bool CanEnchantPrefix(EnchantmentModel __instance, CardModel card, ref bool __result)
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void CanEnchantPostfix(EnchantmentModel __instance, CardModel card, ref bool __result)
     {
         // Base-game source: EnchantmentModel.CanEnchant.
-        // Keep this logic aligned with vanilla except for allowing stackable duplicates across
-        // primary + extra enchantment slots.
+        // Run as a postfix so other mods' prefixes / transpilers on CanEnchant can take effect:
+        //   - If vanilla allowed it, tighten with the mod's PassesAdditionalCanEnchantRules.
+        //   - If vanilla rejected it ONLY because of the "same enchantment type already present"
+        //     clause, re-allow when the stack behavior permits duplicates. All other vanilla
+        //     rejection reasons are re-checked to make sure we don't override unrelated rejections
+        //     from vanilla or upstream patches.
+
+        if (__result)
+        {
+            if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card))
+            {
+                __result = false;
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] CanEnchant postfix tightening. " +
+                    $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=AdditionalRules");
+            }
+            return;
+        }
+
+        // Re-verify the non-stack vanilla rejection reasons; if any of them still fail, leave
+        // __result alone so unrelated rejections (from vanilla or other patches) survive.
         CardType type = card.Type;
-        if (type is CardType.Status or CardType.Curse or CardType.Quest)
-        {
-            __result = false;
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting EnchantmentModel.CanEnchant. " +
-                $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=CardType.{type}");
-            return false;
-        }
-
-        if (!__instance.CanEnchantCardType(card.Type))
-        {
-            __result = false;
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting EnchantmentModel.CanEnchant. " +
-                $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=CanEnchantCardType");
-            return false;
-        }
-
+        if (type is CardType.Status or CardType.Curse or CardType.Quest) return;
+        if (!__instance.CanEnchantCardType(type)) return;
         CardPile? pile = card.Pile;
-        if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable))
-        {
-            __result = false;
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting EnchantmentModel.CanEnchant. " +
-                $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=UnplayableInDeck");
-            return false;
-        }
+        if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return;
+        if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card)) return;
 
-        if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card))
+        // All other vanilla checks pass. The only remaining reason vanilla could have rejected is
+        // the "same enchantment already exists" clause — re-enable iff mod's stack policy permits.
+        bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
+        if (relaxed)
         {
-            __result = false;
+            __result = true;
             MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting EnchantmentModel.CanEnchant. " +
-                $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=AdditionalRules");
-            return false;
+                $"[MultiEnchantment] CanEnchant postfix re-allowed via stack policy. " +
+                $"Card={card.Id} Enchantment={__instance.Id}");
         }
-
-        __result = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting EnchantmentModel.CanEnchant. " +
-            $"Card={card.Id} Enchantment={__instance.Id} Result={__result}");
-        return false;
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Enchant), new[] { typeof(EnchantmentModel), typeof(CardModel), typeof(decimal) })]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool EnchantPrefix(EnchantmentModel enchantment, CardModel card, decimal amount, ref EnchantmentModel? __result)
     {
         MultiEnchantmentMod.Logger.Info(
@@ -152,14 +147,23 @@ internal static class MultiEnchantmentPatches
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.GetEnchantedReplayCount))]
-    [HarmonyPrefix]
-    private static bool ReplayCountPrefix(CardModel __instance, ref int __result)
+    [HarmonyPostfix]
+    private static void ReplayCountPostfix(CardModel __instance, ref int __result)
     {
+        // Stay out of the way when the mod has nothing to add: vanilla already computed
+        // primary.EnchantPlayCount(BaseReplayCount), which equals the mod's result whenever there
+        // are no extras and no merged-slice metadata. Keeping this as a postfix (instead of a
+        // prefix-replace) lets other mods' prefixes / transpilers on GetEnchantedReplayCount run
+        // normally.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
+        {
+            return;
+        }
+
         __result = MultiEnchantmentSupport.GetReplayCount(__instance);
         MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CardModel.GetEnchantedReplayCount. " +
+            $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
             $"Card={__instance.Id} Result={__result}");
-        return false;
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.ToSerializable))]
@@ -232,6 +236,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn", new[] { typeof(Player), typeof(HookPlayerChoiceContext) })]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool SetupPlayerTurnPrefix(
         CombatManager __instance,
         Player player,
@@ -257,8 +262,9 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.ModifyBlock))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool HookModifyBlockPrefix(
-        CombatState combatState,
+        ICombatState combatState,
         Creature target,
         decimal block,
         ValueProp props,
@@ -270,6 +276,15 @@ internal static class MultiEnchantmentPatches
         // Base-game source: Hook.ModifyBlock.
         // Vanilla applies only cardSource.Enchantment; we fold in every enchantment on the card
         // before preserving the original additive -> multiplicative listener order.
+
+        // Fast path: when the card has no extra enchantments and no multi-slice merged primary,
+        // vanilla and the mod produce identical results. Defer to vanilla so other mods' patches
+        // on Hook.ModifyBlock still take effect.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting Hook.ModifyBlock. " +
             $"CardSource={cardSource?.Id} Block={block}");
@@ -313,6 +328,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.ModifyDamage))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool HookModifyDamagePrefix(
         IRunState runState,
         ICombatState? combatState,
@@ -329,6 +345,15 @@ internal static class MultiEnchantmentPatches
         // Base-game source: Hook.ModifyDamage.
         // Vanilla applies only the primary enchantment; this patch extends that to all enchantments
         // while preserving the vanilla multi-target preview behavior and listener ordering.
+
+        // Fast path: when the card has no extras and no multi-slice primary, vanilla's single
+        // primary-enchantment call equals the mod's per-slice loop. Defer to vanilla so other
+        // mods' patches on Hook.ModifyDamage still take effect.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting Hook.ModifyDamage. " +
             $"CardSource={cardSource?.Id} Damage={damage} PreviewMode={previewMode}");
@@ -403,32 +428,16 @@ internal static class MultiEnchantmentPatches
         }
     }
 
-    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardPlayed))]
-    [HarmonyPrefix]
-    private static bool HookAfterCardPlayedPrefix(CombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay, ref Task __result)
-    {
-        // Base-game source: Hook.AfterCardPlayed.
-        // Restore vanilla listener order exactly. Extra enchantment OnPlay execution now happens in
-        // the CardModel.OnPlayWrapper patch at the same timing as the primary enchantment OnPlay.
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Hook.AfterCardPlayed. " +
-            $"Card={cardPlay.Card?.Id} Target={cardPlay.Target}");
-        try
-        {
-            __result = HookAfterCardPlayedVanilla(combatState, choiceContext, cardPlay);
-            return false;
-        }
-        catch (Exception ex)
-        {
-            MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Hook.AfterCardPlayed failed for Card={cardPlay.Card?.Id}. " +
-                $"Falling back to base-game implementation. Error: {ex}");
-            return true;
-        }
-    }
+    // NOTE: Hook.AfterCardPlayed is intentionally NOT patched. The mod previously had a
+    // prefix-replace here so it could inject extra-enchantment OnPlay calls, but that work moved
+    // into CardModel.OnPlayWrapper after extra enchantments became visible via the
+    // CombatState.IterateHookListeners postfix. Leaving the original prefix in place would just
+    // short-circuit any other mod's prefix/transpiler on this hook without doing anything
+    // different from vanilla, so it was removed for compatibility.
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.OnPlayWrapper))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool CardModelOnPlayWrapperPrefix(
         CardModel __instance,
         PlayerChoiceContext choiceContext,
@@ -474,6 +483,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Goopy), nameof(Goopy.AfterCardPlayed))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool GoopyAfterCardPlayedPrefix(Goopy __instance, PlayerChoiceContext choiceContext, CardPlay cardPlay, ref Task __result)
     {
         // Base-game source: Goopy.AfterCardPlayed.
@@ -523,8 +533,15 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(DamageVar), nameof(DamageVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool DamageVarUpdateCardPreviewPrefix(DamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
+        // Fast path: card has no mod-specific enchant state, vanilla preview is equivalent.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting DamageVar.UpdateCardPreview. " +
             $"Card={card.Id} BaseValue={__instance.BaseValue} PreviewMode={previewMode}");
@@ -552,8 +569,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(BlockVar), nameof(BlockVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool BlockVarUpdateCardPreviewPrefix(BlockVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting BlockVar.UpdateCardPreview. " +
             $"Card={card.Id} BaseValue={__instance.BaseValue} PreviewMode={previewMode}");
@@ -581,6 +604,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(CalculatedDamageVar), nameof(CalculatedDamageVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool CalculatedDamageVarUpdateCardPreviewPrefix(
         CalculatedDamageVar __instance,
         CardModel card,
@@ -591,6 +615,11 @@ internal static class MultiEnchantmentPatches
         // Base-game source: CalculatedDamageVar.UpdateCardPreview.
         // The important invariant here is "apply enchantments exactly once": first to the base var
         // used by Calculate(), then only run non-enchantment global hooks on the calculated result.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting CalculatedDamageVar.UpdateCardPreview. " +
             $"Card={card.Id} PreviewMode={previewMode}");
@@ -615,7 +644,7 @@ internal static class MultiEnchantmentPatches
             decimal value = __instance.Calculate(target);
             if (runGlobalHooks)
             {
-                CombatState? combatState = (card.CombatState ?? card.Owner.Creature.CombatState) as CombatState;
+                ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
                 List<AbstractModel> modifiers = new();
                 value = ModifyDamageInternal(
                     card.Owner.RunState,
@@ -647,6 +676,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(CalculatedBlockVar), nameof(CalculatedBlockVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool CalculatedBlockVarUpdateCardPreviewPrefix(
         CalculatedBlockVar __instance,
         CardModel card,
@@ -657,6 +687,11 @@ internal static class MultiEnchantmentPatches
         // Base-game source: CalculatedBlockVar.UpdateCardPreview.
         // Keep this in sync with the damage variant above: enchant the calculated base once, then
         // feed the calculated value through the remaining global block modifiers.
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting CalculatedBlockVar.UpdateCardPreview. " +
             $"Card={card.Id} PreviewMode={previewMode}");
@@ -680,7 +715,7 @@ internal static class MultiEnchantmentPatches
             decimal value = __instance.Calculate(target);
             if (runGlobalHooks)
             {
-                CombatState? combatState = (card.CombatState ?? card.Owner.Creature.CombatState) as CombatState;
+                ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
                 value = ModifyBlockInternal(combatState, card.Owner.Creature, value, __instance.Props, card, null, new List<AbstractModel>());
             }
             else if (!card.IsEnchantmentPreview)
@@ -702,6 +737,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(ExtraDamageVar), nameof(ExtraDamageVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool ExtraDamageVarUpdateCardPreviewPrefix(
         ExtraDamageVar __instance,
         CardModel card,
@@ -709,6 +745,11 @@ internal static class MultiEnchantmentPatches
         Creature? target,
         bool runGlobalHooks)
     {
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, ValueProp.Move, ModifyDamageHookType.Multiplicative);
         if (!card.IsEnchantmentPreview)
         {
@@ -728,8 +769,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(OstyDamageVar), nameof(OstyDamageVar.UpdateCardPreview))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool OstyDamageVarUpdateCardPreviewPrefix(OstyDamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return true;
+        }
+
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
         if (!card.IsEnchantmentPreview)
         {
@@ -745,7 +792,7 @@ internal static class MultiEnchantmentPatches
 
         if (runGlobalHooks)
         {
-            CombatState? combatState = (card.CombatState ?? card.Owner.Creature.CombatState) as CombatState;
+            ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
             value = Hook.ModifyDamage(card.Owner.RunState, combatState, target, card.Owner.Osty, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
         }
 
@@ -755,6 +802,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(NEnchantPreview), nameof(NEnchantPreview.Init))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool EnchantPreviewPrefix(NEnchantPreview __instance, CardModel card, EnchantmentModel canonicalEnchantment, int amount)
     {
         // Base-game source: NEnchantPreview.Init.
@@ -932,6 +980,7 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(CloneRestSiteOption), nameof(CloneRestSiteOption.OnSelect))]
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool CloneRestSiteOptionPrefix(CloneRestSiteOption __instance, ref Task<bool> __result)
     {
         // Base-game source: CloneRestSiteOption.OnSelect.
@@ -1097,30 +1146,8 @@ internal static class MultiEnchantmentPatches
         return value;
     }
 
-    private static async Task HookAfterCardPlayedVanilla(
-        CombatState combatState,
-        PlayerChoiceContext choiceContext,
-        CardPlay cardPlay)
-    {
-        foreach (AbstractModel model in combatState.IterateHookListeners())
-        {
-            choiceContext.PushModel(model);
-            await model.AfterCardPlayed(choiceContext, cardPlay);
-            model.InvokeExecutionFinished();
-            choiceContext.PopModel(model);
-        }
-
-        foreach (AbstractModel model in combatState.IterateHookListeners())
-        {
-            choiceContext.PushModel(model);
-            await model.AfterCardPlayedLate(choiceContext, cardPlay);
-            model.InvokeExecutionFinished();
-            choiceContext.PopModel(model);
-        }
-    }
-
     private static decimal ModifyBlockInternal(
-        CombatState combatState,
+        ICombatState? combatState,
         Creature target,
         decimal block,
         ValueProp props,
@@ -1129,6 +1156,12 @@ internal static class MultiEnchantmentPatches
         List<AbstractModel> modifiers)
     {
         decimal value = block;
+        if (combatState == null)
+        {
+            // No combat state available (e.g., out-of-combat preview): skip the listener pass
+            // entirely, matching vanilla Hook.ModifyBlock which would otherwise NRE on null.
+            return Math.Max(0m, value);
+        }
 
         foreach (AbstractModel model in combatState.IterateHookListeners())
         {
@@ -1230,6 +1263,7 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
     }
 
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
     private static bool CardGroupKeyEqualsPrefix(object __instance, object? obj, ref bool __result)
     {
         // Base-game source: NMultiplayerPlayerExpandedState.CardGroupKey.Equals.
@@ -1267,6 +1301,7 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
         }
 
         [HarmonyPrefix]
+        [HarmonyPriority(Priority.Low)]
         private static bool Prefix(object __instance, ref int __result)
         {
             if (!TryGetCardFromGroupKey(__instance, out CardModel? card))

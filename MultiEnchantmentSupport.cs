@@ -158,6 +158,36 @@ internal static class MultiEnchantmentSupport
         return card?.Enchantment != null || GetAdditionalEnchantments(card).Count > 0;
     }
 
+    /// <summary>
+    /// Returns true when the mod's per-card multi-enchantment logic can produce a different
+    /// result than vanilla. Used by Harmony prefixes/postfixes to short-circuit back to the
+    /// vanilla implementation when the mod has nothing to contribute, so that other mods'
+    /// patches on the same method can take effect normally.
+    /// </summary>
+    public static bool RequiresMultiEnchantmentLogic(CardModel? card)
+    {
+        if (card == null)
+        {
+            return false;
+        }
+
+        if (GetAdditionalEnchantments(card).Count > 0)
+        {
+            return true;
+        }
+
+        // Primary enchantment with multi-slice merged stack metadata needs the per-slice path.
+        EnchantmentModel? primary = card.Enchantment;
+        if (primary != null &&
+            MultiEnchantmentStackSupport.TryGetMergedStackAmounts(primary, out int[] slices) &&
+            slices.Length > 1)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     public static int GetReplayCount(CardModel card)
     {
         int replayCount = card.BaseReplayCount;
@@ -988,7 +1018,7 @@ internal static class MultiEnchantmentSupport
         // Base-game source: CardModel.OnPlayWrapper in STS2 v0.99.1.
         // This copy stays intentionally close to vanilla. The only functional change is inserting
         // extra-enchantment OnPlay execution immediately after the primary enchantment OnPlay.
-        CombatState combatState = (CombatState)card.CombatState!;
+        ICombatState combatState = card.CombatState!;
         choiceContext.PushModel(card);
         await CombatManager.Instance.WaitForUnpause();
         SetCurrentTargetForMultiEnchantmentPatch(card, target);
