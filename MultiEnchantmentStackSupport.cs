@@ -291,18 +291,10 @@ internal static class MultiEnchantmentStackSupport
             return;
         }
 
-        // Base-game source: EnchantmentModel.ModifyCard triggers both OnEnchant() and
-        // RecalculateValues(). For merged stacks we must not blindly replay OnEnchant() for every
-        // enchantment type, because several stackable enchantments are represented as one merged
-        // instance whose ongoing state is derived from Amount or from custom mod-side refresh
-        // logic. Apply only the stack-specific delta side effects that are actually required.
-        if (enchantment is Instinct instinct)
-        {
-            for (int i = 0; i < addedAmount; i++)
-            {
-                instinct.Card.EnergyCost.UpgradeBy(-1);
-            }
-        }
+        // Fallback for enchantment types that haven't registered an OnMergedDelta. The v2
+        // BuiltInRegistrations covers every built-in type that needs special behavior (Instinct
+        // gets its -1 energy cost via OnMergedDelta); unknown third-party types reach this
+        // branch and do nothing, which matches v1 behavior for non-Instinct merge-amount types.
     }
 
     public static void RefreshMergedEnchantmentState(EnchantmentModel enchantment)
@@ -313,14 +305,10 @@ internal static class MultiEnchantmentStackSupport
             return;
         }
 
-        // Base-game source: EnchantmentModel.ModifyCard.
-        // Keep the recalculation half of ModifyCard without re-running generic OnEnchant().
+        // Fallback when no v2 OnMergedRefresh is wired up. Built-in Glam / Spiral install the
+        // `DynamicVars["Times"] = Amount` resync explicitly via BuiltInRegistrations; this path
+        // is the generic "recalculate values" shape from vanilla EnchantmentModel.ModifyCard.
         enchantment.RecalculateValues();
-        if (enchantment is Glam or Spiral)
-        {
-            enchantment.DynamicVars["Times"].BaseValue = enchantment.Amount;
-        }
-
         enchantment.Card.DynamicVars.RecalculateForUpgradeOrEnchant();
     }
 
@@ -414,88 +402,34 @@ internal static class MultiEnchantmentStackSupport
 
     private static int GetBuiltInKeywordSourceAmount(EnchantmentStackSnapshot snapshot, CardKeyword keyword)
     {
-        return (snapshot.EnchantmentType, keyword) switch
-        {
-            ({ } type, CardKeyword.Exhaust) when type == typeof(Goopy) => snapshot.ActiveInstanceCount,
-            ({ } type, CardKeyword.Exhaust) when type == typeof(SoulsPower) => -snapshot.ActiveTotalAmount,
-            ({ } type, CardKeyword.Retain) when type == typeof(Steady) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
-            ({ } type, CardKeyword.Retain) when type == typeof(RoyallyApproved) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
-            ({ } type, CardKeyword.Innate) when type == typeof(RoyallyApproved) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
-            ({ } type, CardKeyword.Eternal) when type == typeof(TezcatarasEmber) => snapshot.ActiveInstanceCount > 0 ? 1 : 0,
-            _ => 0,
-        };
+        // All built-in keyword sources (Goopy/SoulsPower → Exhaust, Steady/RoyallyApproved →
+        // Retain, RoyallyApproved → Innate, TezcatarasEmber → Eternal) now flow through v2
+        // BuiltInRegistrations.TrackKeyword(...) instead. Fallback returns 0 so unknown
+        // third-party types not yet ported don't contribute spurious keyword amounts.
+        _ = snapshot;
+        _ = keyword;
+        return 0;
     }
 
     private static IEnumerable<CardKeyword> GetBuiltInTrackedKeywords(Type enchantmentType)
     {
-        if (enchantmentType == typeof(Goopy) || enchantmentType == typeof(SoulsPower))
-        {
-            return new[] { CardKeyword.Exhaust };
-        }
-
-        if (enchantmentType == typeof(Steady))
-        {
-            return new[] { CardKeyword.Retain };
-        }
-
-        if (enchantmentType == typeof(RoyallyApproved))
-        {
-            return new[] { CardKeyword.Innate, CardKeyword.Retain };
-        }
-
-        if (enchantmentType == typeof(TezcatarasEmber))
-        {
-            return new[] { CardKeyword.Eternal };
-        }
-
+        // Same shape as GetBuiltInKeywordSourceAmount: every built-in tracked keyword now goes
+        // through v2 BuiltInRegistrations. Returning an empty set lets the v2 provider be the
+        // single source of truth (HashSet.UnionWith in GetTrackedKeywords still dedupes
+        // gracefully, but eliminating the duplicate prevents double-counting from any v2 source
+        // that ports a built-in type with custom semantics).
+        _ = enchantmentType;
         return Array.Empty<CardKeyword>();
     }
 
     private static EnchantmentStackDefinition GetBuiltInDefinition(Type enchantmentType)
     {
-        // Mod source: explicit duplicate-enchantment policy for multi-enchantment support.
-        // The rule is "merge gameplay state only when the merged representation is semantically
-        // correct, then expand UI badges from the merged amount".
-        if (enchantmentType == typeof(Adroit) ||
-            enchantmentType == typeof(Clone) ||
-            enchantmentType == typeof(Glam) ||
-            enchantmentType == typeof(Imbued) ||
-            enchantmentType == typeof(Instinct) ||
-            enchantmentType == typeof(Momentum) ||
-            enchantmentType == typeof(Nimble) ||
-            enchantmentType == typeof(Sharp) ||
-            enchantmentType == typeof(Slither) ||
-            enchantmentType == typeof(SlumberingEssence) ||
-            enchantmentType == typeof(SoulsPower) ||
-            enchantmentType == typeof(Sown) ||
-            enchantmentType == typeof(Spiral) ||
-            enchantmentType == typeof(Swift) ||
-            enchantmentType == typeof(Vigorous))
-        {
-            return new EnchantmentStackDefinition(
-                EnchantmentStackBehavior.MergeAmount,
-                EnchantmentStatusAggregation.Shared);
-        }
-
-        if (enchantmentType == typeof(Goopy))
-        {
-            // Goopy's Amount is live gameplay state that grows after each play. Keeping one Goopy
-            // instance per stack preserves correct Exhaust netting and permanent block growth.
-            return new EnchantmentStackDefinition(
-                EnchantmentStackBehavior.DuplicateInstance,
-                EnchantmentStatusAggregation.PerInstance);
-        }
-
-        if (enchantmentType == typeof(PerfectFit) ||
-            enchantmentType == typeof(RoyallyApproved) ||
-            enchantmentType == typeof(Steady) ||
-            enchantmentType == typeof(TezcatarasEmber))
-        {
-            return new EnchantmentStackDefinition(
-                EnchantmentStackBehavior.ExistenceStack,
-                EnchantmentStatusAggregation.PresenceOnly);
-        }
-
+        // Every built-in MegaCrit enchantment is now registered via the v2 path in
+        // Api.Internal.BuiltInRegistrations.RegisterAll(), so this fallback only runs for
+        // third-party enchantment types whose author hasn't supplied a v2 registration
+        // (attribute, EnchantmentDefinition<T>, or fluent builder). Refuse duplicates by
+        // default; mods that want stacking opt in explicitly.
+        _ = enchantmentType;
         return new EnchantmentStackDefinition(
             EnchantmentStackBehavior.DisallowDuplicate,
             EnchantmentStatusAggregation.PresenceOnly);
