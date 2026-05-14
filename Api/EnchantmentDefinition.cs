@@ -81,11 +81,14 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     }
 
     /// <summary>
-    /// Returns the per-hook execution policy. Defaults read from
+    /// Returns the per-hook execution policy when this definition needs to override the
+    /// runtime's built-in modes for its <see cref="StackBehavior"/>. Defaults read from
     /// <see cref="EnchantmentExecutionAttribute"/> on either the enchantment type or the
-    /// definition subclass; otherwise falls back to the built-in matrix.
+    /// definition subclass; <c>null</c> means "don't install a custom policy", which lets
+    /// <c>MultiEnchantmentStackSupport.GetExecutionPolicy</c> use the behavior-derived
+    /// defaults from <see cref="MultiEnchantmentStackSupport"/>'s switch.
     /// </summary>
-    public virtual LegacyExecutionPolicy GetExecutionPolicy()
+    public virtual LegacyExecutionPolicy? GetExecutionPolicy()
     {
         EnchantmentExecutionAttribute? attribute =
             (EnchantmentExecutionAttribute?)Attribute.GetCustomAttribute(
@@ -95,7 +98,10 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
 
         if (attribute == null)
         {
-            return BuiltInDefaults.GetExecutionPolicy(typeof(TEnchantment));
+            // No explicit override — return null so EnchantmentRegistry.Install doesn't wire an
+            // adapter shim that would otherwise force-override the legacy behavior-derived
+            // defaults with an all-Default record.
+            return null;
         }
 
         return new LegacyExecutionPolicy(

@@ -1,7 +1,6 @@
 using System;
 using System.ComponentModel;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api.Internal;
 
@@ -94,15 +93,13 @@ public static class MultiEnchantmentApi
 
     /// <summary>
     /// Convenience wrapper that scans the caller's assembly. The recommended integration point
-    /// for third-party mods: call this from <c>[ModInitializer]</c>.
+    /// for third-party mods: call this from <c>[ModInitializer]</c>. Resolution uses
+    /// <see cref="Assembly.GetCallingAssembly"/>, which inspects the runtime stack frame — do
+    /// not call through reflection / dispatch helpers; pass the assembly explicitly to
+    /// <see cref="ScanAssembly"/> instead.
     /// </summary>
-    public static int ScanCallingAssembly([CallerFilePath] string? _ = null)
-    {
-        // [CallerFilePath] is unused — we resolve the caller via Assembly.GetCallingAssembly().
-        // The parameter exists only so signature-based analyzers / docs distinguish this from
-        // the explicit ScanAssembly overload.
-        return AssemblyScanner.ScanAssembly(Assembly.GetCallingAssembly());
-    }
+    public static int ScanCallingAssembly() =>
+        AssemblyScanner.ScanAssembly(Assembly.GetCallingAssembly());
 
     /// <summary>
     /// Freezes the registry. After this call, <see cref="ScanAssembly"/> logs a warning and
