@@ -21,9 +21,45 @@ namespace MultiEnchantmentMod.Api;
 /// member to inject custom behavior. The subclass must have a parameterless constructor —
 /// enforced at runtime and by analyzer rule MEM004.
 /// </remarks>
-public abstract class EnchantmentDefinition<TEnchantment>
+public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefinition
     where TEnchantment : EnchantmentModel
 {
+    /// <inheritdoc/>
+    public Type EnchantmentType => typeof(TEnchantment);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Materializes the virtual-method bag below into an <see cref="EnchantmentRegistry"/> entry
+    /// and installs the corresponding adapter shims into the legacy provider tables. Idempotent
+    /// only in the sense that calling <c>Register()</c> twice on the same instance creates two
+    /// registrations (and two disposables); typical usage is to call it once from the assembly
+    /// scanner or from a manual <c>[ModInitializer]</c>.
+    /// </remarks>
+    public IDisposable Register()
+    {
+        EnchantmentEntry entry = new()
+        {
+            EnchantmentType = typeof(TEnchantment),
+            Priority = Priority,
+            Definition = GetDefinition(),
+            ExecutionPolicy = GetExecutionPolicy(),
+            OnMergedDelta = (model, addedAmount) => InvokeOnMergedDelta((TEnchantment)model, addedAmount),
+            OnMergedRefresh = model => InvokeOnMergedRefresh((TEnchantment)model),
+            FormatExtraText = (EnchantmentStackSnapshot s, string def, out string text) =>
+                InvokeTryFormatExtraText(s, def, out text),
+            GetVisualSliceAmounts = InvokeGetVisualSliceAmounts,
+        };
+
+        foreach (CardKeyword keyword in InvokeTrackedKeywords())
+        {
+            entry.Keywords.Add(new KeywordContribution(
+                keyword,
+                snapshot => InvokeKeywordSourceAmount(snapshot, keyword)));
+        }
+
+        return EnchantmentRegistry.Install<TEnchantment>(entry);
+    }
+
     /// <summary>
     /// Tie-breaker when multiple definitions target the same enchantment type. Higher wins.
     /// Override or set <see cref="EnchantmentDefinitionAttribute.Priority"/> on the subclass.
