@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
 using MegaCrit.Sts2.Core.Models;
@@ -117,16 +116,12 @@ public sealed record EnchantmentStackSnapshot(
 internal interface IEnchantmentStackDefinitionProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
-    int Priority { get; }
-
     EnchantmentStackDefinition GetDefinition();
 }
 
 internal interface IEnchantmentMergedStateProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
-    int Priority { get; }
-
     void ApplyMergedAmountDelta(TEnchantment enchantment, int addedAmount);
 
     void RefreshMergedState(TEnchantment enchantment);
@@ -135,16 +130,12 @@ internal interface IEnchantmentMergedStateProvider<TEnchantment>
 internal interface IEnchantmentExecutionPolicyProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
-    int Priority { get; }
-
     EnchantmentExecutionPolicy GetExecutionPolicy();
 }
 
 internal interface IEnchantmentKeywordSourceProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
-    int Priority { get; }
-
     IEnumerable<CardKeyword> GetTrackedKeywords();
 
     int GetKeywordSourceAmount(EnchantmentStackSnapshot snapshot, CardKeyword keyword);
@@ -153,22 +144,37 @@ internal interface IEnchantmentKeywordSourceProvider<TEnchantment>
 internal interface IEnchantmentPresentationProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
-    int Priority { get; }
-
     IReadOnlyList<int>? GetVisualSliceAmounts(EnchantmentStackSnapshot snapshot);
 
     bool TryFormatExtraCardText(EnchantmentStackSnapshot snapshot, string defaultText, out string formattedText);
 }
 
+internal interface IEnchantmentLifecycleProvider<TEnchantment>
+    where TEnchantment : EnchantmentModel
+{
+    Api.EnchantmentScope GetScope();
+
+    void OnApplied(CardModel card, TEnchantment enchantment);
+
+    bool OnRemoved(CardModel card, TEnchantment enchantment, Api.RemovalReason reason);
+
+    void OnCombatStart(CardModel card, TEnchantment enchantment);
+
+    void OnCombatEnd(CardModel card, TEnchantment enchantment);
+
+    void OnTurnStart(CardModel card, TEnchantment enchantment);
+
+    void OnTurnEnd(CardModel card, TEnchantment enchantment);
+}
+
 public static class MultiEnchantmentStackApi
 {
-    private static readonly object DiscoveryLock = new();
-    private static readonly HashSet<Type> AutoRegisteredProviderTypes = new();
     private static readonly List<IStackDefinitionProviderRegistration> DefinitionProviders = new();
     private static readonly List<IMergedStateProviderRegistration> MergedStateProviders = new();
     private static readonly List<IExecutionPolicyProviderRegistration> ExecutionPolicyProviders = new();
     private static readonly List<IKeywordSourceProviderRegistration> KeywordProviders = new();
     private static readonly List<IPresentationProviderRegistration> PresentationProviders = new();
+    private static readonly List<ILifecycleProviderRegistration> LifecycleProviders = new();
 
     internal static void RegisterDefinitionProvider<TEnchantment>(
         IEnchantmentStackDefinitionProvider<TEnchantment> provider)
@@ -260,6 +266,24 @@ public static class MultiEnchantmentStackApi
         UnregisterProvider(PresentationProviders, provider, typeof(TEnchantment));
     }
 
+    internal static void RegisterLifecycleProvider<TEnchantment>(
+        IEnchantmentLifecycleProvider<TEnchantment> provider)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        RegisterSingleProvider(
+            LifecycleProviders,
+            new LifecycleProviderRegistration<TEnchantment>(provider),
+            "lifecycle");
+    }
+
+    internal static void UnregisterLifecycleProvider<TEnchantment>(
+        IEnchantmentLifecycleProvider<TEnchantment> provider)
+        where TEnchantment : EnchantmentModel
+    {
+        UnregisterProvider(LifecycleProviders, provider, typeof(TEnchantment));
+    }
+
     internal static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
         ArgumentNullException.ThrowIfNull(enchantmentType);
@@ -332,174 +356,10 @@ public static class MultiEnchantmentStackApi
         return ResolveSingleProvider(PresentationProviders, enchantmentType);
     }
 
-    /// <summary>
-    /// Scans <paramref name="assembly"/> for v1-style <c>IEnchantment*Provider&lt;T&gt;</c>
-    /// implementers and registers them. Used by the v2 <c>AssemblyScanner</c> to preserve
-    /// backward compatibility for third-party mods built against the legacy surface, until
-    /// Step 9 retires the v1 entry points entirely.
-    /// </summary>
-    internal static int DiscoverV1ProvidersFromAssembly(Assembly assembly)
+    internal static ILifecycleProviderRegistration? ResolveLifecycleProvider(Type enchantmentType)
     {
-        lock (DiscoveryLock)
-        {
-            return DiscoverProvidersFromAssembly(assembly);
-        }
-    }
-
-    private static int DiscoverProvidersFromAssembly(Assembly assembly, Type? targetEnchantmentType = null)
-    {
-        Type[] types;
-        try
-        {
-            types = assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException ex)
-        {
-            types = ex.Types.Where(static type => type != null).Cast<Type>().ToArray();
-        }
-        catch
-        {
-            return 0;
-        }
-
-        int registeredCount = 0;
-        foreach (Type type in types)
-        {
-            if (type.IsAbstract ||
-                type.IsInterface ||
-                type.ContainsGenericParameters ||
-                !AutoRegisteredProviderTypes.Add(type))
-            {
-                continue;
-            }
-
-            List<(Type InterfaceType, Type EnchantmentType)> supportedInterfaces =
-                GetSupportedProviderInterfaces(type);
-            if (targetEnchantmentType != null)
-            {
-                supportedInterfaces = supportedInterfaces
-                    .Where(pair => pair.EnchantmentType == targetEnchantmentType)
-                    .ToList();
-            }
-
-            if (supportedInterfaces.Count == 0)
-            {
-                continue;
-            }
-
-            ConstructorInfo? ctor = type.GetConstructor(Type.EmptyTypes);
-            if (ctor == null)
-            {
-                continue;
-            }
-
-            object? instance;
-            try
-            {
-                instance = ctor.Invoke(null);
-            }
-            catch (Exception ex)
-            {
-                MultiEnchantmentMod.Logger.Warn(
-                    $"[StackApi] Failed to instantiate provider {type.FullName} from {assembly.GetName().Name}: {ex.GetBaseException().Message}");
-                continue;
-            }
-
-            foreach ((Type interfaceType, Type enchantmentType) in supportedInterfaces)
-            {
-                RegisterDiscoveredProvider(instance, interfaceType, enchantmentType);
-                registeredCount++;
-            }
-        }
-
-        return registeredCount;
-    }
-
-    private static List<(Type InterfaceType, Type EnchantmentType)> GetSupportedProviderInterfaces(Type type)
-    {
-        List<(Type InterfaceType, Type EnchantmentType)> result = new();
-        foreach (Type interfaceType in type.GetInterfaces())
-        {
-            if (!interfaceType.IsGenericType)
-            {
-                continue;
-            }
-
-            Type genericType = interfaceType.GetGenericTypeDefinition();
-            if (genericType != typeof(IEnchantmentStackDefinitionProvider<>) &&
-                genericType != typeof(IEnchantmentMergedStateProvider<>) &&
-                genericType != typeof(IEnchantmentExecutionPolicyProvider<>) &&
-                genericType != typeof(IEnchantmentKeywordSourceProvider<>) &&
-                genericType != typeof(IEnchantmentPresentationProvider<>))
-            {
-                continue;
-            }
-
-            Type enchantmentType = interfaceType.GetGenericArguments()[0];
-            if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
-            {
-                continue;
-            }
-
-            result.Add((genericType, enchantmentType));
-        }
-
-        return result;
-    }
-
-    private static void RegisterDiscoveredProvider(object? instance, Type interfaceType, Type enchantmentType)
-    {
-        if (instance == null)
-        {
-            return;
-        }
-
-        MethodInfo? registerMethod = interfaceType switch
-        {
-            var type when type == typeof(IEnchantmentStackDefinitionProvider<>) =>
-                typeof(MultiEnchantmentStackApi).GetMethod(nameof(RegisterDiscoveredDefinitionProvider), BindingFlags.NonPublic | BindingFlags.Static),
-            var type when type == typeof(IEnchantmentMergedStateProvider<>) =>
-                typeof(MultiEnchantmentStackApi).GetMethod(nameof(RegisterDiscoveredMergedStateProvider), BindingFlags.NonPublic | BindingFlags.Static),
-            var type when type == typeof(IEnchantmentExecutionPolicyProvider<>) =>
-                typeof(MultiEnchantmentStackApi).GetMethod(nameof(RegisterDiscoveredExecutionPolicyProvider), BindingFlags.NonPublic | BindingFlags.Static),
-            var type when type == typeof(IEnchantmentKeywordSourceProvider<>) =>
-                typeof(MultiEnchantmentStackApi).GetMethod(nameof(RegisterDiscoveredKeywordProvider), BindingFlags.NonPublic | BindingFlags.Static),
-            var type when type == typeof(IEnchantmentPresentationProvider<>) =>
-                typeof(MultiEnchantmentStackApi).GetMethod(nameof(RegisterDiscoveredPresentationProvider), BindingFlags.NonPublic | BindingFlags.Static),
-            _ => null,
-        };
-
-        registerMethod?.MakeGenericMethod(enchantmentType).Invoke(null, new[] { instance });
-    }
-
-    private static void RegisterDiscoveredDefinitionProvider<TEnchantment>(object instance)
-        where TEnchantment : EnchantmentModel
-    {
-        RegisterDefinitionProvider((IEnchantmentStackDefinitionProvider<TEnchantment>)instance);
-    }
-
-    private static void RegisterDiscoveredMergedStateProvider<TEnchantment>(object instance)
-        where TEnchantment : EnchantmentModel
-    {
-        RegisterMergedStateProvider((IEnchantmentMergedStateProvider<TEnchantment>)instance);
-    }
-
-    private static void RegisterDiscoveredExecutionPolicyProvider<TEnchantment>(object instance)
-        where TEnchantment : EnchantmentModel
-    {
-        RegisterExecutionPolicyProvider((IEnchantmentExecutionPolicyProvider<TEnchantment>)instance);
-    }
-
-    private static void RegisterDiscoveredKeywordProvider<TEnchantment>(object instance)
-        where TEnchantment : EnchantmentModel
-    {
-        RegisterKeywordProvider((IEnchantmentKeywordSourceProvider<TEnchantment>)instance);
-    }
-
-    private static void RegisterDiscoveredPresentationProvider<TEnchantment>(object instance)
-        where TEnchantment : EnchantmentModel
-    {
-        RegisterPresentationProvider((IEnchantmentPresentationProvider<TEnchantment>)instance);
+        Api.Internal.AssemblyScanner.EnsureScanned();
+        return ResolveSingleProvider(LifecycleProviders, enchantmentType);
     }
 
     private static void RegisterSingleProvider<TRegistration>(
@@ -516,11 +376,10 @@ public static class MultiEnchantmentStackApi
         }
 
         registrations.Add(registration);
-        registrations.Sort(static (left, right) => right.Priority.CompareTo(left.Priority));
         if (registrations.Count(existing => existing.EnchantmentType == registration.EnchantmentType) > 1)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Multiple {category} providers registered for {registration.EnchantmentType.FullName}. The highest-priority provider will win.");
+                $"[StackApi] Multiple {category} providers registered for {registration.EnchantmentType.FullName}. The most recently registered provider will win.");
         }
     }
 
@@ -538,11 +397,10 @@ public static class MultiEnchantmentStackApi
         }
 
         registrations.Add(registration);
-        registrations.Sort(static (left, right) => right.Priority.CompareTo(left.Priority));
         if (registrations.Count(existing => existing.EnchantmentType == registration.EnchantmentType) > 1)
         {
             MultiEnchantmentMod.Logger.Info(
-                $"[StackApi] Multiple {category} providers registered for {registration.EnchantmentType.FullName}. They will be evaluated in priority order.");
+                $"[StackApi] Multiple {category} providers registered for {registration.EnchantmentType.FullName}. They will be evaluated in registration order.");
         }
     }
 
@@ -567,12 +425,11 @@ public static class MultiEnchantmentStackApi
         Type enchantmentType)
         where TRegistration : class, ISingleProviderRegistration
     {
-        return registrations.FirstOrDefault(provider => provider.EnchantmentType == enchantmentType);
+        return registrations.LastOrDefault(provider => provider.EnchantmentType == enchantmentType);
     }
 
     internal interface IProviderRegistration
     {
-        int Priority { get; }
         Type EnchantmentType { get; }
         Type ProviderType { get; }
         object ProviderInstance { get; }
@@ -610,6 +467,17 @@ public static class MultiEnchantmentStackApi
         bool TryFormatExtraCardText(EnchantmentStackSnapshot snapshot, string defaultText, out string formattedText);
     }
 
+    internal interface ILifecycleProviderRegistration : ISingleProviderRegistration
+    {
+        Api.EnchantmentScope GetScope();
+        void OnApplied(CardModel card, EnchantmentModel enchantment);
+        bool OnRemoved(CardModel card, EnchantmentModel enchantment, Api.RemovalReason reason);
+        void OnCombatStart(CardModel card, EnchantmentModel enchantment);
+        void OnCombatEnd(CardModel card, EnchantmentModel enchantment);
+        void OnTurnStart(CardModel card, EnchantmentModel enchantment);
+        void OnTurnEnd(CardModel card, EnchantmentModel enchantment);
+    }
+
     private sealed class StackDefinitionProviderRegistration<TEnchantment> : IStackDefinitionProviderRegistration
         where TEnchantment : EnchantmentModel
     {
@@ -620,7 +488,6 @@ public static class MultiEnchantmentStackApi
             _provider = provider;
         }
 
-        public int Priority => _provider.Priority;
         public Type EnchantmentType => typeof(TEnchantment);
         public Type ProviderType => _provider.GetType();
         public object ProviderInstance => _provider;
@@ -641,7 +508,6 @@ public static class MultiEnchantmentStackApi
             _provider = provider;
         }
 
-        public int Priority => _provider.Priority;
         public Type EnchantmentType => typeof(TEnchantment);
         public Type ProviderType => _provider.GetType();
         public object ProviderInstance => _provider;
@@ -667,7 +533,6 @@ public static class MultiEnchantmentStackApi
             _provider = provider;
         }
 
-        public int Priority => _provider.Priority;
         public Type EnchantmentType => typeof(TEnchantment);
         public Type ProviderType => _provider.GetType();
         public object ProviderInstance => _provider;
@@ -688,7 +553,6 @@ public static class MultiEnchantmentStackApi
             _provider = provider;
         }
 
-        public int Priority => _provider.Priority;
         public Type EnchantmentType => typeof(TEnchantment);
         public Type ProviderType => _provider.GetType();
         public object ProviderInstance => _provider;
@@ -714,7 +578,6 @@ public static class MultiEnchantmentStackApi
             _provider = provider;
         }
 
-        public int Priority => _provider.Priority;
         public Type EnchantmentType => typeof(TEnchantment);
         public Type ProviderType => _provider.GetType();
         public object ProviderInstance => _provider;
@@ -727,6 +590,56 @@ public static class MultiEnchantmentStackApi
         public bool TryFormatExtraCardText(EnchantmentStackSnapshot snapshot, string defaultText, out string formattedText)
         {
             return _provider.TryFormatExtraCardText(snapshot, defaultText, out formattedText);
+        }
+    }
+
+    private sealed class LifecycleProviderRegistration<TEnchantment> : ILifecycleProviderRegistration
+        where TEnchantment : EnchantmentModel
+    {
+        private readonly IEnchantmentLifecycleProvider<TEnchantment> _provider;
+
+        public LifecycleProviderRegistration(IEnchantmentLifecycleProvider<TEnchantment> provider)
+        {
+            _provider = provider;
+        }
+
+        public Type EnchantmentType => typeof(TEnchantment);
+        public Type ProviderType => _provider.GetType();
+        public object ProviderInstance => _provider;
+
+        public Api.EnchantmentScope GetScope()
+        {
+            return _provider.GetScope();
+        }
+
+        public void OnApplied(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnApplied(card, (TEnchantment)enchantment);
+        }
+
+        public bool OnRemoved(CardModel card, EnchantmentModel enchantment, Api.RemovalReason reason)
+        {
+            return _provider.OnRemoved(card, (TEnchantment)enchantment, reason);
+        }
+
+        public void OnCombatStart(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCombatStart(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCombatEnd(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCombatEnd(card, (TEnchantment)enchantment);
+        }
+
+        public void OnTurnStart(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnTurnStart(card, (TEnchantment)enchantment);
+        }
+
+        public void OnTurnEnd(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnTurnEnd(card, (TEnchantment)enchantment);
         }
     }
 }

@@ -1,0 +1,274 @@
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
+
+namespace MultiEnchantmentMod.Analyzers;
+
+[DiagnosticAnalyzer(LanguageNames.CSharp)]
+public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
+{
+    private static readonly DiagnosticDescriptor Mem001 = new(
+        DiagnosticIds.EnchantmentOnWrongType,
+        "[Enchantment] must target an enchantment model",
+        "[Enchantment] can only be applied to classes deriving from EnchantmentModel",
+        "Usage",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem002 = new(
+        DiagnosticIds.ModelDefinitionMismatch,
+        "Model and definition stack semantics differ",
+        "[Enchantment] on '{0}' disagrees with definition '{1}' for {2}",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem003 = new(
+        DiagnosticIds.KeywordModeMismatch,
+        "Keyword mode requires MergeAmount",
+        "[EnchantmentKeyword(Mode = {0})] on '{1}' requires Stack = MergeAmount",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem004 = new(
+        DiagnosticIds.MissingParameterlessCtor,
+        "Definition requires parameterless constructor",
+        "EnchantmentDefinition '{0}' must declare an accessible parameterless constructor",
+        "Usage",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem005 = new(
+        DiagnosticIds.ExecutionModeMismatch,
+        "Execution mode does not match stack semantics",
+        "Execution mode '{0}' on definition '{1}' does not match Stack = {2}",
+        "Usage",
+        DiagnosticSeverity.Info,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem006 = new(
+        DiagnosticIds.PresentationWithoutOverride,
+        "Presentation attribute has no visible effect",
+        "Definition '{0}' is marked with [EnchantmentPresentation] but '{1}' overrides no presentation-related members",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem007 = new(
+        DiagnosticIds.MissingCompatibilityAttribute,
+        "Assembly should declare API compatibility",
+        "Assembly is missing [assembly: EnchantmentApiCompatibility(...)]",
+        "Usage",
+        DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        customTags: new[] { WellKnownDiagnosticTags.CompilationEnd });
+
+    private static readonly DiagnosticDescriptor Mem008 = new(
+        DiagnosticIds.DuplicateDefinitions,
+        "Only one definition per enchantment model is allowed",
+        "Assembly contains multiple EnchantmentDefinition<T> types for '{0}'",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        customTags: new[] { WellKnownDiagnosticTags.CompilationEnd });
+
+    public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
+        ImmutableArray.Create(Mem001, Mem002, Mem003, Mem004, Mem005, Mem006, Mem007, Mem008);
+
+    public override void Initialize(AnalysisContext context)
+    {
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        context.EnableConcurrentExecution();
+        context.RegisterCompilationStartAction(StartAnalysis);
+    }
+
+    private static void StartAnalysis(CompilationStartAnalysisContext context)
+    {
+        AnalyzerSymbols symbols = AnalyzerSymbols.Create(context.Compilation);
+        DefinitionIndex definitionIndex = DefinitionIndex.Create(context.Compilation, symbols);
+
+        context.RegisterSymbolAction(symbolContext => AnalyzeNamedType(symbolContext, symbols, definitionIndex), SymbolKind.NamedType);
+        context.RegisterCompilationEndAction(compilationContext => AnalyzeCompilation(compilationContext, symbols, definitionIndex));
+    }
+
+    private static void AnalyzeNamedType(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionIndex definitionIndex)
+    {
+        INamedTypeSymbol type = (INamedTypeSymbol)context.Symbol;
+        if (type.TypeKind != TypeKind.Class)
+        {
+            return;
+        }
+
+        AttributeData? enchantmentAttribute = SymbolHelpers.GetAttribute(type, symbols.EnchantmentAttribute);
+        if (enchantmentAttribute != null && !SymbolHelpers.InheritsFrom(type, symbols.EnchantmentModel))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(
+                Mem001,
+                enchantmentAttribute.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation() ?? SymbolHelpers.GetBestLocation(type)));
+        }
+
+        if (!SymbolHelpers.DerivesFromOpenGeneric(type, symbols.EnchantmentDefinitionOfT, out INamedTypeSymbol? constructedBase) ||
+            constructedBase == null ||
+            constructedBase.TypeArguments.Length != 1 ||
+            constructedBase.TypeArguments[0] is not INamedTypeSymbol enchantmentType)
+        {
+            return;
+        }
+
+        if (!SymbolHelpers.HasAccessibleParameterlessConstructor(type))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Mem004, SymbolHelpers.GetBestLocation(type), type.Name));
+        }
+
+        DefinitionInfo? current = definitionIndex.GetDefinitions(enchantmentType)
+            .FirstOrDefault(definition => SymbolEqualityComparer.Default.Equals(definition.DefinitionType, type));
+
+        if (current == null)
+        {
+            return;
+        }
+
+        AnalyzeModelMismatch(context, symbols, current, enchantmentType);
+        AnalyzeKeywordMode(context, current);
+        AnalyzeExecutionMode(context, current);
+        AnalyzePresentation(context, current);
+    }
+
+    private static void AnalyzeModelMismatch(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionInfo definition, INamedTypeSymbol enchantmentType)
+    {
+        AttributeData? enchantmentAttribute = SymbolHelpers.GetAttribute(enchantmentType, symbols.EnchantmentAttribute);
+        if (enchantmentAttribute == null)
+        {
+            return;
+        }
+
+        string? modelStack = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Stack");
+        string? modelStatus = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Status");
+
+        bool stackMismatch = false;
+        bool statusMismatch = false;
+        if (!stackMismatch && !statusMismatch)
+        {
+            return;
+        }
+
+        string mismatchPart = stackMismatch && statusMismatch
+            ? $"Stack/Status ({modelStack}/{modelStatus} vs {definition.Stack}/{definition.Status})"
+            : stackMismatch
+                ? $"Stack ({modelStack} vs {definition.Stack})"
+                : $"Status ({modelStatus} vs {definition.Status})";
+
+        context.ReportDiagnostic(Diagnostic.Create(
+            Mem002,
+            SymbolHelpers.GetBestLocation(definition.DefinitionType),
+            enchantmentType.Name,
+            definition.DefinitionType.Name,
+            mismatchPart));
+    }
+
+    private static void AnalyzeKeywordMode(SymbolAnalysisContext context, DefinitionInfo definition)
+    {
+        if (definition.Stack == "MergeAmount")
+        {
+            return;
+        }
+
+        foreach (AttributeData attribute in definition.KeywordAttributes)
+        {
+            string? mode = SymbolHelpers.GetNamedArgumentString(attribute, "Mode");
+            if (mode != "PerTotalAmount")
+            {
+                continue;
+            }
+
+            context.ReportDiagnostic(Diagnostic.Create(
+                Mem003,
+                attribute.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation() ?? SymbolHelpers.GetBestLocation(definition.DefinitionType),
+                mode,
+                definition.DefinitionType.Name));
+        }
+    }
+
+    private static void AnalyzeExecutionMode(SymbolAnalysisContext context, DefinitionInfo definition)
+    {
+        if (definition.Stack == null || definition.Execution == null)
+        {
+            return;
+        }
+
+        if (!IsExecutionMismatch(definition.Stack, definition.Execution))
+        {
+            return;
+        }
+
+        context.ReportDiagnostic(Diagnostic.Create(
+            Mem005,
+            SymbolHelpers.GetBestLocation(definition.DefinitionType),
+            definition.Execution,
+            definition.DefinitionType.Name,
+            definition.Stack));
+    }
+
+    private static void AnalyzePresentation(SymbolAnalysisContext context, DefinitionInfo definition)
+    {
+        if (!definition.HasPresentationAttribute)
+        {
+            return;
+        }
+
+        if (SymbolHelpers.OverridesAnyPresentationMember(definition.DefinitionType))
+        {
+            return;
+        }
+
+        context.ReportDiagnostic(Diagnostic.Create(
+            Mem006,
+            SymbolHelpers.GetBestLocation(definition.DefinitionType),
+            definition.DefinitionType.Name,
+            definition.EnchantmentType.Name));
+    }
+
+    private static bool IsExecutionMismatch(string stack, string execution)
+    {
+        return (stack, execution) switch
+        {
+            ("MergeAmount", "PerLiveInstance") => true,
+            ("MergeAmount", "FirstActiveInstanceOnly") => true,
+            ("DuplicateInstance", "MergedTotal") => true,
+            ("ExistenceStack", "MergedTotal") => true,
+            ("ExistenceStack", "PerLiveInstance") => true,
+            _ => false,
+        };
+    }
+
+    private static void AnalyzeCompilation(CompilationAnalysisContext context, AnalyzerSymbols symbols, DefinitionIndex definitionIndex)
+    {
+        if (symbols.EnchantmentApiCompatibilityAttribute != null &&
+            !context.Compilation.Assembly.GetAttributes().Any(attribute =>
+                SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, symbols.EnchantmentApiCompatibilityAttribute)))
+        {
+            Location location = context.Compilation.SyntaxTrees.FirstOrDefault()?.GetRoot(context.CancellationToken).GetLocation() ?? Location.None;
+            context.ReportDiagnostic(Diagnostic.Create(Mem007, location));
+        }
+
+        foreach (KeyValuePair<INamedTypeSymbol, ImmutableArray<DefinitionInfo>> pair in definitionIndex.AllDefinitionsByModel)
+        {
+            if (pair.Value.Length < 2)
+            {
+                continue;
+            }
+
+            foreach (DefinitionInfo definition in pair.Value)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    Mem008,
+                    SymbolHelpers.GetBestLocation(definition.DefinitionType),
+                    pair.Key.Name));
+            }
+        }
+    }
+}

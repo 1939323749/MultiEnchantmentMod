@@ -58,12 +58,6 @@
         <Sts2DataDir>$(Sts2Path)/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_x86_64</Sts2DataDir>
     </PropertyGroup>
 
-    <PropertyGroup>
-        <!-- Diasble architecture mismatch warning; mods are ideally built for all platforms (MSIL)
-             while your local StS2 version will be for your specific platform. -->
-        <NoWarn>$(NoWarn);MSB3270</NoWarn>
-    </PropertyGroup>
-
     <ItemGroup Condition="Exists('$(Sts2DataDir)')">
         <Reference Include="0Harmony">
             <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
@@ -79,7 +73,6 @@
     <ItemGroup>
         <PackageReference Include="Alchyr.Sts2.BaseLib" Version="0.2.0" PrivateAssets="All" />
         <PackageReference Include="Alchyr.Sts2.ModAnalyzers" Version="*"/>
-        <AdditionalFiles Include="MultiEnchantmentMod/localization/**/*.json"/>
     </ItemGroup>
 
     <ItemGroup>

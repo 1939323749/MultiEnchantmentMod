@@ -28,6 +28,7 @@ using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
+using MultiEnchantmentMod.Api;
 
 namespace MultiEnchantmentMod;
 
@@ -117,6 +118,37 @@ internal static class MultiEnchantmentPatches
     private static void ClearEnchantmentPrefix(CardModel card)
     {
         MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: card.Enchantment == null);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeCombatStart))]
+    [HarmonyPostfix]
+    private static void BeforeCombatStartPostfix(ICombatState combatState)
+    {
+        MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCombatEnd))]
+    [HarmonyPostfix]
+    private static void AfterCombatEndPostfix(IRunState runState, ICombatState? combatState)
+    {
+        MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
+    [HarmonyPostfix]
+    private static void AfterTurnEndPostfix(ICombatState combatState, CombatSide side)
+    {
+        // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide side)
+        // sts2.dll @ min_game_version 0.105.1
+        // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
+        // just Side. The file's `using Godot;` makes the unqualified name resolve to
+        // Godot.Side (the UI margin enum Left/Top/Right/Bottom), which leaves Harmony with a
+        // parameter-type mismatch, so UntilTurnEnds and LingerForTurns(N) silently never fire
+        // at turn end.
+        if (side == CombatSide.Player)
+        {
+            MultiEnchantmentScopeSupport.OnPlayerTurnEnded(combatState);
+        }
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
@@ -313,6 +345,11 @@ internal static class MultiEnchantmentPatches
                 }
             }
 
+            // Layer ModifyDynamicVar("block", ...) contributions on top of the legacy
+            // EnchantBlock*/Hook listener pipeline. UpdateCardPreview's display path also runs this
+            // — both paths must agree, otherwise the rendered block ≠ block actually granted.
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(cardSource, "block", value);
+
             modifiers = modifyingModels;
             __result = Math.Max(0m, value);
             return false;
@@ -359,7 +396,7 @@ internal static class MultiEnchantmentPatches
             $"CardSource={cardSource?.Id} Damage={damage} PreviewMode={previewMode}");
         try
         {
-            decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
+            decimal value = ApplyCardDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
             bool multiTargetPreview = target == null && previewMode == CardPreviewMode.MultiCreatureTargeting;
 
             if (multiTargetPreview && cardSource != null)
@@ -450,13 +487,13 @@ internal static class MultiEnchantmentPatches
         // Base-game source: CardModel.OnPlayWrapper.
         // Keep the original control flow, but execute extra enchantments in the same phase as the
         // primary enchantment OnPlay instead of the later AfterCardPlayed hook sweep.
-        bool hasExtraEnchantments = MultiEnchantmentSupport.GetAdditionalEnchantments(__instance).Count > 0;
+        bool shouldUseMultiLogic = MultiEnchantmentSupport.RequiresOnPlayWrapperMultiEnchantmentLogic(__instance);
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting CardModel.OnPlayWrapper. " +
-            $"Card={__instance.Id} AutoPlay={isAutoPlay} HasExtraEnchantments={hasExtraEnchantments} " +
+            $"Card={__instance.Id} AutoPlay={isAutoPlay} UseMultiLogic={shouldUseMultiLogic} " +
             $"SkipVisuals={skipCardPileVisuals}");
 
-        if (!hasExtraEnchantments)
+        if (!shouldUseMultiLogic)
         {
             return true;
         }
@@ -560,7 +597,14 @@ internal static class MultiEnchantmentPatches
 
         if (runGlobalHooks)
         {
+            // Hook.ModifyDamage's prefix applies legacy damage enchantments and
+            // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
+            // passing the already-enchanted local value would apply card damage twice.
             value = Hook.ModifyDamage(card.Owner.RunState, card.CombatState, target, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+        }
+        else
+        {
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
         }
 
         __instance.PreviewValue = value;
@@ -595,7 +639,13 @@ internal static class MultiEnchantmentPatches
 
         if (runGlobalHooks)
         {
+            // Hook.ModifyBlock's prefix already chains ApplyDynamicVarEnchantments — see the
+            // matching comment on DamageVar above.
             value = Hook.ModifyBlock(card.CombatState, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
+        }
+        else
+        {
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
         }
 
         __instance.PreviewValue = value;
@@ -626,6 +676,10 @@ internal static class MultiEnchantmentPatches
         try
         {
             DynamicVar baseVar = GetCalculatedBaseVar(__instance);
+            // Base stage: only legacy EnchantDamage* virtuals on the BASE value (matches what
+            // those virtuals were designed to modify — e.g. Sharp adjusts base damage). The new
+            // ModifyDynamicVar chain runs on the RESULT after Calculate + listeners, mirroring
+            // CalculatedBlockVar so authors see consistent application semantics across both.
             decimal enchantedBase = MultiEnchantmentSupport.ApplyDamageEnchantments(card, baseVar.BaseValue, __instance.Props, ModifyDamageHookType.All);
             enchantedBase = Math.Max(enchantedBase, 0m);
             if (card.IsEnchantmentPreview)
@@ -657,11 +711,8 @@ internal static class MultiEnchantmentPatches
                     ModifyDamageHookType.All,
                     modifiers);
             }
-            else if (!card.IsEnchantmentPreview)
-            {
-                value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, value, __instance.Props, ModifyDamageHookType.All);
-            }
 
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
             __instance.PreviewValue = Math.Max(value, 0m);
             return false;
         }
@@ -718,11 +769,8 @@ internal static class MultiEnchantmentPatches
                 ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
                 value = ModifyBlockInternal(combatState, card.Owner.Creature, value, __instance.Props, card, null, new List<AbstractModel>());
             }
-            else if (!card.IsEnchantmentPreview)
-            {
-                value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, value, __instance.Props);
-            }
 
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
             __instance.PreviewValue = value;
             return false;
         }
@@ -763,6 +811,7 @@ internal static class MultiEnchantmentPatches
             }
         }
 
+        value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
         __instance.PreviewValue = value;
         return false;
     }
@@ -792,12 +841,63 @@ internal static class MultiEnchantmentPatches
 
         if (runGlobalHooks)
         {
+            // Hook.ModifyDamage's prefix applies legacy damage enchantments and
+            // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
+            // passing the already-enchanted local value would apply card damage twice.
             ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
             value = Hook.ModifyDamage(card.Owner.RunState, combatState, target, card.Owner.Osty, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+        }
+        else
+        {
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
         }
 
         __instance.PreviewValue = value;
         return false;
+    }
+
+    // Postfix on the base DynamicVar.UpdateCardPreview — fires for "plain" DynamicVar instances
+    // whose runtime type doesn't override UpdateCardPreview (e.g. Glam.DynamicVars["Times"]). The
+    // 6 patched subtypes (DamageVar, BlockVar, Calculated{Damage,Block}Var, ExtraDamageVar,
+    // OstyDamageVar) have their own override patches above and bypass this postfix. Custom
+    // DynamicVar subtypes from third-party mods that override UpdateCardPreview are not picked up
+    // here — those authors should patch / extend their own var class.
+    [HarmonyPatch(typeof(DynamicVar), nameof(DynamicVar.UpdateCardPreview))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void DynamicVarUpdateCardPreviewPostfix(DynamicVar __instance, CardModel card)
+    {
+        if (string.IsNullOrEmpty(__instance.Name))
+        {
+            return;
+        }
+
+        if (!MultiEnchantmentSupport.HasDynamicVarContributionsFor(__instance.Name))
+        {
+            return;
+        }
+
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        {
+            return;
+        }
+
+        try
+        {
+            // Start from BaseValue so the postfix is idempotent — re-running it on a previously
+            // previewed var (PreviewValue already contains last-round contributions) would
+            // otherwise compound contributions. Base no-op UpdateCardPreview hasn't touched
+            // PreviewValue yet, but other game systems (RecalculateForUpgradeOrEnchant) reset
+            // PreviewValue to BaseValue through ResetToBase. We mirror that contract here.
+            decimal value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, __instance.BaseValue);
+            __instance.PreviewValue = value;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] DynamicVar.UpdateCardPreview postfix for Var={__instance.Name} " +
+                $"Card={card.Id} failed: {ex.GetBaseException().Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NEnchantPreview), nameof(NEnchantPreview.Init))]
@@ -1089,6 +1189,16 @@ internal static class MultiEnchantmentPatches
             ?? throw new InvalidOperationException("Failed to access RestSiteOption owner.");
     }
 
+    private static decimal ApplyCardDamageEnchantments(
+        CardModel? cardSource,
+        decimal damage,
+        ValueProp props,
+        ModifyDamageHookType modifyDamageHookType)
+    {
+        decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
+        return MultiEnchantmentSupport.ApplyDynamicVarEnchantments(cardSource, "damage", value);
+    }
+
     private static decimal ModifyDamageInternal(
         IRunState runState,
         ICombatState? combatState,
@@ -1245,6 +1355,7 @@ internal static class MultiEnchantmentPatches
 
         await CardPileCmd.Draw(playerChoiceContext, handDraw, player, fromHandDraw: true);
         await Hook.AfterPlayerTurnStart(state, playerChoiceContext, player);
+        MultiEnchantmentScopeSupport.OnPlayerTurnStarted(state, player);
     }
 }
 

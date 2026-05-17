@@ -1,0 +1,59 @@
+{
+  "SAMPLE_FROST_SHARD.title": "Frost Shard",
+  "SAMPLE_FROST_SHARD.description": "Reference sample (Tier A, MergeAmount). Adds Block equal to twice the merged stack amount.",
+  "SAMPLE_FROST_SHARD.extraCardText": "Gain +{Block} [gold]Block[/gold].",
+
+  "SAMPLE_RETAIN_AURA.title": "Retain Aura",
+  "SAMPLE_RETAIN_AURA.description": "Reference sample (Tier A, ExistenceStack). Adds the [gold]Retain[/gold] keyword once; re-applying the enchantment is a no-op.",
+  "SAMPLE_RETAIN_AURA.extraCardText": "[gold]Retain[/gold].",
+
+  "SAMPLE_STATE_ACCUMULATOR.title": "State Accumulator",
+  "SAMPLE_STATE_ACCUMULATOR.description": "Reference sample (Tier A, DuplicateInstance). Each application keeps an independent instance with its own runtime state.",
+
+  "SAMPLE_COST_REDUCER.title": "Cost Reducer",
+  "SAMPLE_COST_REDUCER.description": "Reference sample (Tier B, MergeAmount with companion definition). Lowers the card's [gold]Energy[/gold] cost by 1 every time it is enchanted.",
+  "SAMPLE_COST_REDUCER.extraCardText": "Costs 1 less [gold]Energy[/gold].",
+
+  "SAMPLE_EXHAUST_ADDER.title": "Exhaust Adder",
+  "SAMPLE_EXHAUST_ADDER.description": "Reference sample (Tier B, keyword contribution). Contributes the [gold]Exhaust[/gold] keyword as a stackable source.",
+  "SAMPLE_EXHAUST_ADDER.extraCardText": "[gold]Exhaust[/gold].",
+
+  "SAMPLE_CONDITIONAL_EXHAUST.title": "Conditional Exhaust",
+  "SAMPLE_CONDITIONAL_EXHAUST.description": "Reference sample (Tier B, conditional keyword). Contributes [gold]Exhaust[/gold] only when the stack amount reaches a threshold.",
+  "SAMPLE_CONDITIONAL_EXHAUST.extraCardText": "If stacked: [gold]Exhaust[/gold].",
+
+  "SAMPLE_NONLINEAR_ENCHANTMENT.title": "Nonlinear Enchant",
+  "SAMPLE_NONLINEAR_ENCHANTMENT.description": "Reference sample (Tier B, custom presentation). Demonstrates overriding extra-card-text formatting and visual slice amounts.",
+
+  "SAMPLE_DYNAMIC_ENCHANTMENT.title": "Dynamic Enchant",
+  "SAMPLE_DYNAMIC_ENCHANTMENT.description": "Reference sample (Tier C, fluent registration). Registered at runtime without an attribute or companion class.",
+
+  "SAMPLE_COMBAT_GUARD.title": "Combat Guard",
+  "SAMPLE_COMBAT_GUARD.description": "Reference sample (Tier A, Scope = UntilCombatEnds). Removed at the end of the current combat with RemovalReason.CombatEnded.",
+
+  "SAMPLE_SINGLE_TURN_SHARPEN.title": "Single-Turn Sharpen",
+  "SAMPLE_SINGLE_TURN_SHARPEN.description": "Reference sample (Tier A, Scope = UntilTurnEnds). Removed at the end of the current player turn with RemovalReason.TurnEnded.",
+
+  "SAMPLE_LINGERING_SHARPEN.title": "Lingering Sharpen",
+  "SAMPLE_LINGERING_SHARPEN.description": "Reference sample (Tier C, LingerForTurns(2)). Survives two player turns, then is removed with RemovalReason.TurnLimitReached.",
+
+  "SAMPLE_CHARGED_SHARPEN.title": "Charged Sharpen",
+  "SAMPLE_CHARGED_SHARPEN.description": "Reference sample (Tier C, MaxActivations(3, OnPlay)). Removed after three plays with RemovalReason.ActivationLimitReached; the first removal attempt is vetoed once for demonstration.",
+
+  "SAMPLE_HAND_ONLY_SHARPEN.title": "Hand-Only Sharpen",
+  "SAMPLE_HAND_ONLY_SHARPEN.description": "Reference sample (Tier C, ConditionalActive). Contributes to damage / block only while the host card sits in the player's hand.",
+
+  "SAMPLE_LIFECYCLE_ENCHANTMENT.title": "Lifecycle Showcase",
+  "SAMPLE_LIFECYCLE_ENCHANTMENT.description": "Reference sample (Tier B, UntilCombatEnds + full lifecycle override surface). Demonstrates OnApplied, OnRemoved (with veto), OnCombatStart / OnCombatEnd and OnTurnStart / OnTurnEnd.",
+
+  "SAMPLE_PLUS_FIVE.title": "Plus Five",
+  "SAMPLE_PLUS_FIVE.description": "Reference sample (Tier A, [ModifyDynamicVar]). Adds 5 × stack amount to the card's [gold]Damage[/gold]. Stacks with other ModifyDynamicVar contributions in application order.",
+  "SAMPLE_PLUS_FIVE.extraCardText": "[gold]Damage[/gold] +5 per stack.",
+
+  "SAMPLE_DOUBLER.title": "Doubler",
+  "SAMPLE_DOUBLER.description": "Reference sample (Tier B, [ModifyDynamicVar] on companion definition). Doubles the card's [gold]Damage[/gold]. Apply alongside Plus Five to see order-sensitive composition: (base+5)×2 ≠ (base×2)+5.",
+  "SAMPLE_DOUBLER.extraCardText": "[gold]Damage[/gold] ×2.",
+
+  "SAMPLE_UNREGISTERED.title": "Unregistered Enchant",
+  "SAMPLE_UNREGISTERED.description": "Reference sample (compatibility, no Register call). Overrides EnchantDamageAdditive to demonstrate the auto-registration safety net — first encounter auto-registers as MergeAmount with a one-time info log."
+}

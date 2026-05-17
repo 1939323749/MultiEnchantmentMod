@@ -9,10 +9,10 @@ using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
-// Each adapter implements one of the legacy v1 provider interfaces (now internal on
-// MultiEnchantmentMod.IEnchantment*Provider<T> after Step 9) and forwards every call to the
-// v2 EnchantmentEntry it was constructed with. Both the shims and the interfaces live in the
-// main mod assembly, so the internal accessibility is enough for the adapter pipeline to work.
+// Each adapter implements one of the internal provider interfaces on
+// MultiEnchantmentMod.IEnchantment*Provider<T> and forwards every call to the v2 EnchantmentEntry
+// it was constructed with. Both the shims and the interfaces live in the main mod assembly, so the
+// internal accessibility is enough for the adapter pipeline to work.
 //
 // The interfaces are generic on T : EnchantmentModel, but EnchantmentEntry erases T to
 // EnchantmentModel for storage. The strong type only matters when registering against the
@@ -24,7 +24,6 @@ internal sealed class AdapterDefinitionProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     public required EnchantmentEntry Entry { get; init; }
-    public int Priority => Entry.Priority;
     public LegacyStackDefinition GetDefinition() =>
         (Entry.Definition ?? StackDefinition.Default).ToLegacy();
 }
@@ -34,7 +33,6 @@ internal sealed class AdapterMergedStateProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     public required EnchantmentEntry Entry { get; init; }
-    public int Priority => Entry.Priority;
 
     public void ApplyMergedAmountDelta(TEnchantment enchantment, int addedAmount)
     {
@@ -62,7 +60,6 @@ internal sealed class AdapterExecutionPolicyProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     public required EnchantmentEntry Entry { get; init; }
-    public int Priority => Entry.Priority;
     public LegacyExecutionPolicy GetExecutionPolicy() =>
         Entry.ExecutionPolicy ?? new LegacyExecutionPolicy();
 }
@@ -72,7 +69,6 @@ internal sealed class AdapterKeywordSourceProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     public required EnchantmentEntry Entry { get; init; }
-    public int Priority => Entry.Priority;
 
     public IEnumerable<CardKeyword> GetTrackedKeywords()
     {
@@ -99,7 +95,6 @@ internal sealed class AdapterPresentationProvider<TEnchantment>
     where TEnchantment : EnchantmentModel
 {
     public required EnchantmentEntry Entry { get; init; }
-    public int Priority => Entry.Priority;
 
     public IReadOnlyList<int>? GetVisualSliceAmounts(EnchantmentStackSnapshot snapshot)
     {
@@ -115,5 +110,45 @@ internal sealed class AdapterPresentationProvider<TEnchantment>
 
         formattedText = defaultText;
         return false;
+    }
+}
+
+internal sealed class AdapterLifecycleProvider<TEnchantment>
+    : global::MultiEnchantmentMod.IEnchantmentLifecycleProvider<TEnchantment>
+    where TEnchantment : EnchantmentModel
+{
+    public required EnchantmentEntry Entry { get; init; }
+
+    public Api.EnchantmentScope GetScope() =>
+        Entry.GetScope?.Invoke() ?? Api.EnchantmentScope.Permanent;
+
+    public void OnApplied(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnApplied?.Invoke(card, enchantment);
+    }
+
+    public bool OnRemoved(CardModel card, TEnchantment enchantment, Api.RemovalReason reason)
+    {
+        return Entry.OnRemoved?.Invoke(card, enchantment, reason) ?? true;
+    }
+
+    public void OnCombatStart(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnCombatStart?.Invoke(card, enchantment);
+    }
+
+    public void OnCombatEnd(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnCombatEnd?.Invoke(card, enchantment);
+    }
+
+    public void OnTurnStart(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnTurnStart?.Invoke(card, enchantment);
+    }
+
+    public void OnTurnEnd(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnTurnEnd?.Invoke(card, enchantment);
     }
 }

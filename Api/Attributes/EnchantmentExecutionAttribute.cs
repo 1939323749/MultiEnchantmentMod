@@ -1,7 +1,4 @@
 using System;
-// HookExecutionMode lives in the legacy MultiEnchantmentMod namespace for now; Step 9 will
-// move it under Api.Advanced. Reference via alias so this file stays independent of broader
-// using directives in consuming code.
 using HookExecutionMode = MultiEnchantmentMod.HookExecutionMode;
 
 namespace MultiEnchantmentMod.Api;

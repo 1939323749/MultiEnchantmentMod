@@ -28,16 +28,15 @@ public sealed class EnchantmentAttribute : Attribute
     public StatusAggregation Status { get; init; } = StatusAggregation.AnyInstanceCountsAsOne;
 
     /// <summary>
-    /// Higher values win when multiple registrations target the same enchantment type.
-    /// Defaults to 0; third-party mods overriding built-in behavior should use a positive number.
-    /// </summary>
-    public int Priority { get; init; }
-
-    /// <summary>
     /// Optional reference to a sibling <see cref="EnchantmentDefinition{TEnchantment}"/> subclass.
     /// Currently informational only (used by the analyzer for cross-file diagnostics). The
     /// scanner discovers companion classes automatically as long as they have a parameterless
     /// constructor.
     /// </summary>
     public Type? Companion { get; init; }
+
+    public ScopeKind Scope { get; init; } = ScopeKind.Permanent;
+    public int MaxActivations { get; init; }
+    public int LingerTurns { get; init; }
+    public ActivationTrigger Activation { get; init; } = ActivationTrigger.OnPlay;
 }

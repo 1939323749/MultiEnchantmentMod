@@ -22,8 +22,6 @@ public partial class MultiEnchantmentMod : Node
     public static void Initialize()
     {
         MultiEnchantmentSupport.Initialize();
-        new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
-        PatchThievingHopperPriorities();
 
         // Register every built-in MegaCrit enchantment via the v2 fluent builder before any
         // Resolve* call can hit. Replaces the hardcoded switch tables that used to live in
@@ -36,6 +34,9 @@ public partial class MultiEnchantmentMod : Node
         // MultiEnchantmentApi.ScanCallingAssembly() from their own [ModInitializer]; the lazy
         // first-Resolve fallback in MultiEnchantmentStackApi covers anyone who forgets.
         Api.MultiEnchantmentApi.ScanAssembly(Assembly.GetExecutingAssembly());
+
+        new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
+        PatchThievingHopperPriorities();
     }
 
     private static void PatchThievingHopperPriorities()

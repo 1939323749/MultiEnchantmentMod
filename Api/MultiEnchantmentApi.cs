@@ -63,6 +63,16 @@ public static class MultiEnchantmentApi
         return (IEnchantmentRegistration)instance;
     }
 
+    public static bool RemoveEnchantment(
+        CardModel card,
+        EnchantmentModel enchantment,
+        RemovalReason reason = RemovalReason.Manual)
+    {
+        ArgumentNullException.ThrowIfNull(card);
+        ArgumentNullException.ThrowIfNull(enchantment);
+        return MultiEnchantmentScopeSupport.RemoveEnchantmentWithReason(card, enchantment, reason);
+    }
+
     /// <summary>
     /// Returns <c>true</c> when the runtime's API version is at least <paramref name="minimum"/>.
     /// Third-party mods should call this from their initializer to fail-fast on mismatched
@@ -85,8 +95,8 @@ public static class MultiEnchantmentApi
     /// <summary>
     /// Scans <paramref name="assembly"/> for v2 enchantment registrations (attribute-tagged
     /// <see cref="EnchantmentModel"/> subclasses and <see cref="EnchantmentDefinition{TEnchantment}"/>
-    /// subclasses) and legacy v1 provider implementations. Idempotent: re-scanning the same
-    /// assembly does nothing. Returns the number of new registrations performed.
+    /// subclasses). Idempotent: re-scanning the same assembly does nothing. Returns the number of
+    /// new registrations performed.
     /// </summary>
     public static int ScanAssembly(Assembly assembly) =>
         AssemblyScanner.ScanAssembly(assembly);

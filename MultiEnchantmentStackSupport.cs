@@ -21,6 +21,17 @@ internal static class MultiEnchantmentStackSupport
             return provider.GetDefinition();
         }
 
+        // No v2 / v1 provider registered for this type. Run auto-detection — if this is a
+        // non-vanilla EnchantmentModel that overrides EnchantDamage*/EnchantBlock*, it gets
+        // auto-registered as MergeAmount + SharedAcrossStack so subsequent calls hit the registry
+        // path above. Idempotent per type.
+        Api.Internal.EnchantmentRegistry.EnsureRegistered(enchantmentType);
+
+        if (MultiEnchantmentStackApi.ResolveDefinitionProvider(enchantmentType) is { } resolvedAfterAutoRegister)
+        {
+            return resolvedAfterAutoRegister.GetDefinition();
+        }
+
         return GetBuiltInDefinition(enchantmentType);
     }
 
@@ -105,6 +116,22 @@ internal static class MultiEnchantmentStackSupport
             liveInstances);
     }
 
+    public static EnchantmentStackSnapshot CreateSingleSliceSnapshot(
+        EnchantmentStackSnapshot source,
+        EnchantmentStackSlice slice)
+    {
+        EnchantmentStackSlice[] slices = { slice };
+        return new EnchantmentStackSnapshot(
+            source.Card,
+            source.EnchantmentType,
+            source.AnchorInstance,
+            source.Definition,
+            Math.Max(1, slice.Amount),
+            slices,
+            slices,
+            source.LiveInstances);
+    }
+
     public static IReadOnlyList<EnchantmentStackSnapshot> GetSnapshots(CardModel? card)
     {
         if (card == null)
@@ -120,7 +147,25 @@ internal static class MultiEnchantmentStackSupport
 
     public static bool CanApply(CardModel card, Type enchantmentType)
     {
-        return GetEnchantmentCount(card, enchantmentType) == 0 ||
+        // Base-game source: EnchantmentModel.CanEnchant
+        // sts2.dll @ min_game_version 0.105.1
+        // Match vanilla's "no existing same-type enchantment" semantics. External callers
+        // (FresnelLens / Kifuda-style relics that re-fire enchant logic from multiple hooks —
+        // card reward + card-being-added-to-deck — and the UI's "is this card enchantable"
+        // filters) treat "already has a same-type enchantment" as "not enchantable"; otherwise
+        // the relic re-enchants on every hook and Amount / merged stack badges double up.
+        //
+        // The mod's intentional re-apply (merge) path goes through ApplyEnchantment, which
+        // bypasses this gate via CanStackOnto when a merge is the intended outcome.
+        return GetEnchantmentCount(card, enchantmentType) == 0;
+    }
+
+    public static bool CanStackOnto(CardModel card, Type enchantmentType)
+    {
+        // Internal predicate: "card already has a same-type enchantment AND the type permits
+        // merging". Used by ApplyEnchantment to skip the strict CanEnchant gate above when a
+        // legitimate merge is happening.
+        return GetEnchantmentCount(card, enchantmentType) > 0 &&
                GetBehavior(enchantmentType) != EnchantmentStackBehavior.DisallowDuplicate;
     }
 

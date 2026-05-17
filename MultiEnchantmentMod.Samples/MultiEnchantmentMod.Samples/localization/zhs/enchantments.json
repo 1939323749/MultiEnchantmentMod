@@ -1,0 +1,59 @@
+{
+  "SAMPLE_FROST_SHARD.title": "霜晶碎片",
+  "SAMPLE_FROST_SHARD.description": "参考示例（A 级，MergeAmount）。提供 2 倍于合并叠层量的格挡。",
+  "SAMPLE_FROST_SHARD.extraCardText": "获得 +{Block} 点 [gold]格挡[/gold]。",
+
+  "SAMPLE_RETAIN_AURA.title": "保留之环",
+  "SAMPLE_RETAIN_AURA.description": "参考示例（A 级，ExistenceStack）。首次附魔时为卡牌添加 [gold]保留[/gold] 关键字，重复附魔不会重复触发。",
+  "SAMPLE_RETAIN_AURA.extraCardText": "[gold]保留[/gold]。",
+
+  "SAMPLE_STATE_ACCUMULATOR.title": "状态累积器",
+  "SAMPLE_STATE_ACCUMULATOR.description": "参考示例（A 级，DuplicateInstance）。每次附魔都创建一个独立实例，各自维护自己的运行时状态。",
+
+  "SAMPLE_COST_REDUCER.title": "费用削减",
+  "SAMPLE_COST_REDUCER.description": "参考示例（B 级，MergeAmount + 配套定义类）。每次附魔时令卡牌的 [gold]能量[/gold] 费用降低 1 点。",
+  "SAMPLE_COST_REDUCER.extraCardText": "[gold]能量[/gold] 消耗 -1。",
+
+  "SAMPLE_EXHAUST_ADDER.title": "消耗光环",
+  "SAMPLE_EXHAUST_ADDER.description": "参考示例（B 级，关键字贡献）。把 [gold]消耗[/gold] 关键字作为可堆叠贡献注入卡牌。",
+  "SAMPLE_EXHAUST_ADDER.extraCardText": "[gold]消耗[/gold]。",
+
+  "SAMPLE_CONDITIONAL_EXHAUST.title": "条件消耗",
+  "SAMPLE_CONDITIONAL_EXHAUST.description": "参考示例（B 级，条件关键字）。仅当叠层数达到阈值时贡献 [gold]消耗[/gold] 关键字。",
+  "SAMPLE_CONDITIONAL_EXHAUST.extraCardText": "叠层时：[gold]消耗[/gold]。",
+
+  "SAMPLE_NONLINEAR_ENCHANTMENT.title": "非线性附魔",
+  "SAMPLE_NONLINEAR_ENCHANTMENT.description": "参考示例（B 级，自定义呈现）。演示如何覆写额外卡面文字格式化和视觉切片数量。",
+
+  "SAMPLE_DYNAMIC_ENCHANTMENT.title": "动态附魔",
+  "SAMPLE_DYNAMIC_ENCHANTMENT.description": "参考示例（C 级，fluent 注册）。不依赖特性或配套类，在运行时动态注册。",
+
+  "SAMPLE_COMBAT_GUARD.title": "战斗护盾",
+  "SAMPLE_COMBAT_GUARD.description": "参考示例（A 级，Scope = UntilCombatEnds）。战斗结束时自动移除，移除原因为 RemovalReason.CombatEnded。",
+
+  "SAMPLE_SINGLE_TURN_SHARPEN.title": "单回合锐化",
+  "SAMPLE_SINGLE_TURN_SHARPEN.description": "参考示例（A 级，Scope = UntilTurnEnds）。当前玩家回合结束时自动移除，移除原因为 RemovalReason.TurnEnded。",
+
+  "SAMPLE_LINGERING_SHARPEN.title": "延续锐化",
+  "SAMPLE_LINGERING_SHARPEN.description": "参考示例（C 级，LingerForTurns(2)）。持续两个玩家回合后自然失效，移除原因为 RemovalReason.TurnLimitReached。",
+
+  "SAMPLE_CHARGED_SHARPEN.title": "蓄能锐化",
+  "SAMPLE_CHARGED_SHARPEN.description": "参考示例（C 级，MaxActivations(3, OnPlay)）。出牌三次后被移除，移除原因为 RemovalReason.ActivationLimitReached；首次移除会被 OnRemoved 否决以作演示。",
+
+  "SAMPLE_HAND_ONLY_SHARPEN.title": "手牌锐化",
+  "SAMPLE_HAND_ONLY_SHARPEN.description": "参考示例（C 级，ConditionalActive）。仅当卡牌位于玩家手牌中时才贡献伤害 / 格挡。",
+
+  "SAMPLE_LIFECYCLE_ENCHANTMENT.title": "生命周期示例",
+  "SAMPLE_LIFECYCLE_ENCHANTMENT.description": "参考示例（B 级，UntilCombatEnds + 完整生命周期覆写）。演示 OnApplied、OnRemoved（含 veto）、OnCombatStart / OnCombatEnd、OnTurnStart / OnTurnEnd。",
+
+  "SAMPLE_PLUS_FIVE.title": "+5 伤害",
+  "SAMPLE_PLUS_FIVE.description": "参考示例（A 级，[ModifyDynamicVar]）。让卡牌的 [gold]伤害[/gold] +5 × 叠层量。与其他 ModifyDynamicVar 贡献按附魔顺序叠加。",
+  "SAMPLE_PLUS_FIVE.extraCardText": "[gold]伤害[/gold] 每层 +5。",
+
+  "SAMPLE_DOUBLER.title": "伤害翻倍",
+  "SAMPLE_DOUBLER.description": "参考示例（B 级，配套定义类上的 [ModifyDynamicVar]）。把卡牌的 [gold]伤害[/gold] 乘以 2。和 “+5 伤害” 同卡时可观察到顺序敏感的组合：先 +5 再 ×2 ≠ 先 ×2 再 +5。",
+  "SAMPLE_DOUBLER.extraCardText": "[gold]伤害[/gold] ×2。",
+
+  "SAMPLE_UNREGISTERED.title": "未注册附魔",
+  "SAMPLE_UNREGISTERED.description": "参考示例（兼容性，未调用 Register）。重写 EnchantDamageAdditive 以演示自动注册兜底——第一次被检测到时自动按 MergeAmount 注册，并记录一次性 info 日志。"
+}

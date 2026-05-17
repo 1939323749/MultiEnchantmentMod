@@ -27,6 +27,8 @@ using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
+using MultiEnchantmentMod.Api;
+using MultiEnchantmentMod.Api.Internal;
 
 namespace MultiEnchantmentMod;
 
@@ -75,6 +77,8 @@ internal static class MultiEnchantmentSupport
         AccessTools.Method(typeof(CardModel), "GetResultPileTypeForCardPlay");
     private static readonly MethodInfo? CardModelPlayPowerCardFlyVfxMethod =
         AccessTools.Method(typeof(CardModel), "PlayPowerCardFlyVfx");
+    private static readonly MethodInfo? CardModelClearEnchantmentInternalMethod =
+        AccessTools.Method(typeof(CardModel), "ClearEnchantmentInternal");
 
     private static readonly StringName ShaderH = new("h");
     private static readonly StringName ShaderS = new("s");
@@ -178,14 +182,57 @@ internal static class MultiEnchantmentSupport
 
         // Primary enchantment with multi-slice merged stack metadata needs the per-slice path.
         EnchantmentModel? primary = card.Enchantment;
-        if (primary != null &&
-            MultiEnchantmentStackSupport.TryGetMergedStackAmounts(primary, out int[] slices) &&
+        if (primary != null && RequiresSinglePrimaryMultiEnchantmentLogic(card, primary))
+        {
+            return true;
+        }
+
+        // Single-enchantment fast path opt-out: if any enchantment on the card registered a
+        // ModifyDynamicVar contribution, the UpdateCardPreview prefix must run so the new
+        // pipeline gets to fold contributions on top of vanilla's value. Without this check, a
+        // card carrying only a SamplePlusFive (which contributes to "damage"/"block") would
+        // bypass our prefix entirely and the contribution would never fire.
+        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        {
+            if (EnchantmentRegistry.HasAnyDynamicVarContributions(enchantment.GetType()))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool RequiresOnPlayWrapperMultiEnchantmentLogic(CardModel? card)
+    {
+        if (card == null)
+        {
+            return false;
+        }
+
+        if (GetAdditionalEnchantments(card).Count > 0)
+        {
+            return true;
+        }
+
+        EnchantmentModel? primary = card.Enchantment;
+        return primary != null && RequiresSinglePrimaryMultiEnchantmentLogic(card, primary);
+    }
+
+    private static bool RequiresSinglePrimaryMultiEnchantmentLogic(CardModel card, EnchantmentModel primary)
+    {
+        if (MultiEnchantmentStackSupport.TryGetMergedStackAmounts(primary, out int[] slices) &&
             slices.Length > 1)
         {
             return true;
         }
 
-        return false;
+        if (MultiEnchantmentStackApi.ResolveLifecycleProvider(primary.GetType()) != null)
+        {
+            return true;
+        }
+
+        return MultiEnchantmentStackApi.GetHookExecutionCount(primary, EnchantmentHookKind.OnPlay) != 1;
     }
 
     public static int GetReplayCount(CardModel card)
@@ -212,6 +259,11 @@ internal static class MultiEnchantmentSupport
         decimal result = damage;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
+            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            {
+                continue;
+            }
+
             if (hookType.HasFlag(ModifyDamageHookType.Additive))
             {
                 result += EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantDamageAdditive(result, props));
@@ -231,11 +283,80 @@ internal static class MultiEnchantmentSupport
         decimal result = block;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
+            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            {
+                continue;
+            }
+
             result += EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockAdditive(result, props));
             result *= EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockMultiplicative(result, props));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Single-pass aggregator for the new <see cref="IEnchantmentRegistration.ModifyDynamicVar"/>
+    /// pipeline. Walks every registered contribution for <paramref name="varKey"/> in card
+    /// application order × per-enchantment registration order, folding each into the running
+    /// value. Returns <paramref name="baseValue"/> unchanged when nothing is registered for the
+    /// key — caller-side short-circuit via <see cref="HasDynamicVarContributionsFor"/> avoids the
+    /// fan-out cost in that case.
+    /// </summary>
+    /// <remarks>
+    /// Order sensitivity is the design intent: "+5 then ×2" produces a different result than
+    /// "×2 then +5". Same-type repeats under <c>MergeAmount</c> are expanded into gameplay
+    /// slices for this pipeline so interleaved applications compose in their original order.
+    /// </remarks>
+    public static decimal ApplyDynamicVarEnchantments(CardModel? card, string varKey, decimal baseValue)
+    {
+        if (card == null || string.IsNullOrEmpty(varKey))
+        {
+            return baseValue;
+        }
+
+        decimal result = baseValue;
+        foreach (OrderedDynamicVarEnchantmentEntry entry in GetOrderedDynamicVarEnchantmentEntries(card))
+        {
+            Type enchantmentType = entry.Enchantment.GetType();
+            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            {
+                continue;
+            }
+
+            IReadOnlyList<DynamicVarContribution> contributions =
+                EnchantmentRegistry.GetContributions(enchantmentType, varKey);
+            if (contributions.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (DynamicVarContribution contribution in contributions)
+            {
+                try
+                {
+                    result = contribution.Contribution(entry.Snapshot, result);
+                }
+                catch (Exception ex)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        $"[MultiEnchantment] ModifyDynamicVar({varKey}) contribution from " +
+                        $"{enchantmentType.FullName} threw; skipping. Error: {ex.GetBaseException().Message}");
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Fast existence check the <see cref="MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar"/>
+    /// postfix patch uses to skip work when no enchantment in the process contributes to the
+    /// given key.
+    /// </summary>
+    public static bool HasDynamicVarContributionsFor(string varKey)
+    {
+        return !string.IsNullOrEmpty(varKey) && EnchantmentRegistry.HasContributionsFor(varKey);
     }
 
     public static bool NormalizeCardEnchantmentStacks(CardModel card)
@@ -302,7 +423,13 @@ internal static class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
-        if (!enchantment.CanEnchant(card))
+
+        // CanEnchant now strictly matches vanilla's "no existing same-type" semantics (see
+        // the CanApply comment), so relic / external UI calls are blocked at the gate before
+        // reaching here. Internal merge calls must still go through, so probe CanStackOnto
+        // and skip the CanEnchant gate when a legitimate merge is in progress.
+        bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
+        if (!isStackingExisting && !enchantment.CanEnchant(card))
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
@@ -460,11 +587,13 @@ internal static class MultiEnchantmentSupport
         CardEnchantmentState state = CardStates.GetOrCreateValue(card);
         state.ExtraEnchantments.Add(enchantment);
         state.LastAppliedEnchantment = enchantment;
+        EnsureScopeState(card, enchantment);
 
         if (modifyCard)
         {
             bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
             ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
+            MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
         }
 
         if (triggerChanged)
@@ -504,29 +633,28 @@ internal static class MultiEnchantmentSupport
             return false;
         }
 
+        RemoveOneApplicationOrder(state, enchantment.Id);
+        state.ScopeStates.Remove(enchantment);
+        state.PendingRemovals.RemoveAll(entry => ReferenceEquals(entry.Enchantment, enchantment));
         enchantment.ClearInternal();
         if (ReferenceEquals(state.LastAppliedEnchantment, enchantment))
         {
             state.LastAppliedEnchantment = null;
         }
 
+        PruneEmptyCardState(card, state);
         return true;
     }
 
     public static void ClearAdditionalEnchantments(CardModel card, bool triggerChanged)
     {
-        if (!CardStates.TryGetValue(card, out CardEnchantmentState? state))
+        foreach (EnchantmentModel enchantment in GetOrderedEnchantmentsForRemoval(card)
+                     .Where(static enchantment => !ReferenceEquals(enchantment.Card?.Enchantment, enchantment))
+                     .ToList())
         {
-            return;
+            RemoveEnchantmentInternal(card, enchantment, RemovalReason.CardCleared, bypassVeto: true, refreshCard: false, triggerChanged: false);
         }
 
-        foreach (EnchantmentModel enchantment in state.ExtraEnchantments)
-        {
-            enchantment.ClearInternal();
-        }
-
-        state.ExtraEnchantments.Clear();
-        CardStates.Remove(card);
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
 
         if (triggerChanged)
@@ -542,6 +670,7 @@ internal static class MultiEnchantmentSupport
         {
             EnchantmentModel cloned = (EnchantmentModel)enchantment.ClonePreservingMutability();
             RestoreAdditionalEnchantmentState(clone, cloned, modifyCard: true, triggerChanged: false);
+            CopyScopeState(source, enchantment, clone, cloned);
             changed = true;
         }
 
@@ -577,6 +706,7 @@ internal static class MultiEnchantmentSupport
                 RestoreAdditionalEnchantmentState(target, cloned, modifyCard: true, triggerChanged: false);
             }
 
+            CopyScopeState(source, enchantment, target, cloned);
             changed = true;
         }
 
@@ -602,6 +732,7 @@ internal static class MultiEnchantmentSupport
 
         if (extras.Count == 0)
         {
+            RemoveSavedString(save.Props, SavePropertyName);
             SerializeApplicationOrder(card, save);
             return;
         }
@@ -994,17 +1125,31 @@ internal static class MultiEnchantmentSupport
         // cards/relics/powers observing AfterCardPlayed see the post-OnPlay state consistently.
         foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(cardPlay.Card).ToList())
         {
+            if (!MultiEnchantmentScopeSupport.IsActive(cardPlay.Card, enchantment))
+            {
+                continue;
+            }
+
             choiceContext.PushModel(enchantment);
             try
             {
-                await enchantment.OnPlay(choiceContext, cardPlay);
-                enchantment.InvokeExecutionFinished();
+                int onPlayCount = MultiEnchantmentStackApi.GetHookExecutionCount(
+                    enchantment,
+                    EnchantmentHookKind.OnPlay);
+                for (int i = 0; i < onPlayCount; i++)
+                {
+                    await enchantment.OnPlay(choiceContext, cardPlay);
+                    enchantment.InvokeExecutionFinished();
+                    MultiEnchantmentScopeSupport.NoteActivation(enchantment, ActivationTrigger.OnPlay);
+                }
             }
             finally
             {
                 choiceContext.PopModel(enchantment);
             }
         }
+
+        FlushPendingRemovals(cardPlay.Card);
     }
 
     public static async Task OnPlayWrapperWithMultiEnchantments(
@@ -1085,10 +1230,17 @@ internal static class MultiEnchantmentSupport
             CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
             await OnPlayForMultiEnchantmentPatch(card, choiceContext, cardPlay);
             card.InvokeExecutionFinished();
-            if (card.Enchantment != null)
+            if (card.Enchantment != null && MultiEnchantmentScopeSupport.IsActive(card, card.Enchantment))
             {
-                await card.Enchantment.OnPlay(choiceContext, cardPlay);
-                card.Enchantment.InvokeExecutionFinished();
+                int primaryOnPlayCount = MultiEnchantmentStackApi.GetHookExecutionCount(
+                    card.Enchantment,
+                    EnchantmentHookKind.OnPlay);
+                for (int j = 0; j < primaryOnPlayCount; j++)
+                {
+                    await card.Enchantment.OnPlay(choiceContext, cardPlay);
+                    card.Enchantment.InvokeExecutionFinished();
+                    MultiEnchantmentScopeSupport.NoteActivation(card.Enchantment, ActivationTrigger.OnPlay);
+                }
             }
 
             await RunAdditionalEnchantmentsOnPlay(choiceContext, cardPlay);
@@ -1255,9 +1407,206 @@ internal static class MultiEnchantmentSupport
         return state.ApplicationOrder;
     }
 
+    internal static ScopeRuntimeState EnsureScopeState(CardModel card, EnchantmentModel enchantment)
+    {
+        CardEnchantmentState state = CardStates.GetOrCreateValue(card);
+        if (!state.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? scopeState))
+        {
+            scopeState = new ScopeRuntimeState();
+            state.ScopeStates[enchantment] = scopeState;
+        }
+
+        return scopeState;
+    }
+
+    internal static IEnumerable<EnchantmentModel> GetOrderedEnchantmentsForRemoval(CardModel card)
+    {
+        // Build a ModelId → live-instance queue, not a flat dict: DuplicateInstance and
+        // ExistenceStack enchantments can have multiple live instances sharing the same Id on
+        // the same card. A naive ToDictionary call throws ArgumentException on the duplicate
+        // key, which crashes the end-of-turn scope sweep (HandleTurnEnd) and stalls the enemy
+        // turn. Each ApplicationOrder entry pops one instance from its bucket so the LIFO
+        // sweep walks every instance exactly once.
+        List<EnchantmentModel> ordered = new();
+        HashSet<EnchantmentModel> seen = new(ReferenceEqualityComparer.Instance);
+        Dictionary<ModelId, Queue<EnchantmentModel>> byId = new();
+        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        {
+            if (!byId.TryGetValue(enchantment.Id, out Queue<EnchantmentModel>? queue))
+            {
+                queue = new Queue<EnchantmentModel>();
+                byId[enchantment.Id] = queue;
+            }
+
+            queue.Enqueue(enchantment);
+        }
+
+        IReadOnlyList<ModelId> applicationOrder = GetApplicationOrder(card);
+        for (int i = applicationOrder.Count - 1; i >= 0; i--)
+        {
+            if (byId.TryGetValue(applicationOrder[i], out Queue<EnchantmentModel>? queue) &&
+                queue.Count > 0)
+            {
+                EnchantmentModel enchantment = queue.Dequeue();
+                if (seen.Add(enchantment))
+                {
+                    ordered.Add(enchantment);
+                }
+            }
+        }
+
+        foreach (EnchantmentModel enchantment in GetEnchantments(card).Reverse())
+        {
+            if (seen.Add(enchantment))
+            {
+                ordered.Add(enchantment);
+            }
+        }
+
+        return ordered;
+    }
+
+    internal static void QueuePendingRemoval(CardModel card, EnchantmentModel enchantment, RemovalReason reason)
+    {
+        CardEnchantmentState state = CardStates.GetOrCreateValue(card);
+        if (state.PendingRemovals.Any(entry => ReferenceEquals(entry.Enchantment, enchantment)))
+        {
+            return;
+        }
+
+        state.PendingRemovals.Add(new PendingRemovalEntry(enchantment, reason));
+    }
+
+    internal static void FlushPendingRemovals(CardModel card)
+    {
+        if (!CardStates.TryGetValue(card, out CardEnchantmentState? state) || state.PendingRemovals.Count == 0)
+        {
+            return;
+        }
+
+        List<PendingRemovalEntry> pending = state.PendingRemovals.ToList();
+        state.PendingRemovals.Clear();
+        foreach (PendingRemovalEntry entry in pending)
+        {
+            RemoveEnchantmentInternal(
+                card,
+                entry.Enchantment,
+                entry.Reason,
+                bypassVeto: entry.Reason == RemovalReason.CardCleared,
+                refreshCard: false,
+                triggerChanged: false);
+        }
+
+        card.DynamicVars.RecalculateForUpgradeOrEnchant();
+        card.FinalizeUpgradeInternal();
+        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        TriggerEnchantmentChanged(card);
+    }
+
+    internal static bool RemoveEnchantmentInternal(
+        CardModel card,
+        EnchantmentModel enchantment,
+        RemovalReason reason,
+        bool bypassVeto,
+        bool refreshCard = true,
+        bool triggerChanged = true)
+    {
+        ArgumentNullException.ThrowIfNull(card);
+        ArgumentNullException.ThrowIfNull(enchantment);
+
+        bool isPrimary = ReferenceEquals(card.Enchantment, enchantment);
+        bool isExtra = GetAdditionalEnchantments(card).Contains(enchantment);
+        if (!isPrimary && !isExtra)
+        {
+            return false;
+        }
+
+        if (!bypassVeto)
+        {
+            MultiEnchantmentStackApi.ILifecycleProviderRegistration? lifecycle = MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
+            if (lifecycle != null)
+            {
+                try
+                {
+                    if (!lifecycle.OnRemoved(card, enchantment, reason))
+                    {
+                        return false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        $"[MultiEnchantment][Scope] Removal handler failed for {enchantment.Id} on {card.Id}: {ex}");
+                }
+            }
+        }
+
+        CardEnchantmentState? state = CardStates.TryGetValue(card, out CardEnchantmentState? existingState)
+            ? existingState
+            : null;
+
+        if (isPrimary)
+        {
+            if (CardModelClearEnchantmentInternalMethod == null)
+            {
+                throw new InvalidOperationException("Failed to access CardModel.ClearEnchantmentInternal.");
+            }
+
+            CardModelClearEnchantmentInternalMethod.Invoke(card, null);
+        }
+        else if (!RemoveAdditionalEnchantmentState(card, enchantment))
+        {
+            return false;
+        }
+
+        state ??= CardStates.TryGetValue(card, out CardEnchantmentState? updatedState) ? updatedState : null;
+        if (state != null)
+        {
+            if (isPrimary)
+            {
+                RebuildApplicationOrder(card);
+            }
+            else
+            {
+                RemoveOneApplicationOrder(state, enchantment.Id);
+            }
+
+            state.ScopeStates.Remove(enchantment);
+            state.PendingRemovals.RemoveAll(entry => ReferenceEquals(entry.Enchantment, enchantment));
+            if (ReferenceEquals(state.LastAppliedEnchantment, enchantment))
+            {
+                state.LastAppliedEnchantment = null;
+            }
+
+            PruneEmptyCardState(card, state);
+        }
+
+        if (refreshCard)
+        {
+            card.DynamicVars.RecalculateForUpgradeOrEnchant();
+            card.FinalizeUpgradeInternal();
+            MultiEnchantmentStackSupport.RefreshDerivedState(card);
+            if (triggerChanged)
+            {
+                TriggerEnchantmentChanged(card);
+            }
+        }
+
+        return true;
+    }
+
     private static void AppendApplicationOrder(CardModel card, ModelId enchantmentId)
     {
         CardStates.GetOrCreateValue(card).ApplicationOrder.Add(enchantmentId);
+    }
+
+    private static void RemoveOneApplicationOrder(CardEnchantmentState state, ModelId enchantmentId)
+    {
+        int index = state.ApplicationOrder.FindIndex(id => id.Equals(enchantmentId));
+        if (index >= 0)
+        {
+            state.ApplicationOrder.RemoveAt(index);
+        }
     }
 
     private static void RebuildApplicationOrder(CardModel card)
@@ -1281,6 +1630,36 @@ internal static class MultiEnchantmentSupport
         CardEnchantmentState targetState = CardStates.GetOrCreateValue(target);
         targetState.ApplicationOrder.Clear();
         targetState.ApplicationOrder.AddRange(sourceState.ApplicationOrder);
+    }
+
+    private static void CopyScopeState(
+        CardModel sourceCard,
+        EnchantmentModel sourceEnchantment,
+        CardModel targetCard,
+        EnchantmentModel targetEnchantment)
+    {
+        if (!CardStates.TryGetValue(sourceCard, out CardEnchantmentState? sourceState) ||
+            !sourceState.ScopeStates.TryGetValue(sourceEnchantment, out ScopeRuntimeState? sourceScopeState))
+        {
+            return;
+        }
+
+        ScopeRuntimeState targetScopeState = EnsureScopeState(targetCard, targetEnchantment);
+        targetScopeState.Scope = sourceScopeState.Scope;
+        targetScopeState.ActivationCount = sourceScopeState.ActivationCount;
+        targetScopeState.TurnsRemaining = sourceScopeState.TurnsRemaining;
+    }
+
+    private static void PruneEmptyCardState(CardModel card, CardEnchantmentState state)
+    {
+        if (state.ExtraEnchantments.Count == 0 &&
+            state.ApplicationOrder.Count == 0 &&
+            state.ScopeStates.Count == 0 &&
+            state.PendingRemovals.Count == 0 &&
+            state.LastAppliedEnchantment == null)
+        {
+            CardStates.Remove(card);
+        }
     }
 
     private static void SeedMissingApplicationOrder(CardModel card)
@@ -1329,6 +1708,50 @@ internal static class MultiEnchantmentSupport
             }
 
             entries.Add(new OrderedEnchantmentEntry(enchantment, enchantment.Amount));
+        }
+
+        return entries;
+    }
+
+    private static List<OrderedDynamicVarEnchantmentEntry> GetOrderedDynamicVarEnchantmentEntries(CardModel? card)
+    {
+        return OrderEntries(
+            card,
+            GetDefaultOrderedDynamicVarEnchantmentEntries(card),
+            static entry => entry.Enchantment.Id);
+    }
+
+    private static List<OrderedDynamicVarEnchantmentEntry> GetDefaultOrderedDynamicVarEnchantmentEntries(CardModel? card)
+    {
+        List<OrderedDynamicVarEnchantmentEntry> entries = new();
+        HashSet<Type> handledTypes = new();
+        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        {
+            Type enchantmentType = enchantment.GetType();
+            if (!handledTypes.Add(enchantmentType))
+            {
+                continue;
+            }
+
+            EnchantmentStackSnapshot snapshot = MultiEnchantmentStackSupport.GetSnapshot(enchantment);
+            if (snapshot.Definition.Behavior == EnchantmentStackBehavior.MergeAmount)
+            {
+                foreach (EnchantmentStackSlice slice in snapshot.GameplaySlices)
+                {
+                    if (!slice.IsActive)
+                    {
+                        continue;
+                    }
+
+                    entries.Add(new OrderedDynamicVarEnchantmentEntry(
+                        enchantment,
+                        MultiEnchantmentStackSupport.CreateSingleSliceSnapshot(snapshot, slice)));
+                }
+
+                continue;
+            }
+
+            entries.Add(new OrderedDynamicVarEnchantmentEntry(enchantment, snapshot));
         }
 
         return entries;
@@ -1794,9 +2217,11 @@ internal static class MultiEnchantmentSupport
             // Match the base-game "primary enchantment" path first so downstream code that expects
             // CardModel.Enchantment to be populated continues to behave like vanilla.
             card.EnchantInternal(enchantment, amount);
+            EnsureScopeState(card, enchantment);
             if (modifyCard)
             {
                 ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard: true);
+                MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
             }
 
             RememberLastAppliedEnchantment(card, enchantment);
@@ -1813,9 +2238,15 @@ internal static class MultiEnchantmentSupport
 
     private static int ValidateAndConvertStackAmount(decimal amount, string paramName)
     {
+        // Vanilla CardCmd.Enchant accepts any decimal and forwards it to EnchantInternal without
+        // validation, so the dev console's `enchant <id>` (with no explicit number) passes 0 and
+        // vanilla treats that as "apply once". Mirror that ergonomic — coerce non-positive
+        // amounts to 1 rather than throwing, otherwise our prefix throws, falls back to vanilla,
+        // and vanilla's "already enchanted" check then refuses any different-type second
+        // enchantment.
         if (amount <= 0)
         {
-            throw new ArgumentOutOfRangeException(paramName, amount, "Enchantment amount must be a positive integer.");
+            return 1;
         }
 
         if (decimal.Truncate(amount) != amount)
@@ -1840,6 +2271,8 @@ internal static class MultiEnchantmentSupport
 
         goopy.Amount++;
         RememberLastAppliedEnchantment(goopy.Card, goopy);
+        MultiEnchantmentScopeSupport.NoteActivation(goopy, ActivationTrigger.AfterCardPlayed);
+        FlushPendingRemovals(goopy.Card);
         goopy.Card.DynamicVars.RecalculateForUpgradeOrEnchant();
         goopy.Card.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(goopy.Card);
@@ -2176,6 +2609,8 @@ internal static class MultiEnchantmentSupport
     {
         public List<EnchantmentModel> ExtraEnchantments { get; } = new();
         public List<ModelId> ApplicationOrder { get; } = new();
+        public Dictionary<EnchantmentModel, ScopeRuntimeState> ScopeStates { get; } = new(ReferenceEqualityComparer.Instance);
+        public List<PendingRemovalEntry> PendingRemovals { get; } = new();
         public EnchantmentModel? LastAppliedEnchantment { get; set; }
     }
 
@@ -2208,9 +2643,17 @@ internal static class MultiEnchantmentSupport
         EnchantmentModel Enchantment,
         int EffectiveAmount);
 
+    private readonly record struct OrderedDynamicVarEnchantmentEntry(
+        EnchantmentModel Enchantment,
+        EnchantmentStackSnapshot Snapshot);
+
     private readonly record struct OrderedVisualEntry(
         ModelId EnchantmentId,
         EnchantmentVisualState VisualState);
+
+    private readonly record struct PendingRemovalEntry(
+        EnchantmentModel Enchantment,
+        RemovalReason Reason);
 
     private sealed class MultiEnchantmentSaveCarrier
     {

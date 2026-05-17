@@ -28,13 +28,6 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
-    public IEnchantmentRegistration WithPriority(int priority)
-    {
-        EnsureNotCommitted();
-        _entry.Priority = priority;
-        return this;
-    }
-
     public IEnchantmentRegistration Execution(Action<ExecutionPolicyBuilder> configure)
     {
         EnsureNotCommitted();
@@ -61,6 +54,80 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration WithScope(EnchantmentScope scope)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(scope);
+        _entry.GetScope = () => scope;
+        return this;
+    }
+
+    public IEnchantmentRegistration LingerForTurns(int turns)
+    {
+        return WithScope(EnchantmentScope.LingerForTurns(turns));
+    }
+
+    public IEnchantmentRegistration MaxActivations(int n, ActivationTrigger t = ActivationTrigger.OnPlay)
+    {
+        return WithScope(EnchantmentScope.MaxActivations(n, t));
+    }
+
+    public IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(predicate);
+        _entry.GetScope = () => EnchantmentScope.ConditionalActive(predicate);
+        return this;
+    }
+
+    public IEnchantmentRegistration OnApplied(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnApplied = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnRemoved(Func<CardModel, EnchantmentModel, RemovalReason, bool> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnRemoved = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCombatStart(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCombatStart = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCombatEnd(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCombatEnd = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnTurnStart(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnTurnStart = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnTurnEnd(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnTurnEnd = handler;
+        return this;
+    }
+
     public IEnchantmentRegistration TrackKeyword(CardKeyword keyword, Func<EnchantmentStackSnapshot, int> amountFn)
     {
         EnsureNotCommitted();
@@ -82,6 +149,20 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(compute);
         _entry.GetVisualSliceAmounts = compute;
+        return this;
+    }
+
+    public IEnchantmentRegistration ModifyDynamicVar(
+        string varKey,
+        Func<EnchantmentStackSnapshot, decimal, decimal> contribution)
+    {
+        EnsureNotCommitted();
+        if (string.IsNullOrEmpty(varKey))
+        {
+            throw new ArgumentException("VarKey must be a non-empty string.", nameof(varKey));
+        }
+        ArgumentNullException.ThrowIfNull(contribution);
+        _entry.DynamicVarContributions.Add(new DynamicVarContribution(varKey, contribution));
         return this;
     }
 

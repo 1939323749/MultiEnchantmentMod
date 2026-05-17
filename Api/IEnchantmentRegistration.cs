@@ -48,12 +48,6 @@ public interface IEnchantmentRegistration
     IEnchantmentRegistration Stack(StackBehavior behavior, StatusAggregation status);
 
     /// <summary>
-    /// Tie-breaker priority. Higher values win when multiple registrations target the same
-    /// enchantment type. Defaults to <c>0</c>.
-    /// </summary>
-    IEnchantmentRegistration WithPriority(int priority);
-
-    /// <summary>
     /// Configures per-hook execution modes via the fluent
     /// <see cref="ExecutionPolicyBuilder"/>. Overwrites any previous execution policy.
     /// </summary>
@@ -71,6 +65,17 @@ public interface IEnchantmentRegistration
     /// the default implementation that just re-runs <c>RecalculateValues</c>.
     /// </summary>
     IEnchantmentRegistration OnMergedRefresh(Action<EnchantmentModel> action);
+
+    IEnchantmentRegistration WithScope(EnchantmentScope scope);
+    IEnchantmentRegistration LingerForTurns(int turns);
+    IEnchantmentRegistration MaxActivations(int n, ActivationTrigger t = ActivationTrigger.OnPlay);
+    IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate);
+    IEnchantmentRegistration OnApplied(Action<CardModel, EnchantmentModel> handler);
+    IEnchantmentRegistration OnRemoved(Func<CardModel, EnchantmentModel, RemovalReason, bool> handler);
+    IEnchantmentRegistration OnCombatStart(Action<CardModel, EnchantmentModel> handler);
+    IEnchantmentRegistration OnCombatEnd(Action<CardModel, EnchantmentModel> handler);
+    IEnchantmentRegistration OnTurnStart(Action<CardModel, EnchantmentModel> handler);
+    IEnchantmentRegistration OnTurnEnd(Action<CardModel, EnchantmentModel> handler);
 
     /// <summary>
     /// Declares that this enchantment contributes (or removes) the given card keyword while
@@ -91,6 +96,46 @@ public interface IEnchantmentRegistration
     /// <paramref name="compute"/> to fall back to the default slice computation.
     /// </summary>
     IEnchantmentRegistration VisualSlices(Func<EnchantmentStackSnapshot, IReadOnlyList<int>?> compute);
+
+    /// <summary>
+    /// Declares that this enchantment contributes to a named dynamic variable on the card. Multiple
+    /// enchantments touching the same key compose in "card application order × registration order
+    /// on the same enchantment"; no separate priority layer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Invocation count by stack behavior:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><c>MergeAmount</c>: <b>once per active gameplay slice</b>. Two merged stacks → two
+    ///   invocations, each with a single-slice snapshot whose <c>TotalAmount</c> equals the slice
+    ///   amount (typically 1). Write per-stack formulas like <c>current + 5m</c> or
+    ///   <c>current * 2m</c>; the pipeline handles scaling.</item>
+    ///   <item><c>ExistenceStack</c>: <b>once per type</b> regardless of instance count
+    ///   (presence-only semantics). Snapshot contains the full type-wide view.</item>
+    ///   <item><c>DuplicateInstance</c>: <b>once per type</b> (the dedup mirrors ExistenceStack to
+    ///   keep behavior predictable). If you want per-instance scaling, multiply by
+    ///   <c>snapshot.ActiveInstanceCount</c> inside the formula.</item>
+    /// </list>
+    /// <para>
+    /// Caveat: don't pair <c>ModifyDynamicVar("damage", ...)</c> with an
+    /// <c>EnchantDamageAdditive</c>/<c>EnchantBlockAdditive</c> override on the same enchantment.
+    /// Both channels stack; pick exactly one for any given key.
+    /// </para>
+    /// </remarks>
+    /// <param name="varKey">
+    /// The dynamic-variable key (e.g. <c>"damage"</c>, <c>"block"</c>, <c>"Times"</c>,
+    /// <c>"Combust"</c>). Matched case-insensitively against the runtime <c>DynamicVar.Name</c>
+    /// (which is PascalCase in vanilla); authors may write the lowercase placeholder form here.
+    /// </param>
+    /// <param name="contribution">
+    /// Returns the new running value given the current snapshot for this enchantment type and the
+    /// running value so far. Calling this method multiple times for the same <paramref name="varKey"/>
+    /// stacks contributions in registration order.
+    /// </param>
+    IEnchantmentRegistration ModifyDynamicVar(
+        string varKey,
+        Func<EnchantmentStackSnapshot, decimal, decimal> contribution);
 
     /// <summary>
     /// Finalizes the registration and writes it into the runtime registry. Returns a handle that
@@ -123,5 +168,78 @@ public static class EnchantmentRegistrationExtensions
     {
         ArgumentNullException.ThrowIfNull(action);
         return registration.OnMergedRefresh(e => action((TEnchantment)e));
+    }
+
+    public static IEnchantmentRegistration OnApplied<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnApplied((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnRemoved<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<CardModel, TEnchantment, RemovalReason, bool> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.OnRemoved((card, enchantment, reason) => handler(card, (TEnchantment)enchantment, reason));
+    }
+
+    public static IEnchantmentRegistration OnCombatStart<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCombatStart((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnCombatEnd<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCombatEnd((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnTurnStart<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnTurnStart((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnTurnEnd<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnTurnEnd((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    /// <summary>
+    /// Strongly-typed flavor of <see cref="IEnchantmentRegistration.ModifyDynamicVar"/>. The
+    /// snapshot / current-value pair maps directly to the non-generic overload; the
+    /// <typeparamref name="TEnchantment"/> parameter is present for symmetry with the other
+    /// strongly-typed callbacks and is supplied as the snapshot's anchor instance cast to
+    /// <typeparamref name="TEnchantment"/>.
+    /// </summary>
+    public static IEnchantmentRegistration ModifyDynamicVar<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        string varKey,
+        Func<EnchantmentStackSnapshot, TEnchantment, decimal, decimal> contribution)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        return registration.ModifyDynamicVar(
+            varKey,
+            (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
     }
 }

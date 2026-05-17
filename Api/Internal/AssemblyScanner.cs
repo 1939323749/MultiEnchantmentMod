@@ -3,26 +3,21 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Models;
-using LegacyStackApi = MultiEnchantmentMod.MultiEnchantmentStackApi;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
 /// <summary>
-/// Single discovery / registration entry point for the v2 stacking API. Replaces the v1
-/// "scan-every-Resolve-call" mechanism with explicit
-/// <see cref="MultiEnchantmentApi.ScanAssembly"/> + a one-shot lazy fallback the very first
-/// time the runtime tries to resolve a provider.
+/// Single discovery / registration entry point for the v2 stacking API. Supports explicit
+/// <see cref="MultiEnchantmentApi.ScanAssembly"/> plus a lazy fallback when the runtime resolves
+/// a provider for the first time.
 /// </summary>
 /// <remarks>
-/// One scan pass covers three categories per assembly:
+/// One scan pass covers two categories per assembly:
 ///   1. <see cref="EnchantmentDefinition{T}"/> concrete subclasses → instantiated and
 ///      <see cref="IEnchantmentDefinition.Register"/>'ed.
 ///   2. <see cref="EnchantmentModel"/> subclasses tagged with <see cref="EnchantmentAttribute"/>
 ///      (and friends) but not yet covered by a Definition class → registered via the fluent
 ///      builder using the attribute values.
-///   3. The legacy v1 provider interfaces (handed off to
-///      <see cref="LegacyStackApi"/>'s existing discovery helper) so third-party mods built
-///      against the v1 surface keep working until Step 9 removes that path entirely.
 /// </remarks>
 internal static class AssemblyScanner
 {
@@ -32,7 +27,7 @@ internal static class AssemblyScanner
     private static int _lastSeenAssemblyCount;
 
     /// <summary>
-    /// Scans <paramref name="assembly"/> for v2 definitions / attributes and v1 providers.
+    /// Scans <paramref name="assembly"/> for v2 definitions / attributes.
     /// Idempotent: re-scanning the same assembly does nothing. Returns the number of new
     /// registrations performed.
     /// </summary>
@@ -64,8 +59,8 @@ internal static class AssemblyScanner
     }
 
     /// <summary>
-    /// Lazy scan triggered from the v1 <see cref="LegacyStackApi.Resolve*"/> helpers. Walks
-    /// every loaded assembly that references this mod and that hasn't been scanned yet.
+    /// Lazy scan triggered from the provider resolve helpers. Walks every loaded assembly that
+    /// references this mod and that hasn't been scanned yet.
     /// </summary>
     /// <remarks>
     /// Re-runs whenever the <see cref="AppDomain.CurrentDomain"/>'s assembly count grows since
@@ -184,11 +179,6 @@ internal static class AssemblyScanner
             }
         }
 
-        // Pass 3: Legacy v1 IEnchantment*Provider<T> discovery — preserves third-party mods that
-        // still target the v1 surface until Step 9 retires it. Routed through the existing
-        // helper so we don't duplicate provider-shim wiring.
-        registeredCount += LegacyStackApi.DiscoverV1ProvidersFromAssembly(assembly);
-
         return registeredCount;
     }
 
@@ -265,8 +255,28 @@ internal static class AssemblyScanner
         try
         {
             IEnchantmentRegistration registration = MultiEnchantmentApi.Register(type)
-                .Stack(attribute.Stack, attribute.Status)
-                .WithPriority(attribute.Priority);
+                .Stack(attribute.Stack, attribute.Status);
+
+            if (attribute.MaxActivations > 0)
+            {
+                registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
+            }
+            else if (attribute.LingerTurns > 0)
+            {
+                registration.LingerForTurns(attribute.LingerTurns);
+            }
+            else
+            {
+                switch (attribute.Scope)
+                {
+                    case ScopeKind.UntilCombatEnds:
+                        registration.WithScope(EnchantmentScope.UntilCombatEnds);
+                        break;
+                    case ScopeKind.UntilTurnEnds:
+                        registration.WithScope(EnchantmentScope.UntilTurnEnds);
+                        break;
+                }
+            }
 
             EnchantmentExecutionAttribute? executionAttribute =
                 (EnchantmentExecutionAttribute?)Attribute.GetCustomAttribute(
@@ -285,6 +295,13 @@ internal static class AssemblyScanner
 
                 EnchantmentKeywordAttribute captured = keywordAttribute;
                 registration.TrackKeyword(captured.Keyword, snapshot => EvaluateKeywordAmount(captured, snapshot));
+            }
+
+            // [ModifyDynamicVar] tagged methods on Tier A enchantment classes — Tier B definitions
+            // pick these up through EnchantmentDefinition<T>.DynamicVarContributions instead.
+            foreach (DynamicVarContribution contribution in ModifyDynamicVarScanner.ScanType(type))
+            {
+                registration.ModifyDynamicVar(contribution.VarKey, contribution.Contribution);
             }
 
             registration.Commit();

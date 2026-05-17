@@ -110,9 +110,16 @@ internal static class BuiltInRegistrations
             })
             .Commit();
 
-        // Glam / Spiral need to keep their `Times` dynamic var in sync with the merged Amount
-        // after every merge. v1 had a hardcoded `is Glam or Spiral` branch in
-        // RefreshMergedEnchantmentState; v2 wires it via OnMergedRefresh.
+        // Glam / Spiral keep their {Times} dynamic var in sync with merged Amount via two pieces:
+        //   1. OnMergedRefresh: re-run RecalculateValues and seed DynamicVars["Times"].BaseValue =
+        //      Amount, so vanilla code paths that read BaseValue directly stay correct.
+        //   2. ModifyDynamicVar("Times", c => c) trip-wire registration: the fold is a no-op, but
+        //      it registers "Times" as a contributed key. That flips HasContributionsFor("Times")
+        //      to true, which is what causes the base DynamicVar.UpdateCardPreview postfix to fire
+        //      and copy BaseValue → PreviewValue through the (no-op) pipeline. Without this
+        //      trip-wire a lone-Glam card's {Times} wouldn't propagate to PreviewValue on every
+        //      refresh. Any future cross-mod contributor that targets "Times" composes after this
+        //      no-op naturally.
         MultiEnchantmentApi.Register<Glam>()
             .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
             .OnMergedRefresh((Glam e) =>
@@ -121,6 +128,7 @@ internal static class BuiltInRegistrations
                 e.DynamicVars["Times"].BaseValue = e.Amount;
                 e.Card?.DynamicVars.RecalculateForUpgradeOrEnchant();
             })
+            .ModifyDynamicVar("Times", (snapshot, current) => current)
             .Commit();
 
         MultiEnchantmentApi.Register<Spiral>()
@@ -131,6 +139,7 @@ internal static class BuiltInRegistrations
                 e.DynamicVars["Times"].BaseValue = e.Amount;
                 e.Card?.DynamicVars.RecalculateForUpgradeOrEnchant();
             })
+            .ModifyDynamicVar("Times", (snapshot, current) => current)
             .Commit();
 
         // === Keyword sources =================================================================
