@@ -63,12 +63,15 @@ internal static class BuiltInRegistrations
 
         foreach (Type mergeType in MergeAmountSharedTypes)
         {
-            // Special cases get fluent OnMergedDelta / OnMergedRefresh overrides applied below
-            // before Commit, so skip the plain definition-only registration for those types.
+            // Special cases get fluent OnMergedDelta / OnMergedRefresh / Execution overrides
+            // applied below before Commit, so skip the plain definition-only registration for
+            // those types.
             if (mergeType == typeof(Instinct) ||
                 mergeType == typeof(Glam) ||
                 mergeType == typeof(Spiral) ||
-                mergeType == typeof(SoulsPower))
+                mergeType == typeof(SoulsPower) ||
+                mergeType == typeof(Momentum) ||
+                mergeType == typeof(Adroit))
             {
                 continue;
             }
@@ -140,6 +143,28 @@ internal static class BuiltInRegistrations
                 e.Card?.DynamicVars.RecalculateForUpgradeOrEnchant();
             })
             .ModifyDynamicVar("Times", (snapshot, current) => current)
+            .Commit();
+
+        // Momentum / Adroit override OnPlay's execution mode so it fires once per outer card-play
+        // iteration instead of MergedTotal times. Both enchantments' OnPlay applies an effect
+        // already scaled by base.Amount (Momentum: `_extraDamage += Amount`; Adroit: gain Amount
+        // block via DynamicVars.Block), so the MergeAmount default of MergedTotal — which fires
+        // OnPlay `ActiveTotalAmount` times — multiplies the scaled effect by Amount on top of
+        // itself, growing the per-play effect quadratically (Amount² instead of Amount). Vanilla
+        // CardModel.OnPlayWrapper fires Enchantment.OnPlay exactly once per play iteration; using
+        // PerLiveInstance reproduces that for the merged single instance (live instance count = 1
+        // after MergeAmount merging). Other built-in MergeAmount enchantments either don't override
+        // OnPlay (Sharp, Nimble, Clone, Glam, Spiral, SoulsPower, Slither, Imbued, SlumberingEssence)
+        // or self-disable on first call via a Status check (Sown, Swift), so the default stays
+        // safe for them.
+        MultiEnchantmentApi.Register<Momentum>()
+            .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+            .Execution(p => p.OnPlay(global::MultiEnchantmentMod.HookExecutionMode.PerLiveInstance))
+            .Commit();
+
+        MultiEnchantmentApi.Register<Adroit>()
+            .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+            .Execution(p => p.OnPlay(global::MultiEnchantmentMod.HookExecutionMode.PerLiveInstance))
             .Commit();
 
         // === Keyword sources =================================================================
