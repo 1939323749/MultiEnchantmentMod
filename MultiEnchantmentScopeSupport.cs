@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Runs;
 using MultiEnchantmentMod.Api;
 
 namespace MultiEnchantmentMod;
@@ -253,5 +257,124 @@ internal static class MultiEnchantmentScopeSupport
                 }
             }
         }
+    }
+
+    // ── Multiplayer / save-restore: ScopeRuntimeState serialization ──────────────────────────
+    //
+    // ScopeRuntimeState (ActivationCount / TurnsRemaining) lives in-memory on
+    // CardEnchantmentState.ScopeStates. Without explicit serialization, MaxActivations counters
+    // and LingerForTurns countdowns reset to defaults on save/load and never synchronize across
+    // multiplayer peers. We capture the state at the EnchantmentModel.ToSerializable boundary
+    // (called from EnchantmentToSerializablePostfix) and lazy-restore the first time a card +
+    // enchantment pair appears in EnsureScopeState on the receiving side. The Scope value itself
+    // is NOT serialized: scope kind is registry-driven (ResolveScope) and both sides resolve it
+    // independently from the shared mod registry; serializing a Func<> (ConditionalActiveScope's
+    // predicate) would be wrong anyway.
+
+    internal const string ScopeStateSavePropertyName = "MultiEnchantmentScopeData";
+
+    private sealed record ScopeStatePayload(
+        [property: JsonPropertyName("activation_count")] int ActivationCount,
+        [property: JsonPropertyName("turns_remaining")] int TurnsRemaining);
+
+    /// <summary>
+    /// Restores <see cref="ScopeRuntimeState.ActivationCount"/> and
+    /// <see cref="ScopeRuntimeState.TurnsRemaining"/> from the enchantment's
+    /// <see cref="SavedProperties.strings"/> entry if present. Called lazily from the low-level
+    /// <c>MultiEnchantmentSupport.EnsureScopeState</c> when a fresh <see cref="ScopeRuntimeState"/>
+    /// is constructed — covers save-restore and multiplayer packet-receive paths uniformly.
+    /// Returns true if data was restored; false if the key was absent or malformed.
+    /// </summary>
+    internal static bool TryRestoreScopeStateFromProps(EnchantmentModel enchantment, ScopeRuntimeState state)
+    {
+        SavedProperties? props = enchantment.Props;
+        if (props?.strings == null)
+        {
+            return false;
+        }
+
+        int idx = props.strings.FindIndex(p => string.Equals(p.name, ScopeStateSavePropertyName, StringComparison.Ordinal));
+        if (idx < 0)
+        {
+            return false;
+        }
+
+        string payloadJson = props.strings[idx].value;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            ScopeStatePayload? payload = JsonSerializer.Deserialize<ScopeStatePayload>(payloadJson);
+            if (payload == null)
+            {
+                return false;
+            }
+
+            state.ActivationCount = payload.ActivationCount;
+            state.TurnsRemaining = payload.TurnsRemaining;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][Scope] Failed to deserialize scope state for {enchantment.Id}: {ex.GetBaseException().Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Copies the current in-memory <see cref="ScopeRuntimeState"/> for <paramref name="enchantment"/>
+    /// into <paramref name="save"/>'s <see cref="SavedProperties.strings"/>. Skipped when the
+    /// enchantment isn't attached to a card (no card → no scope state lookup possible) or when
+    /// both counter fields are zero (default state — no packet bytes wasted on permanent enchants).
+    /// Called from <c>EnchantmentToSerializablePostfix</c>; the receiving side's
+    /// <c>EnchantmentModel.FromSerializable</c> + <c>RestoreSerializedProps</c> chain clones the
+    /// entire <c>save.Props</c> back into the new enchantment's live <c>Props</c>, where
+    /// <see cref="TryRestoreScopeStateFromProps"/> reads it on first <c>EnsureScopeState</c> hit.
+    /// </summary>
+    internal static void WriteScopeStateToSerializableProps(EnchantmentModel enchantment, ref SerializableEnchantment save)
+    {
+        CardModel? card = enchantment.Card;
+        if (card == null)
+        {
+            return;
+        }
+
+        if (!MultiEnchantmentSupport.TryGetExistingScopeState(card, enchantment, out ScopeRuntimeState? state) || state == null)
+        {
+            return;
+        }
+
+        if (state.ActivationCount == 0 && state.TurnsRemaining == 0)
+        {
+            // Default / fresh state. Skip the property entirely so existing-receiver upgrades
+            // don't accumulate empty Props.strings entries on permanent enchants.
+            RemoveScopeStatePropertyFromSave(ref save);
+            return;
+        }
+
+        ScopeStatePayload payload = new(state.ActivationCount, state.TurnsRemaining);
+        string json = JsonSerializer.Serialize(payload);
+
+        save.Props ??= new SavedProperties();
+        save.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
+        SavedProperties.SavedProperty<string> property = new(ScopeStateSavePropertyName, json);
+        int existingIndex = save.Props.strings.FindIndex(saved => saved.name == ScopeStateSavePropertyName);
+        if (existingIndex >= 0)
+        {
+            save.Props.strings[existingIndex] = property;
+        }
+        else
+        {
+            save.Props.strings.Add(property);
+        }
+    }
+
+    private static void RemoveScopeStatePropertyFromSave(ref SerializableEnchantment save)
+    {
+        save.Props?.strings?.RemoveAll(p => string.Equals(p.name, ScopeStateSavePropertyName, StringComparison.Ordinal));
     }
 }

@@ -222,6 +222,10 @@ internal static class MultiEnchantmentPatches
     private static void EnchantmentToSerializablePostfix(EnchantmentModel __instance, ref SerializableEnchantment __result)
     {
         MultiEnchantmentStackSupport.WriteSerializedProps(__instance, ref __result);
+        // Capture in-memory ScopeRuntimeState (MaxActivations / LingerForTurns counters) so the
+        // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
+        // for why the Scope kind itself is NOT serialized.
+        MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable))]

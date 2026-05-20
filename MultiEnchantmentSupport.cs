@@ -1413,10 +1413,38 @@ internal static class MultiEnchantmentSupport
         if (!state.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? scopeState))
         {
             scopeState = new ScopeRuntimeState();
+            // Lazy restore from serialized form. Covers save-restore and multiplayer packet-receive
+            // paths: SerializableEnchantment.Props was copied into enchantment.Props by
+            // EnchantmentFromSerializablePostfix → RestoreSerializedProps; the first EnsureScopeState
+            // for this (card, enchantment) pair on the receiving side rehydrates the counters.
+            MultiEnchantmentScopeSupport.TryRestoreScopeStateFromProps(enchantment, scopeState);
             state.ScopeStates[enchantment] = scopeState;
         }
 
         return scopeState;
+    }
+
+    /// <summary>
+    /// Non-mutating lookup used by the ToSerializable boundary to capture only the
+    /// <see cref="ScopeRuntimeState"/>s that have actually been instantiated. Returns false +
+    /// null when no state exists for the pair, so we don't materialize a default state inside
+    /// serialization (which would inflate every multiplayer packet with empty payloads).
+    /// </summary>
+    internal static bool TryGetExistingScopeState(CardModel card, EnchantmentModel enchantment, out ScopeRuntimeState? state)
+    {
+        state = null;
+        if (!CardStates.TryGetValue(card, out CardEnchantmentState? cardState))
+        {
+            return false;
+        }
+
+        if (!cardState.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? scopeState))
+        {
+            return false;
+        }
+
+        state = scopeState;
+        return true;
     }
 
     internal static IEnumerable<EnchantmentModel> GetOrderedEnchantmentsForRemoval(CardModel card)
