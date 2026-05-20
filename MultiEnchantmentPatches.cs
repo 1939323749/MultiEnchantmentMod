@@ -66,6 +66,22 @@ internal static class MultiEnchantmentPatches
                 MultiEnchantmentMod.Logger.Info(
                     $"[MultiEnchantment] CanEnchant postfix tightening. " +
                     $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=AdditionalRules");
+                return;
+            }
+
+            // Vanilla CanEnchant only inspects card.Enchantment (the primary slot) — it cannot
+            // see the mod's extra enchantments. So a DisallowDuplicate type that already exists
+            // ONLY as an extra (with no primary) slips past vanilla's "same exists" check.
+            // Tighten here: if the type already exists anywhere on the card and the stack policy
+            // doesn't permit merging, reject. Stack-allowing types (MergeAmount /
+            // DuplicateInstance / ExistenceStack) skip this branch because CanStackOnto is true.
+            if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) &&
+                !MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType()))
+            {
+                __result = false;
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] CanEnchant postfix tightening. " +
+                    $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=DuplicateExtra");
             }
             return;
         }
