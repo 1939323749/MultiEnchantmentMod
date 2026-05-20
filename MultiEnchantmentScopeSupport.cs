@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MegaCrit.Sts2.Core.Combat;
@@ -48,21 +49,103 @@ internal static class MultiEnchantmentScopeSupport
         InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnApplied(owner, model));
     }
 
+    // Tracks which cards have already received the OnCombatStart callback for a given combat,
+    // and whether the initial sweep has completed. Needed because Hook.AfterCardEnteredCombat
+    // fires per-card both during deck-setup (BEFORE BeforeCombatStart) and mid-combat (AFTER
+    // BeforeCombatStart). The initial sweep should handle the former; the per-card patch should
+    // handle only the latter. Without this guard, deck-setup cards would either get OnCombatStart
+    // fired twice or get their per-combat state reset spuriously by the late-joiner path.
+    private sealed class CombatLifecycleState
+    {
+        public bool InitialSweepCompleted;
+        public readonly HashSet<CardModel> CombatStartFiredFor = new(ReferenceEqualityComparer.Instance);
+    }
+
+    private static readonly ConditionalWeakTable<CombatState, CombatLifecycleState> CombatLifecycles = new();
+
     internal static void OnCombatStarted(ICombatState combatState)
     {
+        CombatLifecycleState? lifecycle = combatState is CombatState concreteState
+            ? CombatLifecycles.GetOrCreateValue(concreteState)
+            : null;
+        if (lifecycle != null)
+        {
+            lifecycle.CombatStartFiredFor.Clear();
+            lifecycle.InitialSweepCompleted = false;
+        }
+
         foreach (CardModel card in EnumerateCombatCards(combatState, includeDeckVersions: false))
         {
-            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
-            {
-                ScopeRuntimeState state = EnsureScopeState(card, enchantment);
-                state.ActivationCount = 0;
-                if (state.Scope is EnchantmentScope.LingerForTurnsScope linger)
-                {
-                    state.TurnsRemaining = linger.Turns;
-                }
+            lifecycle?.CombatStartFiredFor.Add(card);
+            ResetCombatScopeStateForCard(card);
+            FireOnCombatStartCallbackForCard(card);
+        }
 
-                InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnCombatStart(owner, model));
+        if (lifecycle != null)
+        {
+            lifecycle.InitialSweepCompleted = true;
+        }
+    }
+
+    /// <summary>
+    /// Postfix entry point for <c>Hook.AfterCardEnteredCombat</c>. Fires the
+    /// <c>OnCombatStart</c> lifecycle callback for enchantments on cards that join combat after
+    /// the initial sweep (e.g. mid-combat card copies via Astrolabe, Madness-generated cards).
+    /// Skipped during deck setup (before the initial sweep marks completion) — those cards are
+    /// covered by the sweep itself. Does NOT reset <c>ActivationCount</c> / <c>TurnsRemaining</c>
+    /// because mid-combat arrivals get their state set up by <c>DispatchOnApplied</c> (fresh
+    /// applications) or <c>CopyScopeState</c> (clones); resetting here would erase that.
+    /// </summary>
+    internal static void OnCardEnteredCombat(ICombatState combatState, CardModel card)
+    {
+        if (card == null || combatState is not CombatState concreteState)
+        {
+            return;
+        }
+
+        if (!CombatLifecycles.TryGetValue(concreteState, out CombatLifecycleState? lifecycle))
+        {
+            // BeforeCombatStart hasn't fired yet for this combat. The initial sweep will pick
+            // this card up.
+            return;
+        }
+
+        if (!lifecycle.InitialSweepCompleted)
+        {
+            // Deck setup phase: card is being added before the initial sweep runs. Sweep
+            // handles it.
+            return;
+        }
+
+        if (!lifecycle.CombatStartFiredFor.Add(card))
+        {
+            // Card already received OnCombatStart this combat (e.g. moved between piles and
+            // re-entered).
+            return;
+        }
+
+        FireOnCombatStartCallbackForCard(card);
+    }
+
+    private static void ResetCombatScopeStateForCard(CardModel card)
+    {
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            ScopeRuntimeState state = EnsureScopeState(card, enchantment);
+            state.ActivationCount = 0;
+            if (state.Scope is EnchantmentScope.LingerForTurnsScope linger)
+            {
+                state.TurnsRemaining = linger.Turns;
             }
+        }
+    }
+
+    private static void FireOnCombatStartCallbackForCard(CardModel card)
+    {
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            EnsureScopeState(card, enchantment);
+            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnCombatStart(owner, model));
         }
     }
 

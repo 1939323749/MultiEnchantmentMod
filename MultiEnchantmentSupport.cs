@@ -240,6 +240,14 @@ internal static class MultiEnchantmentSupport
         int replayCount = card.BaseReplayCount;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
+            // Match the IsActive gating that ApplyDamageEnchantments / ApplyBlockEnchantments do.
+            // A WhenActive-false Glam / Spiral must not contribute extra plays — otherwise the
+            // "is it active" surface is inconsistent across pipelines.
+            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            {
+                continue;
+            }
+
             replayCount = EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantPlayCount(replayCount));
         }
 
@@ -1093,6 +1101,17 @@ internal static class MultiEnchantmentSupport
             {
                 foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
                 {
+                    // Honor WhenActive / ConditionalActive on the listener path. Without this,
+                    // an enchantment whose IsActive predicate is false still fires its
+                    // AbstractModel-virtual hooks (AfterCardPlayed, ModifyDamageAdditive,
+                    // AfterDamageReceived, …) because Hook.* iterates the listener list directly
+                    // and skips the per-call IsActive gate that the value-modifier pipelines
+                    // (ApplyDamageEnchantments etc.) apply.
+                    if (!MultiEnchantmentScopeSupport.IsActive(card, enchantment))
+                    {
+                        continue;
+                    }
+
                     yield return enchantment;
                 }
             }
@@ -1112,6 +1131,13 @@ internal static class MultiEnchantmentSupport
             {
                 foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
                 {
+                    // See AppendRunStateExtraEnchantments for why IsActive gates the listener
+                    // path as well as the value-modifier pipelines.
+                    if (!MultiEnchantmentScopeSupport.IsActive(card, enchantment))
+                    {
+                        continue;
+                    }
+
                     yield return enchantment;
                 }
             }

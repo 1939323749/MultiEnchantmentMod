@@ -134,6 +134,17 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
     }
 
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardEnteredCombat))]
+    [HarmonyPostfix]
+    private static void AfterCardEnteredCombatPostfix(ICombatState combatState, CardModel card)
+    {
+        // Fires OnCombatStart for cards that join combat AFTER BeforeCombatStart's initial
+        // sweep (relic-copies, Madness-generated cards, etc.). The scope support method gates
+        // on whether the sweep has completed, so deck-setup additions stay handled by the
+        // sweep itself — see OnCardEnteredCombat for the timing rationale.
+        MultiEnchantmentScopeSupport.OnCardEnteredCombat(combatState, card);
+    }
+
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
     [HarmonyPostfix]
     private static void AfterTurnEndPostfix(ICombatState combatState, CombatSide side)
