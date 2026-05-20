@@ -74,6 +74,41 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
+    /// Returns <c>true</c> when <paramref name="card"/> has an enchantment assignable to
+    /// <typeparamref name="TEnchantment"/> in any multi-enchantment slot.
+    /// </summary>
+    public static bool HasEnchantment<TEnchantment>(CardModel? card)
+        where TEnchantment : EnchantmentModel
+    {
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport.HasEnchantment<TEnchantment>(card);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="card"/> has an enchantment assignable to
+    /// <paramref name="enchantmentType"/> in any multi-enchantment slot.
+    /// </summary>
+    public static bool HasEnchantment(CardModel? card, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
+        {
+            throw new ArgumentException(
+                $"{enchantmentType.FullName} is not an {nameof(EnchantmentModel)} subclass.",
+                nameof(enchantmentType));
+        }
+
+        foreach (EnchantmentModel enchantment in global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card))
+        {
+            if (enchantmentType.IsInstanceOfType(enchantment))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when the runtime's API version is at least <paramref name="minimum"/>.
     /// Third-party mods should call this from their initializer to fail-fast on mismatched
     /// MultiEnchantmentMod versions. Logs an error when the check fails so the user has a
