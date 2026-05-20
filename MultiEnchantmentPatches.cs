@@ -159,7 +159,88 @@ internal static class MultiEnchantmentPatches
         if (side == CombatSide.Player)
         {
             MultiEnchantmentScopeSupport.OnPlayerTurnEnded(combatState);
+
+            // Fan the player-scoped AfterPlayerTurnEnd activation trigger out to every card-owned
+            // enchantment in PlayerCombatState. Combined with the v2 MaxActivations / RemoveWhen
+            // surface this lets authors express "expire after 2 turn endings" cleanly.
+            foreach (Player player in (combatState as CombatState)?.Players
+                ?? Enumerable.Empty<Player>())
+            {
+                if (player.IsActiveForHooks && player.PlayerCombatState != null)
+                {
+                    MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+                        player, ActivationTrigger.AfterPlayerTurnEnd);
+                }
+            }
         }
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardPlayed))]
+    [HarmonyPostfix]
+    private static void HookAfterCardPlayedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    {
+        // Goopy already drives its own AfterCardPlayed counter via HandleGoopyAfterCardPlayed.
+        // For the general v2 surface, fan the AfterCardPlayed activation trigger out to every
+        // enchantment on the played card so MaxActivations(N, AfterCardPlayed) / RemoveWhen
+        // checks can count it.
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+            cardPlay?.Card, ActivationTrigger.AfterCardPlayed);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
+    [HarmonyPostfix]
+    private static void HookAfterCardDrawnPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
+    {
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+            card, ActivationTrigger.AfterCardDrawn);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardExhausted))]
+    [HarmonyPostfix]
+    private static void HookAfterCardExhaustedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
+    {
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+            card, ActivationTrigger.AfterCardExhausted);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDiscarded))]
+    [HarmonyPostfix]
+    private static void HookAfterCardDiscardedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card)
+    {
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+            card, ActivationTrigger.AfterCardDiscarded);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterPlayerTurnStart))]
+    [HarmonyPostfix]
+    private static void HookAfterPlayerTurnStartPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, Player player)
+    {
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+            player, ActivationTrigger.AfterPlayerTurnStart);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageReceived))]
+    [HarmonyPostfix]
+    private static void HookAfterDamageReceivedPostfix(
+        PlayerChoiceContext choiceContext,
+        IRunState runState,
+        ICombatState? combatState,
+        Creature target,
+        DamageResult result,
+        ValueProp props,
+        Creature? dealer,
+        CardModel? cardSource)
+    {
+        // Trigger fires when the OWNER of an enchanted card takes damage. Filter to player
+        // owners so an enemy taking damage from an attack doesn't burn through MaxActivations
+        // counters on player-side enchantments.
+        if (target?.Player == null)
+        {
+            return;
+        }
+
+        MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+            target.Player, ActivationTrigger.AfterDamageReceived);
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
@@ -226,6 +307,14 @@ internal static class MultiEnchantmentPatches
             __result.FinalizeUpgradeInternal();
             MultiEnchantmentStackSupport.RefreshDerivedState(__result);
         }
+
+        // Now that the card has been fully reconstructed (primary enchantment attached via
+        // vanilla, extras re-attached by DeserializeAdditionalEnchantments, Props restored by
+        // EnchantmentFromSerializablePostfix's RestoreSerializedProps), fire OnRestored on
+        // every enchantment so authors can rebuild runtime caches that don't survive the
+        // serialization boundary. OnApplied is intentionally NOT fired here — that's reserved
+        // for "freshly attached, never before" semantics.
+        MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(__result);
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable))]

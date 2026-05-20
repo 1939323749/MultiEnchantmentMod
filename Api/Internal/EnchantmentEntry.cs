@@ -30,6 +30,7 @@ internal sealed class EnchantmentEntry
     public Action<CardModel, EnchantmentModel>? OnCombatEnd { get; set; }
     public Action<CardModel, EnchantmentModel>? OnTurnStart { get; set; }
     public Action<CardModel, EnchantmentModel>? OnTurnEnd { get; set; }
+    public Action<CardModel, EnchantmentModel>? OnRestored { get; set; }
 }
 
 /// <summary>

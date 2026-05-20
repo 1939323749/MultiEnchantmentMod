@@ -49,6 +49,28 @@ internal static class MultiEnchantmentScopeSupport
         InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnApplied(owner, model));
     }
 
+    /// <summary>
+    /// Fires the <c>OnRestored</c> lifecycle callback on every enchantment attached to
+    /// <paramref name="card"/>. Called from <c>CardModel.FromSerializable</c>'s postfix after
+    /// <c>DeserializeAdditionalEnchantments</c> has finished re-attaching extras — at that
+    /// point every enchantment's <c>Card</c> back-reference is set and its <c>Props</c> has
+    /// been populated by <c>RestoreSerializedProps</c>, so authors can safely rebuild any
+    /// runtime cache keyed on either.
+    /// </summary>
+    internal static void DispatchOnRestoredForCard(CardModel? card)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            EnsureScopeState(card, enchantment);
+            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnRestored(owner, model));
+        }
+    }
+
     // Tracks which cards have already received the OnCombatStart callback for a given combat,
     // and whether the initial sweep has completed. Needed because Hook.AfterCardEnteredCombat
     // fires per-card both during deck-setup (BEFORE BeforeCombatStart) and mid-combat (AFTER
@@ -207,15 +229,77 @@ internal static class MultiEnchantmentScopeSupport
         }
 
         ScopeRuntimeState state = EnsureScopeState(card, enchantment);
-        if (state.Scope is not EnchantmentScope.MaxActivationsScope maxScope || maxScope.Trigger != trigger)
+
+        if (state.Scope is EnchantmentScope.MaxActivationsScope maxScope && maxScope.Trigger == trigger)
+        {
+            state.ActivationCount++;
+            if (state.ActivationCount >= maxScope.Max)
+            {
+                MultiEnchantmentSupport.QueuePendingRemoval(card, enchantment, RemovalReason.ActivationLimitReached);
+            }
+            return;
+        }
+
+        if (state.Scope is EnchantmentScope.RemoveWhenScope removeWhen &&
+            removeWhen.CheckOn.Contains(trigger))
+        {
+            bool shouldRemove;
+            try
+            {
+                shouldRemove = removeWhen.Predicate(card, enchantment);
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment][Scope] RemoveWhen predicate failed for {enchantment.Id} on {card.Id}: {ex.GetBaseException().Message}");
+                return;
+            }
+
+            if (shouldRemove)
+            {
+                MultiEnchantmentSupport.QueuePendingRemoval(card, enchantment, RemovalReason.ConditionMet);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fires <see cref="NoteActivation"/> for every enchantment on <paramref name="card"/> with
+    /// <paramref name="trigger"/>. Used by the per-card trigger patches
+    /// (AfterCardPlayed / AfterCardDrawn / AfterCardExhausted / AfterCardDiscarded). Flushes
+    /// pending removals so the next iteration step doesn't see a still-attached but
+    /// scope-expired enchantment.
+    /// </summary>
+    internal static void DispatchActivationTriggerForCard(CardModel? card, ActivationTrigger trigger)
+    {
+        if (card == null)
         {
             return;
         }
 
-        state.ActivationCount++;
-        if (state.ActivationCount >= maxScope.Max)
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
         {
-            MultiEnchantmentSupport.QueuePendingRemoval(card, enchantment, RemovalReason.ActivationLimitReached);
+            NoteActivation(enchantment, trigger);
+        }
+
+        MultiEnchantmentSupport.FlushPendingRemovals(card);
+    }
+
+    /// <summary>
+    /// Fires <see cref="NoteActivation"/> for every enchantment on every one of
+    /// <paramref name="player"/>'s combat-pile cards with <paramref name="trigger"/>. Used by
+    /// player-wide trigger patches (AfterPlayerTurnStart / AfterPlayerTurnEnd /
+    /// AfterDamageReceived).
+    /// </summary>
+    internal static void DispatchActivationTriggerForPlayer(Player? player, ActivationTrigger trigger)
+    {
+        if (player?.PlayerCombatState == null)
+        {
+            return;
+        }
+
+        foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+        {
+            DispatchActivationTriggerForCard(card, trigger);
         }
     }
 

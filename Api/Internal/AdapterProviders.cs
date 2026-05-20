@@ -151,4 +151,9 @@ internal sealed class AdapterLifecycleProvider<TEnchantment>
     {
         Entry.OnTurnEnd?.Invoke(card, enchantment);
     }
+
+    public void OnRestored(CardModel card, TEnchantment enchantment)
+    {
+        Entry.OnRestored?.Invoke(card, enchantment);
+    }
 }

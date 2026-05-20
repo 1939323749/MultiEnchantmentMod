@@ -67,9 +67,18 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return WithScope(EnchantmentScope.LingerForTurns(turns));
     }
 
-    public IEnchantmentRegistration MaxActivations(int n, ActivationTrigger t = ActivationTrigger.OnPlay)
+    public IEnchantmentRegistration MaxActivations(int n, ActivationTrigger? t = null)
     {
         return WithScope(EnchantmentScope.MaxActivations(n, t));
+    }
+
+    public IEnchantmentRegistration RemoveWhen(
+        Func<CardModel, EnchantmentModel, bool> predicate,
+        params ActivationTrigger[] checkOn)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        ArgumentNullException.ThrowIfNull(checkOn);
+        return WithScope(EnchantmentScope.RemoveWhen(predicate, checkOn));
     }
 
     public IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate)
@@ -125,6 +134,14 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
         _entry.OnTurnEnd = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnRestored(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnRestored = handler;
         return this;
     }
 

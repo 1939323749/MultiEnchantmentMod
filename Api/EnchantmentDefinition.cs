@@ -75,6 +75,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.OnCombatEnd = (card, model) => InvokeOnCombatEnd(card, (TEnchantment)model);
             entry.OnTurnStart = (card, model) => InvokeOnTurnStart(card, (TEnchantment)model);
             entry.OnTurnEnd = (card, model) => InvokeOnTurnEnd(card, (TEnchantment)model);
+            entry.OnRestored = (card, model) => InvokeOnRestored(card, (TEnchantment)model);
         }
 
         foreach (CardKeyword keyword in InvokeTrackedKeywords())
@@ -201,6 +202,13 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     protected virtual void OnTurnEnd(CardModel card, TEnchantment enchantment) { }
 
     /// <summary>
+    /// Fires after the enchantment has been reconstructed from save / multiplayer packet data
+    /// and reattached to its card. Use this hook (not <see cref="OnApplied"/>) to rebuild any
+    /// runtime cache that doesn't survive serialization.
+    /// </summary>
+    protected virtual void OnRestored(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>
     /// Card keywords that this enchantment can add or remove while it's active. Each keyword
     /// returned here will trigger <see cref="KeywordSourceAmount"/> on every refresh; the sum
     /// across all definitions and keyword providers determines whether the keyword is present.
@@ -313,7 +321,8 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
                Overrides(nameof(OnCombatStart), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnCombatEnd), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnTurnStart), typeof(CardModel), typeof(TEnchantment)) ||
-               Overrides(nameof(OnTurnEnd), typeof(CardModel), typeof(TEnchantment));
+               Overrides(nameof(OnTurnEnd), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnRestored), typeof(CardModel), typeof(TEnchantment));
     }
 
     private bool Overrides(string methodName, params Type[] parameterTypes)
@@ -343,4 +352,5 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal void InvokeOnCombatEnd(CardModel card, TEnchantment enchantment) => OnCombatEnd(card, enchantment);
     internal void InvokeOnTurnStart(CardModel card, TEnchantment enchantment) => OnTurnStart(card, enchantment);
     internal void InvokeOnTurnEnd(CardModel card, TEnchantment enchantment) => OnTurnEnd(card, enchantment);
+    internal void InvokeOnRestored(CardModel card, TEnchantment enchantment) => OnRestored(card, enchantment);
 }

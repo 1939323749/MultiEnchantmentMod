@@ -66,10 +66,29 @@ public interface IEnchantmentRegistration
     /// </summary>
     IEnchantmentRegistration OnMergedRefresh(Action<EnchantmentModel> action);
 
+    /// <summary>
+    /// Fires after the enchantment has been reconstructed from save / packet data and reattached
+    /// to its card. Distinct from <see cref="OnApplied"/> (which is "freshly attached, never
+    /// before"): <see cref="OnRestored"/> fires every time a card travels across the
+    /// serialization boundary, including each multiplayer packet round-trip. Use it to rebuild
+    /// any external runtime cache that doesn't survive serialization.
+    /// </summary>
+    IEnchantmentRegistration OnRestored(Action<CardModel, EnchantmentModel> handler);
+
     IEnchantmentRegistration WithScope(EnchantmentScope scope);
     IEnchantmentRegistration LingerForTurns(int turns);
-    IEnchantmentRegistration MaxActivations(int n, ActivationTrigger t = ActivationTrigger.OnPlay);
+    IEnchantmentRegistration MaxActivations(int n, ActivationTrigger? t = null);
     IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate);
+
+    /// <summary>
+    /// Schedules removal as soon as <paramref name="predicate"/> evaluates to <c>true</c>. The
+    /// predicate is re-checked whenever any of <paramref name="checkOn"/> fires. Equivalent to
+    /// <c>WithScope(EnchantmentScope.RemoveWhen(predicate, checkOn))</c>; provided as a fluent
+    /// shorthand for parity with <see cref="LingerForTurns"/> / <see cref="MaxActivations"/>.
+    /// </summary>
+    IEnchantmentRegistration RemoveWhen(
+        Func<CardModel, EnchantmentModel, bool> predicate,
+        params ActivationTrigger[] checkOn);
     IEnchantmentRegistration OnApplied(Action<CardModel, EnchantmentModel> handler);
     IEnchantmentRegistration OnRemoved(Func<CardModel, EnchantmentModel, RemovalReason, bool> handler);
     IEnchantmentRegistration OnCombatStart(Action<CardModel, EnchantmentModel> handler);
@@ -222,6 +241,15 @@ public static class EnchantmentRegistrationExtensions
     {
         ArgumentNullException.ThrowIfNull(action);
         return registration.OnTurnEnd((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnRestored<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnRestored((card, enchantment) => action(card, (TEnchantment)enchantment));
     }
 
     /// <summary>

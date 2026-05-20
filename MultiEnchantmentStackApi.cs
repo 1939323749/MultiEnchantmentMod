@@ -165,6 +165,15 @@ internal interface IEnchantmentLifecycleProvider<TEnchantment>
     void OnTurnStart(CardModel card, TEnchantment enchantment);
 
     void OnTurnEnd(CardModel card, TEnchantment enchantment);
+
+    /// <summary>
+    /// Fires after a save load or multiplayer packet-receive has fully reconstructed the
+    /// enchantment onto its card. <em>Not</em> a substitute for <see cref="OnApplied"/>; both
+    /// callbacks coexist for the same enchantment over its lifetime (one on fresh apply, the
+    /// other on every subsequent restore). Use this hook to rebuild any external runtime cache
+    /// (e.g. a <c>ConditionalWeakTable&lt;CardModel, T&gt;</c>) that doesn't survive serialization.
+    /// </summary>
+    void OnRestored(CardModel card, TEnchantment enchantment);
 }
 
 public static class MultiEnchantmentStackApi
@@ -476,6 +485,7 @@ public static class MultiEnchantmentStackApi
         void OnCombatEnd(CardModel card, EnchantmentModel enchantment);
         void OnTurnStart(CardModel card, EnchantmentModel enchantment);
         void OnTurnEnd(CardModel card, EnchantmentModel enchantment);
+        void OnRestored(CardModel card, EnchantmentModel enchantment);
     }
 
     private sealed class StackDefinitionProviderRegistration<TEnchantment> : IStackDefinitionProviderRegistration
@@ -640,6 +650,11 @@ public static class MultiEnchantmentStackApi
         public void OnTurnEnd(CardModel card, EnchantmentModel enchantment)
         {
             _provider.OnTurnEnd(card, (TEnchantment)enchantment);
+        }
+
+        public void OnRestored(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnRestored(card, (TEnchantment)enchantment);
         }
     }
 }
