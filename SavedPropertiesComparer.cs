@@ -47,6 +47,35 @@ internal static class SavedPropertiesComparer
         return hash.ToHashCode();
     }
 
+    public static bool HaveSameString(SavedProperties? left, SavedProperties? right, string name)
+    {
+        return string.Equals(FindString(left, name), FindString(right, name), StringComparison.Ordinal);
+    }
+
+    public static int GetStringHashCode(SavedProperties? props, string name)
+    {
+        return GetStringHashCode(FindString(props, name));
+    }
+
+    private static string? FindString(SavedProperties? props, string name)
+    {
+        List<SavedProperties.SavedProperty<string>>? list = props?.strings;
+        if (list == null)
+        {
+            return null;
+        }
+
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (string.Equals(list[i].name, name, StringComparison.Ordinal))
+            {
+                return list[i].value;
+            }
+        }
+
+        return null;
+    }
+
     private static bool HaveSameSavedPropertyList<T>(
         List<SavedProperties.SavedProperty<T>>? left,
         List<SavedProperties.SavedProperty<T>>? right,

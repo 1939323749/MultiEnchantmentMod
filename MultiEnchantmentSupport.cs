@@ -34,8 +34,8 @@ namespace MultiEnchantmentMod;
 
 internal static class MultiEnchantmentSupport
 {
-    private const string SavePropertyName = nameof(MultiEnchantmentSaveCarrier.MultiEnchantmentData);
-    private const string OrderSavePropertyName = nameof(MultiEnchantmentSaveCarrier.MultiEnchantmentOrderData);
+    internal const string SavePropertyName = nameof(MultiEnchantmentSaveCarrier.MultiEnchantmentData);
+    internal const string OrderSavePropertyName = nameof(MultiEnchantmentSaveCarrier.MultiEnchantmentOrderData);
     private const float ExtraSlotYOffset = 44f;
     private const string EnchantVfxViewportBadgePrefix = "MultiEnchantVfxViewportBadge";
     private const string EnchantVfxStaticBadgePrefix = "MultiEnchantVfxStaticBadge";

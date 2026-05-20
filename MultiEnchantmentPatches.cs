@@ -1439,3 +1439,57 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
         return card != null;
     }
 }
+
+[HarmonyPatch]
+internal static class MultiEnchantmentSerializableCardGroupingPatches
+{
+    // Base-game source: SerializableCard.Equals / GetHashCode compare only Id, CurrentUpgradeLevel,
+    // and the primary Enchantment. The run-history deck view groups cards via
+    // NDeckHistory.PopulateCards (group x by x), so two copies that differ only in the mod's extra
+    // enchantments collapse into one "Nx" row. Include the mod's two saved-string properties in
+    // equality/hash so cards with diverging extras get their own row.
+
+    [HarmonyPatch(typeof(SerializableCard), nameof(SerializableCard.Equals), new[] { typeof(object) })]
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
+    private static bool EqualsPrefix(SerializableCard __instance, object? obj, ref bool __result)
+    {
+        if (obj is null || obj.GetType() != __instance.GetType())
+        {
+            __result = false;
+            return false;
+        }
+
+        SerializableCard other = (SerializableCard)obj;
+        if (!Equals(__instance.Id, other.Id) ||
+            __instance.CurrentUpgradeLevel != other.CurrentUpgradeLevel ||
+            !Equals(__instance.Enchantment, other.Enchantment))
+        {
+            __result = false;
+            return false;
+        }
+
+        __result =
+            SavedPropertiesComparer.HaveSameString(__instance.Props, other.Props,
+                MultiEnchantmentSupport.SavePropertyName) &&
+            SavedPropertiesComparer.HaveSameString(__instance.Props, other.Props,
+                MultiEnchantmentSupport.OrderSavePropertyName);
+        return false;
+    }
+
+    [HarmonyPatch(typeof(SerializableCard), nameof(SerializableCard.GetHashCode))]
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
+    private static bool GetHashCodePrefix(SerializableCard __instance, ref int __result)
+    {
+        __result = HashCode.Combine(
+            __instance.Id,
+            __instance.CurrentUpgradeLevel,
+            __instance.Enchantment,
+            SavedPropertiesComparer.GetStringHashCode(__instance.Props,
+                MultiEnchantmentSupport.SavePropertyName),
+            SavedPropertiesComparer.GetStringHashCode(__instance.Props,
+                MultiEnchantmentSupport.OrderSavePropertyName));
+        return false;
+    }
+}
