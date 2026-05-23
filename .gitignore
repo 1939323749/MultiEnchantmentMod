@@ -3,3 +3,18 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+
+# IDE / editor
+.idea/
+*.DotSettings.user
+
+# Godot build cache & generated UIDs
+.godot/
+*.cs.uid
+*.import.uid
+
+# Claude Code harness
+.claude/
+
+# Analyzer NuGet output
+MultiEnchantmentMod.Analyzers/nupkg/
