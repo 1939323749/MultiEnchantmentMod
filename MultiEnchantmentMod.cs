@@ -37,6 +37,12 @@ public partial class MultiEnchantmentMod : Node
 
         new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
         PatchThievingHopperPriorities();
+
+        // Deliberately do NOT auto-seal the registry here. Third-party mods may run their own
+        // [ModInitializer] AFTER ours and call MultiEnchantmentApi.ScanCallingAssembly() — sealing
+        // now would reject those late-arriving registrations. SealRegistry() remains an opt-in
+        // power-user API; the post-seal write paths in AssemblyScanner already log + no-op rather
+        // than throw, so the safety net is in place either way.
     }
 
     private static void PatchThievingHopperPriorities()

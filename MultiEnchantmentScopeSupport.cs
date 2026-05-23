@@ -5,7 +5,9 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
@@ -19,6 +21,7 @@ namespace MultiEnchantmentMod;
 internal sealed class ScopeRuntimeState
 {
     public EnchantmentScope Scope = EnchantmentScope.Permanent;
+    public EnchantmentScope? OverrideScope;
     public int ActivationCount;
     public int TurnsRemaining;
 }
@@ -28,13 +31,81 @@ internal static class MultiEnchantmentScopeSupport
     internal static ScopeRuntimeState EnsureScopeState(CardModel card, EnchantmentModel enchantment)
     {
         ScopeRuntimeState state = MultiEnchantmentSupport.EnsureScopeState(card, enchantment);
-        state.Scope = ResolveScope(card, enchantment);
+        EnchantmentScope registryScope = ResolveScope(card, enchantment);
+        state.Scope = state.OverrideScope ?? registryScope;
         if (state.Scope is EnchantmentScope.LingerForTurnsScope linger && state.TurnsRemaining <= 0)
         {
             state.TurnsRemaining = linger.Turns;
         }
 
+        // If the save tagged a scope kind, compare it against the now-resolved Scope and warn on
+        // drift. Pending entries are one-shot — removed after the first compare so subsequent
+        // EnsureScopeState calls for the same enchantment don't keep logging.
+        if (PendingScopeKindMismatchCheck.TryRemove(enchantment, out string? savedKind))
+        {
+            string currentKind = GetScopeKind(state.Scope);
+            if (!string.Equals(savedKind, currentKind, StringComparison.Ordinal))
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment][Scope] Restored counters for {enchantment.Id} were saved under scope kind '{savedKind}' but the current registry resolves '{currentKind}'. Counters were preserved; review the EnchantmentDefinition.Scope change if behavior looks off.");
+            }
+        }
+
         return state;
+    }
+
+    internal static bool IsPersistableScopeOverride(EnchantmentScope scope)
+    {
+        return scope is EnchantmentScope.PermanentScope
+            or EnchantmentScope.UntilCombatEndsScope
+            or EnchantmentScope.UntilTurnEndsScope
+            or EnchantmentScope.LingerForTurnsScope
+            or EnchantmentScope.MaxActivationsScope;
+    }
+
+    internal static bool RejectNonPersistableScopeOverride(EnchantmentScope scope, string apiName, EnchantmentModel enchantment)
+    {
+        if (IsPersistableScopeOverride(scope))
+        {
+            return false;
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment][Scope] {apiName} rejected non-persistable scope override {scope.GetType().Name} for {enchantment.Id}. ConditionalActive/RemoveWhen overrides carry predicates and must be registered at the enchantment type level.");
+        return true;
+    }
+
+    internal static ScopeRuntimeState SetScopeOverride(CardModel card, EnchantmentModel enchantment, EnchantmentScope? newScope)
+    {
+        ScopeRuntimeState state = EnsureScopeState(card, enchantment);
+        state.OverrideScope = newScope;
+        state.Scope = newScope ?? ResolveScope(card, enchantment);
+
+        if (newScope is EnchantmentScope.LingerForTurnsScope linger)
+        {
+            state.TurnsRemaining = linger.Turns;
+        }
+        else if (newScope is EnchantmentScope.MaxActivationsScope)
+        {
+            state.ActivationCount = 0;
+        }
+        else if (state.Scope is EnchantmentScope.LingerForTurnsScope effectiveLinger && state.TurnsRemaining <= 0)
+        {
+            state.TurnsRemaining = effectiveLinger.Turns;
+        }
+
+        return state;
+    }
+
+    internal static void SetScopeOverrideOnApply(CardModel card, EnchantmentModel enchantment, EnchantmentScope? scopeOverride)
+    {
+        if (scopeOverride == null)
+        {
+            EnsureScopeState(card, enchantment);
+            return;
+        }
+
+        SetScopeOverride(card, enchantment, scopeOverride);
     }
 
     internal static void DispatchOnApplied(CardModel card, EnchantmentModel enchantment)
@@ -87,6 +158,10 @@ internal static class MultiEnchantmentScopeSupport
 
     internal static void OnCombatStarted(ICombatState combatState)
     {
+        // Reset SafeInvoker per-(type,hook) failure counters so a flaky callback that fired many
+        // times last combat produces fresh detailed logs in this combat.
+        Api.Internal.SafeInvoker.ResetThrottle();
+
         CombatLifecycleState? lifecycle = combatState is CombatState concreteState
             ? CombatLifecycles.GetOrCreateValue(concreteState)
             : null;
@@ -179,8 +254,7 @@ internal static class MultiEnchantmentScopeSupport
             visited.Add(card);
             HandleTurnEnd(card, RemovalReason.CombatEnded);
             HandleCombatEnd(card);
-            RemoveScopedEnchantments(card, RemovalReason.CombatEnded, static scope =>
-                scope is not EnchantmentScope.PermanentScope and not EnchantmentScope.ConditionalActiveScope);
+            RemoveScopedEnchantments(card, RemovalReason.CombatEnded, ShouldRemoveAtCombatEnd);
         }
 
         if (runState is RunState concreteRunState)
@@ -192,17 +266,35 @@ internal static class MultiEnchantmentScopeSupport
                     if (visited.Add(card))
                     {
                         HandleCombatEnd(card);
-                        RemoveScopedEnchantments(card, RemovalReason.CombatEnded, static scope =>
-                            scope is not EnchantmentScope.PermanentScope and not EnchantmentScope.ConditionalActiveScope);
+                        RemoveScopedEnchantments(card, RemovalReason.CombatEnded, ShouldRemoveAtCombatEnd);
                     }
                 }
             }
         }
     }
 
+    /// <summary>
+    /// Phase 1.5 T1.5.3: predicate used by combat-end cleanup to decide which scoped enchantments
+    /// survive to the next combat. The exclusion list must stay in sync with scope kinds that are
+    /// semantically "cross-combat persistent" rather than "combat-scoped":
+    /// <list type="bullet">
+    ///   <item><description><see cref="EnchantmentScope.PermanentScope"/> — never auto-removed.</description></item>
+    ///   <item><description><see cref="EnchantmentScope.ConditionalActiveScope"/> — controls IsActive only; presence is permanent.</description></item>
+    ///   <item><description><see cref="EnchantmentScope.RemoveWhenScope"/> — author opted into predicate-driven removal that should keep re-evaluating across combats (e.g. "remove when HP &lt; 50%"). If we swept it at combat end, the predicate would never get a chance to fire in a later combat.</description></item>
+    /// </list>
+    /// Every other scope (<c>UntilCombatEnds</c>, <c>UntilTurnEnds</c>, <c>LingerForTurns</c>, <c>MaxActivations</c>) is combat-scoped by definition and should be cleared.
+    /// </summary>
+    private static bool ShouldRemoveAtCombatEnd(EnchantmentScope scope) =>
+        scope is not EnchantmentScope.PermanentScope
+            and not EnchantmentScope.ConditionalActiveScope
+            and not EnchantmentScope.RemoveWhenScope;
+
     internal static void OnPlayerTurnStarted(ICombatState combatState, Player player)
     {
-        foreach (CardModel card in player.PlayerCombatState?.AllCards ?? Enumerable.Empty<CardModel>())
+        // Snapshot AllCards: the inner InvokeLifecycle fires user OnTurnStart handlers which
+        // may mutate AllCards (e.g. CardCmd.AddCardToHand). Same protection pattern as the
+        // Dispatch* methods below — see DispatchOnCardPlayedForCard etc.
+        foreach (CardModel card in (player.PlayerCombatState?.AllCards ?? Enumerable.Empty<CardModel>()).ToList())
         {
             foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
             {
@@ -303,6 +395,375 @@ internal static class MultiEnchantmentScopeSupport
         }
     }
 
+    // === Phase 3a — vanilla card-event lifecycle bridges =====================================
+    // These dispatchers fan out one of the new lifecycle callbacks (OnCardPlayed / OnCardDrawn /
+    // OnCardExhausted / OnCardDiscarded / OnCardEnteredCombat) to every enchantment on the
+    // affected card. IsActive is enforced here — inactive enchantments do not receive the
+    // callback, matching the gating already applied to damage / block / replay pipelines.
+
+    private static void DispatchCardLifecycle(
+        CardModel? card,
+        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, CardModel, EnchantmentModel> action)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            if (!IsActive(card, enchantment))
+            {
+                continue;
+            }
+            InvokeLifecycle(card, enchantment, action);
+        }
+    }
+
+    internal static void DispatchOnCardPlayedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardPlayed(c, m));
+
+    internal static void DispatchOnCardDrawnForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardDrawn(c, m));
+
+    internal static void DispatchOnCardExhaustedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardExhausted(c, m));
+
+    internal static void DispatchOnCardDiscardedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardDiscarded(c, m));
+
+    internal static void DispatchOnCardEnteredCombatForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardEnteredCombat(c, m));
+
+    // === Phase 4 — broadcast card-event hooks ================================================
+    // Unlike DispatchOnCard*ForCard (per-card only), these fire for ANY card event in combat.
+    // Opt-in: the adapter's null-check returns immediately for enchantments that don't register
+    // the broadcast hook. The inner InvokeLifecycleWithContext call resolves the lifecycle
+    // provider once per enchantment (caching is handled by the registry); the adapter method
+    // OnAnyCardPlayed/etc. does the actual null-check + SafeInvoker.Run.
+
+    /// <summary>
+    /// Broadcasts an "any card played" event to every active enchantment in combat that
+    /// registered <c>OnAnyCardPlayed</c>. <paramref name="playedCard"/> is the event subject;
+    /// each enchantment's <c>selfCard</c> is the card it lives on.
+    /// </summary>
+    internal static void DispatchOnAnyCardPlayedBroadcast(CardModel? playedCard, ICombatState? combatState)
+    {
+        if (playedCard == null || combatState == null) return;
+        DispatchBroadcastLifecycle(combatState, playedCard,
+            static (p, played, selfCard, ench) => p.OnAnyCardPlayed(played, selfCard, ench));
+    }
+
+    internal static void DispatchOnAnyCardDrawnBroadcast(CardModel? drawnCard, ICombatState? combatState)
+    {
+        if (drawnCard == null || combatState == null) return;
+        DispatchBroadcastLifecycle(combatState, drawnCard,
+            static (p, drawn, selfCard, ench) => p.OnAnyCardDrawn(drawn, selfCard, ench));
+    }
+
+    internal static void DispatchOnAnyCardExhaustedBroadcast(CardModel? exhaustedCard, ICombatState? combatState)
+    {
+        if (exhaustedCard == null || combatState == null) return;
+        DispatchBroadcastLifecycle(combatState, exhaustedCard,
+            static (p, exhausted, selfCard, ench) => p.OnAnyCardExhausted(exhausted, selfCard, ench));
+    }
+
+    internal static void DispatchOnAnyCardDiscardedBroadcast(CardModel? discardedCard, ICombatState? combatState)
+    {
+        if (discardedCard == null || combatState == null) return;
+        DispatchBroadcastLifecycle(combatState, discardedCard,
+            static (p, discarded, selfCard, ench) => p.OnAnyCardDiscarded(discarded, selfCard, ench));
+    }
+
+    /// <summary>
+    /// Fans out a broadcast card-event hook across every active enchantment on every card in
+    /// combat. The adapter's null-check (OnAnyCardPlayed == null → return) is the opt-in gate;
+    /// enchantments that don't register the hook are visited but immediately skipped at
+    /// constant time.
+    /// </summary>
+    private static void DispatchBroadcastLifecycle<TContext>(
+        ICombatState combatState,
+        TContext context,
+        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+    {
+        if (combatState is not CombatState concreteState)
+        {
+            return;
+        }
+
+        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null))
+        {
+            foreach (CardModel selfCard in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+            {
+                foreach (EnchantmentModel ench in MultiEnchantmentSupport.GetEnchantments(selfCard).ToList())
+                {
+                    if (!IsActive(selfCard, ench)) continue;
+                    InvokeLifecycleWithContext(selfCard, ench, context, action);
+                }
+            }
+        }
+    }
+
+    // === Phase 5 — sibling lifecycle dispatchers ==============================================
+
+    /// <summary>
+    /// Fires <c>OnSiblingApplied(card, self, newcomer)</c> on every active enchantment on
+    /// <paramref name="card"/> (except <paramref name="newcomer"/> itself). Safe to call from
+    /// within <c>DispatchOnApplied</c> — the iteration uses <c>.ToList()</c>.
+    /// </summary>
+    internal static void DispatchOnSiblingApplied(CardModel card, EnchantmentModel newcomer)
+    {
+        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            if (ReferenceEquals(sibling, newcomer)) continue;
+            if (!IsActive(card, sibling)) continue;
+            InvokeLifecycleWithContext(card, sibling, newcomer,
+                static (provider, newcomer_, selfCard, self) => provider.OnSiblingApplied(selfCard, self, newcomer_));
+        }
+    }
+
+    /// <summary>
+    /// Fires <c>OnSiblingRemoved(card, self, leaving, reason)</c> on every active enchantment
+    /// on <paramref name="card"/> (except <paramref name="leaving"/> itself). Called from
+    /// <c>RemoveAdditionalEnchantmentState</c> BEFORE the enchantment is actually removed from
+    /// the list, so handlers see the sibling at its current state.
+    /// </summary>
+    internal static void DispatchOnSiblingRemoved(CardModel card, EnchantmentModel leaving, RemovalReason reason)
+    {
+        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            if (ReferenceEquals(sibling, leaving)) continue;
+            if (!IsActive(card, sibling)) continue;
+            InvokeLifecycleWithContext(card, sibling, (leaving, reason),
+                static (provider, ctx, selfCard, self) => provider.OnSiblingRemoved(selfCard, self, ctx.leaving, ctx.reason));
+        }
+    }
+
+    /// <summary>
+    /// Phase 3a T3a.6: fan the OnAfterDamageReceived lifecycle out to every active enchantment
+    /// on every card owned by <paramref name="player"/>. Bridges vanilla
+    /// <c>Hook.AfterDamageReceived</c>. <see cref="DamageReceivedContext"/> is constructed once
+    /// per damage event by the caller (the Harmony patch) so all enchantments see the same
+    /// payload — important if a handler wants to compare totals before vs. after the event.
+    /// </summary>
+    internal static void DispatchOnAfterDamageReceivedForPlayer(Player? player, DamageReceivedContext context)
+    {
+        if (player?.PlayerCombatState == null)
+        {
+            return;
+        }
+
+        foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+        {
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            {
+                if (!IsActive(card, enchantment))
+                {
+                    continue;
+                }
+                InvokeLifecycleWithContext(card, enchantment, context,
+                    static (provider, ctx, owner, model) => provider.OnAfterDamageReceived(owner, model, ctx));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fans out a lifecycle callback across every active enchantment on every card in every
+    /// player's combat state. Used by side-turn boundaries and attack events where vanilla
+    /// dispatches one hook for the whole table rather than per-card.
+    /// </summary>
+    private static void DispatchCombatLifecycle<TContext>(
+        ICombatState? combatState,
+        TContext context,
+        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+    {
+        if (combatState is not CombatState concreteState)
+        {
+            return;
+        }
+
+        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null))
+        {
+            foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+            {
+                foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+                {
+                    if (!IsActive(card, enchantment))
+                    {
+                        continue;
+                    }
+                    InvokeLifecycleWithContext(card, enchantment, context, action);
+                }
+            }
+        }
+    }
+
+    internal static void DispatchOnSideTurnStart(ICombatState? combatState, CombatSide side) =>
+        DispatchCombatLifecycle(combatState, side, static (p, s, c, m) => p.OnSideTurnStart(c, m, s));
+
+    internal static void DispatchOnBeforeSideTurnStart(ICombatState? combatState, CombatSide side) =>
+        DispatchCombatLifecycle(combatState, side, static (p, s, c, m) => p.OnBeforeSideTurnStart(c, m, s));
+
+    internal static void DispatchOnBeforeAttack(ICombatState? combatState, AttackCommand command) =>
+        DispatchCombatLifecycle(combatState, command, static (p, cmd, c, m) => p.OnBeforeAttack(c, m, cmd));
+
+    internal static void DispatchOnAfterAttack(ICombatState? combatState, AttackCommand command) =>
+        DispatchCombatLifecycle(combatState, command, static (p, cmd, c, m) => p.OnAfterAttack(c, m, cmd));
+
+    // === Phase 3c — pile / guard / block bridges ===========================================
+
+    /// <summary>
+    /// Per-card dispatch carrying <paramref name="oldPile"/> and <paramref name="source"/> as
+    /// loose arguments. Used by <c>OnCardChangedPiles</c> — bundling into a context record was
+    /// considered but rejected because authors typically just need (card, oldPile) and the
+    /// vanilla virtual already exposes the three args directly.
+    /// </summary>
+    internal static void DispatchOnCardChangedPilesForCard(CardModel? card, PileType oldPile, AbstractModel? source)
+    {
+        if (card == null)
+        {
+            return;
+        }
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        {
+            if (!IsActive(card, enchantment))
+            {
+                continue;
+            }
+            InvokeLifecycleWithContext(card, enchantment, (oldPile, source),
+                static (provider, ctx, owner, model) => provider.OnCardChangedPiles(owner, model, ctx.oldPile, ctx.source));
+        }
+    }
+
+    internal static void DispatchOnCardRetainedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardRetained(c, m));
+
+    /// <summary>
+    /// Block-gained dispatch (before/after). Fans out across every active enchantment on every
+    /// card belonging to <see cref="BlockGainContext.Creature"/>'s player. If the creature has
+    /// no player (rare — enemy creatures may have null Player in some flows), no-op.
+    /// </summary>
+    internal static void DispatchOnBeforeBlockGainedForPlayer(BlockGainContext context)
+    {
+        Player? player = context.Creature?.Player;
+        if (player?.PlayerCombatState == null)
+        {
+            return;
+        }
+        foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+        {
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            {
+                if (!IsActive(card, enchantment))
+                {
+                    continue;
+                }
+                InvokeLifecycleWithContext(card, enchantment, context,
+                    static (provider, ctx, owner, model) => provider.OnBeforeBlockGained(owner, model, ctx));
+            }
+        }
+    }
+
+    internal static void DispatchOnBlockGainedForPlayer(BlockGainContext context)
+    {
+        Player? player = context.Creature?.Player;
+        if (player?.PlayerCombatState == null)
+        {
+            return;
+        }
+        foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+        {
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            {
+                if (!IsActive(card, enchantment))
+                {
+                    continue;
+                }
+                InvokeLifecycleWithContext(card, enchantment, context,
+                    static (provider, ctx, owner, model) => provider.OnBlockGained(owner, model, ctx));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Guard-hook dispatch for <c>Hook.ShouldDie</c>. Iterates every active enchantment on every
+    /// card belonging to <paramref name="creature"/>'s player; returns <c>false</c> if ANY
+    /// handler returns <c>false</c> (matching vanilla — any veto prevents death). When no
+    /// player is associated (rare), no enchantments can veto and we return <c>true</c>.
+    /// Per-enchantment exceptions are swallowed with a warn log and treated as "no objection"
+    /// so a bug in one handler can't accidentally veto every death.
+    /// </summary>
+    internal static bool DispatchOnShouldDieForCreature(Creature creature)
+    {
+        Player? player = creature?.Player;
+        if (player?.PlayerCombatState == null)
+        {
+            return true;
+        }
+        bool shouldDie = true;
+        foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
+        {
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            {
+                if (!IsActive(card, enchantment))
+                {
+                    continue;
+                }
+                MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration =
+                    MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
+                if (registration == null)
+                {
+                    continue;
+                }
+                try
+                {
+                    if (!registration.OnShouldDie(card, enchantment, creature!))
+                    {
+                        shouldDie = false;
+                        // Don't break — let every veto handler observe (and potentially log) the
+                        // event for symmetry with vanilla, which invokes every listener.
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        $"[MultiEnchantment][Scope] OnShouldDie handler failed for {enchantment.Id} on {card.Id}: {ex}");
+                }
+            }
+        }
+        return shouldDie;
+    }
+
+    /// <summary>
+    /// Variant of <see cref="InvokeLifecycle"/> that threads an arbitrary context object through
+    /// to the dispatch lambda. Used by callbacks whose vanilla counterpart carries non-trivial
+    /// payload (DamageReceived, BeforeAttack, AfterAttack — Phase 3b/c extends this). Exception
+    /// handling matches <see cref="InvokeLifecycle"/>: per-enchantment try/catch with warn log,
+    /// so one author's bug doesn't kill the combat tick.
+    /// </summary>
+    private static void InvokeLifecycleWithContext<TContext>(
+        CardModel card,
+        EnchantmentModel enchantment,
+        TContext context,
+        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+    {
+        MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration = MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
+        if (registration == null)
+        {
+            return;
+        }
+
+        try
+        {
+            action(registration, context, card, enchantment);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][Scope] Lifecycle handler with context failed for {enchantment.Id} on {card.Id}: {ex}");
+        }
+    }
+
     internal static bool IsActive(CardModel card, EnchantmentModel enchantment)
     {
         try
@@ -323,6 +784,18 @@ internal static class MultiEnchantmentScopeSupport
         }
     }
 
+    /// <summary>
+    /// Removes an enchantment from a card, invoking the <c>OnRemoved</c> veto hook unless
+    /// <paramref name="reason"/> is <see cref="RemovalReason.CardCleared"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Safe to call from lifecycle callbacks</b> (<c>OnApplied</c>, <c>OnSiblingApplied</c>,
+    /// <c>OnRemoved</c>, <c>OnCombatStart</c>, etc.). Iteration over the enchantments list uses
+    /// <c>.ToList()</c> snapshots, and the removal itself is a direct
+    /// <c>List&lt;T&gt;.Remove</c> on the backing store — no iterator is active on the same list
+    /// at the point of removal. Queued-removal paths (scope-driven turn-end / combat-end) flush
+    /// after all iteration completes.</para>
+    /// </remarks>
     internal static bool RemoveEnchantmentWithReason(CardModel card, EnchantmentModel enchantment, RemovalReason reason)
     {
         return MultiEnchantmentSupport.RemoveEnchantmentInternal(card, enchantment, reason, bypassVeto: reason == RemovalReason.CardCleared);
@@ -411,7 +884,11 @@ internal static class MultiEnchantmentScopeSupport
         HashSet<CardModel> seen = new(ReferenceEqualityComparer.Instance);
         foreach (Player player in concreteState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null))
         {
-            foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static card => !card.HasBeenRemovedFromState))
+            // Snapshot AllCards: callers like OnCombatEnded / OnPlayerTurnEnded invoke user
+            // OnTurnEnd / OnCombatEnd handlers in the loop body. A handler that calls
+            // CardCmd.AddCardToHand or any other mutation on AllCards would otherwise crash
+            // this lazy yield-return enumerator with "Collection modified during enumeration".
+            foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static card => !card.HasBeenRemovedFromState).ToList())
             {
                 if (seen.Add(card))
                 {
@@ -428,21 +905,119 @@ internal static class MultiEnchantmentScopeSupport
 
     // ── Multiplayer / save-restore: ScopeRuntimeState serialization ──────────────────────────
     //
-    // ScopeRuntimeState (ActivationCount / TurnsRemaining) lives in-memory on
-    // CardEnchantmentState.ScopeStates. Without explicit serialization, MaxActivations counters
-    // and LingerForTurns countdowns reset to defaults on save/load and never synchronize across
-    // multiplayer peers. We capture the state at the EnchantmentModel.ToSerializable boundary
-    // (called from EnchantmentToSerializablePostfix) and lazy-restore the first time a card +
-    // enchantment pair appears in EnsureScopeState on the receiving side. The Scope value itself
-    // is NOT serialized: scope kind is registry-driven (ResolveScope) and both sides resolve it
-    // independently from the shared mod registry; serializing a Func<> (ConditionalActiveScope's
-    // predicate) would be wrong anyway.
+    // ScopeRuntimeState (effective Scope / optional per-instance OverrideScope / counters) lives
+    // in-memory on CardEnchantmentState.ScopeStates. Without explicit serialization,
+    // MaxActivations counters and LingerForTurns countdowns reset to defaults on save/load and
+    // never synchronize across multiplayer peers. The registry scope remains the default source of
+    // truth; predicate-free per-instance overrides are persisted as scope kind + parameters.
+    // Predicate-bearing ConditionalActive/RemoveWhen scopes are intentionally rejected for
+    // overrides because their Func<> payloads cannot be serialized safely. We capture the state at
+    // the EnchantmentModel.ToSerializable boundary (called from EnchantmentToSerializablePostfix)
+    // and lazy-restore the first time a card + enchantment pair appears in EnsureScopeState on the
+    // receiving side.
 
     internal const string ScopeStateSavePropertyName = "MultiEnchantmentScopeData";
 
+    // Set by TryRestoreScopeStateFromProps when a save-time scope kind was tagged; consumed by
+    // EnsureScopeState (upper level) after ResolveScope so the warning fires against the freshly
+    // resolved Scope. The entry is removed after the first comparison; subsequent EnsureScopeState
+    // calls for the same enchantment don't re-log.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<EnchantmentModel, string>
+        PendingScopeKindMismatchCheck = new(ReferenceEqualityComparer.Instance);
+
     private sealed record ScopeStatePayload(
         [property: JsonPropertyName("activation_count")] int ActivationCount,
-        [property: JsonPropertyName("turns_remaining")] int TurnsRemaining);
+        [property: JsonPropertyName("turns_remaining")] int TurnsRemaining,
+        // Recorded as a sanity tag: the effective scope kind that produced these counters. On load,
+        // if the kind no longer matches the current effective scope (override or registry), we still
+        // restore the counter values, but log a warning so silent semantic drift is visible.
+        [property: JsonPropertyName("scope_kind")] string? ScopeKind = null,
+        [property: JsonPropertyName("override_scope_kind")] string? OverrideScopeKind = null,
+        [property: JsonPropertyName("override_param_int")] int? OverrideParamInt = null,
+        [property: JsonPropertyName("override_param_trigger")] string? OverrideParamTrigger = null);
+
+    private static string GetScopeKind(EnchantmentScope scope) => scope.GetType().Name;
+
+    private static ScopeStatePayload BuildScopeStatePayload(ScopeRuntimeState state)
+    {
+        string? overrideKind = null;
+        int? overrideParamInt = null;
+        string? overrideParamTrigger = null;
+
+        if (state.OverrideScope != null)
+        {
+            overrideKind = GetScopeKind(state.OverrideScope);
+            if (state.OverrideScope is EnchantmentScope.LingerForTurnsScope linger)
+            {
+                overrideParamInt = linger.Turns;
+            }
+            else if (state.OverrideScope is EnchantmentScope.MaxActivationsScope max)
+            {
+                overrideParamInt = max.Max;
+                overrideParamTrigger = max.Trigger.Name;
+            }
+        }
+
+        return new ScopeStatePayload(
+            state.ActivationCount,
+            state.TurnsRemaining,
+            GetScopeKind(state.Scope),
+            overrideKind,
+            overrideParamInt,
+            overrideParamTrigger);
+    }
+
+    private static EnchantmentScope? DecodeScopeOverride(ScopeStatePayload payload, EnchantmentModel enchantment)
+    {
+        return payload.OverrideScopeKind switch
+        {
+            null or "" => null,
+            nameof(EnchantmentScope.PermanentScope) => EnchantmentScope.Permanent,
+            nameof(EnchantmentScope.UntilCombatEndsScope) => EnchantmentScope.UntilCombatEnds,
+            nameof(EnchantmentScope.UntilTurnEndsScope) => EnchantmentScope.UntilTurnEnds,
+            nameof(EnchantmentScope.LingerForTurnsScope) => EnchantmentScope.LingerForTurns(payload.OverrideParamInt ?? 0),
+            nameof(EnchantmentScope.MaxActivationsScope) => EnchantmentScope.MaxActivations(
+                payload.OverrideParamInt ?? 0,
+                DecodeActivationTrigger(payload.OverrideParamTrigger, enchantment)),
+            _ => WarnUnknownScopeOverride(payload.OverrideScopeKind!, enchantment),
+        };
+    }
+
+    private static EnchantmentScope? WarnUnknownScopeOverride(string kind, EnchantmentModel enchantment)
+    {
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment][Scope] Ignoring unknown scope override kind '{kind}' for {enchantment.Id}.");
+        return null;
+    }
+
+    private static ActivationTrigger DecodeActivationTrigger(string? name, EnchantmentModel enchantment)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return ActivationTrigger.OnPlay;
+        }
+
+        return name switch
+        {
+            nameof(ActivationTrigger.OnPlay) => ActivationTrigger.OnPlay,
+            nameof(ActivationTrigger.AfterCardPlayed) => ActivationTrigger.AfterCardPlayed,
+            nameof(ActivationTrigger.AfterCardDrawn) => ActivationTrigger.AfterCardDrawn,
+            nameof(ActivationTrigger.AfterCardExhausted) => ActivationTrigger.AfterCardExhausted,
+            nameof(ActivationTrigger.AfterCardDiscarded) => ActivationTrigger.AfterCardDiscarded,
+            nameof(ActivationTrigger.AfterPlayerTurnStart) => ActivationTrigger.AfterPlayerTurnStart,
+            nameof(ActivationTrigger.AfterPlayerTurnEnd) => ActivationTrigger.AfterPlayerTurnEnd,
+            nameof(ActivationTrigger.AfterDamageReceived) => ActivationTrigger.AfterDamageReceived,
+            _ when name.StartsWith("Custom:", StringComparison.Ordinal) => ActivationTrigger.Custom(name["Custom:".Length..]),
+            _ => WarnUnknownActivationTrigger(name, enchantment),
+        };
+    }
+
+    private static ActivationTrigger WarnUnknownActivationTrigger(string name, EnchantmentModel enchantment)
+    {
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment][Scope] Unknown activation trigger '{name}' in scope override for {enchantment.Id}; falling back to OnPlay.");
+        return ActivationTrigger.OnPlay;
+    }
 
     /// <summary>
     /// Restores <see cref="ScopeRuntimeState.ActivationCount"/> and
@@ -482,6 +1057,16 @@ internal static class MultiEnchantmentScopeSupport
 
             state.ActivationCount = payload.ActivationCount;
             state.TurnsRemaining = payload.TurnsRemaining;
+            state.OverrideScope = DecodeScopeOverride(payload, enchantment);
+
+            // Stash the saved scope kind so the upper-level EnsureScopeState — which knows the
+            // freshly-resolved Scope — can warn on cross-session drift. We can't compare here
+            // because state.Scope is still the default at this layer.
+            if (!string.IsNullOrEmpty(payload.ScopeKind))
+            {
+                PendingScopeKindMismatchCheck.AddOrUpdate(enchantment, payload.ScopeKind!, static (_, v) => v);
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -515,7 +1100,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        if (state.ActivationCount == 0 && state.TurnsRemaining == 0)
+        if (state.ActivationCount == 0 && state.TurnsRemaining == 0 && state.OverrideScope == null)
         {
             // Default / fresh state. Skip the property entirely so existing-receiver upgrades
             // don't accumulate empty Props.strings entries on permanent enchants.
@@ -523,7 +1108,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        ScopeStatePayload payload = new(state.ActivationCount, state.TurnsRemaining);
+        ScopeStatePayload payload = BuildScopeStatePayload(state);
         string json = JsonSerializer.Serialize(payload);
 
         save.Props ??= new SavedProperties();

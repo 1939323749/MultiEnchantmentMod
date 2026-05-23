@@ -83,6 +83,14 @@ internal static class ModifyDynamicVarScanner
             Func<EnchantmentStackSnapshot, decimal, decimal> contributionFn = BuildDelegate(method);
             foreach (ModifyDynamicVarAttribute attribute in attributes)
             {
+                if (string.IsNullOrEmpty(attribute.VarKey))
+                {
+                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                        $"[StackApi] {type.FullName}.{method.Name} has [ModifyDynamicVar(\"\")] with an empty key; skipping. " +
+                        $"(assembly={type.Assembly.GetName().Name})");
+                    continue;
+                }
+
                 results.Add(new DynamicVarContribution(attribute.VarKey, contributionFn));
             }
         }

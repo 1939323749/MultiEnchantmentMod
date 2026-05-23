@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Models;
 
@@ -74,9 +75,17 @@ public sealed record ActivationTrigger(string Name)
     /// Third-party extension point. Use a stable, namespaced identifier such as
     /// <c>"mymod:OnRelicTriggered"</c> and call
     /// <c>MultiEnchantmentScopeSupport.NoteActivation(enchantment, ActivationTrigger.Custom(...))</c>
-    /// from your own patch / hook to count it.
+    /// from your own patch / hook to count it. Results are cached so repeat calls with the same
+    /// identifier return the reference-equal instance — important for tight loops that compare
+    /// triggers in inner enumerations.
     /// </summary>
-    public static ActivationTrigger Custom(string identifier) => new($"Custom:{identifier}");
+    public static ActivationTrigger Custom(string identifier)
+    {
+        ArgumentNullException.ThrowIfNull(identifier);
+        return _customCache.GetOrAdd(identifier, static id => new ActivationTrigger($"Custom:{id}"));
+    }
+
+    private static readonly ConcurrentDictionary<string, ActivationTrigger> _customCache = new(StringComparer.Ordinal);
 }
 
 public enum ScopeKind

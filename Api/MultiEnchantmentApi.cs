@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api.Internal;
@@ -71,6 +73,57 @@ public static class MultiEnchantmentApi
         ArgumentNullException.ThrowIfNull(card);
         ArgumentNullException.ThrowIfNull(enchantment);
         return MultiEnchantmentScopeSupport.RemoveEnchantmentWithReason(card, enchantment, reason);
+    }
+
+    /// <summary>
+    /// Applies <paramref name="enchantment"/> to <paramref name="card"/>, optionally overriding the
+    /// registration-time scope for this concrete application only. Predicate-bearing scopes
+    /// (<c>ConditionalActive</c> / <c>RemoveWhen</c>) are rejected because they cannot be persisted.
+    /// </summary>
+    public static EnchantmentModel? Enchant(
+        CardModel card,
+        EnchantmentModel enchantment,
+        decimal amount = 1,
+        EnchantmentScope? scopeOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(card);
+        ArgumentNullException.ThrowIfNull(enchantment);
+        if (scopeOverride != null && global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.RejectNonPersistableScopeOverride(scopeOverride, nameof(Enchant), enchantment))
+        {
+            return null;
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverride(
+            enchantment,
+            card,
+            amount,
+            scopeOverride);
+    }
+
+    /// <summary>
+    /// Changes or clears the per-instance scope override on an already-attached enchantment.
+    /// Passing <c>null</c> clears the override and returns to the registration-time scope.
+    /// </summary>
+    public static bool SetScopeOverride(
+        CardModel card,
+        EnchantmentModel enchantment,
+        EnchantmentScope? newScope)
+    {
+        ArgumentNullException.ThrowIfNull(card);
+        ArgumentNullException.ThrowIfNull(enchantment);
+        if (newScope != null && global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.RejectNonPersistableScopeOverride(newScope, nameof(SetScopeOverride), enchantment))
+        {
+            return false;
+        }
+
+        if (!global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card).Any(e => ReferenceEquals(e, enchantment)))
+        {
+            return false;
+        }
+
+        global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.SetScopeOverride(card, enchantment, newScope);
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshDerivedStateFor(enchantment);
+        return true;
     }
 
     /// <summary>
@@ -153,6 +206,75 @@ public static class MultiEnchantmentApi
     /// </summary>
     public static void SealRegistry() =>
         AssemblyScanner.Seal();
+
+    /// <summary>
+    /// Notifies the framework that <paramref name="enchantment"/>'s
+    /// <see cref="EnchantmentModel.Props"/> have been mutated outside the normal pipeline (e.g.
+    /// author wrote <c>enchantment.Props.strings["xyz"] = "new"</c>). Triggers a full derived-state
+    /// refresh: DynamicVars recalculation, keyword re-evaluation, and UI
+    /// <c>EnchantmentChanged</c> signal.
+    /// </summary>
+    /// <remarks>
+    /// Without this call, mutations to <see cref="EnchantmentModel.Props"/> are invisible to
+    /// DynamicVars, card preview, and tooltip rendering until the next full-card refresh cycle
+    /// (which may never happen for cosmetic-only fields). Call this immediately after writing
+    /// to Props.
+    /// </remarks>
+    public static void NotifyPropsChanged(EnchantmentModel enchantment)
+    {
+        ArgumentNullException.ThrowIfNull(enchantment);
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshDerivedStateFor(enchantment);
+    }
+
+    // --- Advanced query API (power-user / tools) ---------------------------------------------
+
+    /// <summary>
+    /// Returns the runtime scope state view for <paramref name="enchantment"/> (activation count,
+    /// turns remaining, scope kind). Returns <c>null</c> when the enchantment has no scope state
+    /// (e.g. permanent scope with no counters) or when <paramref name="enchantment"/> has no
+    /// owning card.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Advanced)]
+    public static ScopeRuntimeStateView? GetScopeState(EnchantmentModel enchantment)
+    {
+        ArgumentNullException.ThrowIfNull(enchantment);
+        CardModel? card = enchantment.Card;
+        if (card == null) return null;
+        if (!global::MultiEnchantmentMod.MultiEnchantmentSupport.TryGetExistingScopeState(card, enchantment, out var state) || state == null)
+            return null;
+        return new ScopeRuntimeStateView(state.Scope, state.ActivationCount, state.TurnsRemaining, state.OverrideScope is not null);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="enchantment"/> is currently active (not gated
+    /// by a <c>ConditionalActive</c> predicate). Useful from custom <c>WhenActive</c> predicates
+    /// and debug overlays.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Advanced)]
+    public static bool IsActive(EnchantmentModel enchantment)
+    {
+        ArgumentNullException.ThrowIfNull(enchantment);
+        CardModel? card = enchantment.Card;
+        if (card == null) return true;
+        return global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.IsActive(card, enchantment);
+    }
+
+    /// <summary>
+    /// Returns all enchantments on <paramref name="card"/>, optionally excluding
+    /// <paramref name="excludingSelf"/>. Lighter-weight alternative to
+    /// <c>Snapshots.ForCard</c> when you only need the sibling list, not full stack metadata.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Advanced)]
+    public static IReadOnlyList<EnchantmentModel> GetSiblings(CardModel? card, EnchantmentModel? excludingSelf = null)
+    {
+        if (card == null) return Array.Empty<EnchantmentModel>();
+        IEnumerable<EnchantmentModel> all = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card);
+        if (excludingSelf != null)
+        {
+            all = all.Where(e => !ReferenceEquals(e, excludingSelf));
+        }
+        return all.ToList();
+    }
 
     // --- Advanced read-only snapshot API -----------------------------------------------------
 

@@ -116,17 +116,6 @@
                 Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')"/>
     </Target>
 
-    <Target Name="CopyToModsFolderOnBuild" AfterTargets="PostBuildEvent">
-        <Message Text="Copying .dll and manifest to mods folder." Importance="high"/>
-        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/"/>
-        <Copy SourceFiles="MultiEnchantmentMod.json" DestinationFolder="$(ModsPath)$(MSBuildProjectName)/"/>
-        <Message Text="Copying BaseLib to mods folder." Importance="high"/>
-        <ItemGroup>
-            <BaseLibFiles Include="$(NuGetPackageRoot)/alchyr.sts2.baselib/**/lib/**/BaseLib.dll;$(NuGetPackageRoot)/alchyr.sts2.baselib/**/Content/BaseLib.pck;$(NuGetPackageRoot)/alchyr.sts2.baselib/**/Content/BaseLib.json;"/>
-        </ItemGroup>
-        <Copy SourceFiles="@(BaseLibFiles)" DestinationFolder="$(ModsPath)BaseLib/"/>
-    </Target>
-
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
         <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
         <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(ModsPath)$(MSBuildProjectName)/$(MSBuildProjectName).pck&quot;"
@@ -136,5 +125,17 @@
 
     <Target Name="GodotPublishSkipped" AfterTargets="Publish" Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')">
         <Message Text="Skipping Godot .pck export because GodotPath is not configured." Importance="high"/>
+    </Target>
+
+    <!-- Copy the compiled DLL (and PDB when present) to the game's mods folder after Publish,
+         so the deployed mod assembly stays in sync with the .pck export above. -->
+    <Target Name="CopyDllToMods" AfterTargets="Publish" Condition="'$(ModsPath)' != '' and '$(IsInnerGodotExport)' != 'true'">
+        <PropertyGroup>
+            <_ModOutputDir>$(ModsPath)$(MSBuildProjectName)/</_ModOutputDir>
+        </PropertyGroup>
+        <MakeDir Directories="$(_ModOutputDir)" Condition="!Exists('$(_ModOutputDir)')"/>
+        <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).dll" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true"/>
+        <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).pdb" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true" Condition="Exists('$(PublishDir)$(MSBuildProjectName).pdb')"/>
+        <Message Text="Copied $(MSBuildProjectName).dll to $(_ModOutputDir)" Importance="high"/>
     </Target>
 </Project>

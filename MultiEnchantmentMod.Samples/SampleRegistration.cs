@@ -43,6 +43,7 @@ public partial class SampleRegistration : Node
             Logger.Warn($"[{ModId}] Aborting initialization: host API version is below 2.");
             return;
         }
+        
 
         // Tier A / B — attributes + companion EnchantmentDefinition<T> subclasses.
         int scanned = MultiEnchantmentApi.ScanCallingAssembly();
@@ -53,6 +54,12 @@ public partial class SampleRegistration : Node
         SampleLingeringSharpenRegistration.Install();
         SampleChargedSharpenRegistration.Install();
         SampleHandOnlySharpenRegistration.Install();
-        Logger.Info($"[{ModId}] Installed 4 fluent (Tier C) sample registration(s).");
+        SamplePhoenixRegistration.Install();
+        SampleFullHpShieldRegistration.Install();
+        SampleChargedSurgeRegistration.Install();
+        SampleBerserkRegistration.Install();
+        SampleBoundedQueueRegistration.Install();
+        SampleFlexibleScopeRegistration.Install();
+        Logger.Info($"[{ModId}] Installed 10 fluent (Tier C) sample registration(s).");
     }
 }

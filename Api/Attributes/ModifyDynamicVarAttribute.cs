@@ -58,11 +58,11 @@ public sealed class ModifyDynamicVarAttribute : Attribute
 
     public ModifyDynamicVarAttribute(string varKey)
     {
-        if (string.IsNullOrEmpty(varKey))
-        {
-            throw new ArgumentException("VarKey must be a non-empty string.", nameof(varKey));
-        }
-
-        VarKey = varKey;
+        // Intentionally accept null / empty without throwing: an exception in an attribute
+        // constructor surfaces inside the assembly scanner's reflection call with no useful
+        // attribution. The scanner (ModifyDynamicVarScanner.BuildContributionsFor) detects the
+        // empty-key case at registration time and logs a skip with the offending method name.
+        // The MEM009 analyzer flags it at compile time.
+        VarKey = varKey ?? string.Empty;
     }
 }

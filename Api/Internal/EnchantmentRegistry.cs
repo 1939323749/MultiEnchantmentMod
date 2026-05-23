@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using MegaCrit.Sts2.Core.Models;
 // MultiEnchantmentMod is both the legacy namespace and the bootstrap class name; alias the
 // legacy entry point to dodge the ambiguity.
@@ -17,6 +19,12 @@ namespace MultiEnchantmentMod.Api.Internal;
 /// </summary>
 internal static class EnchantmentRegistry
 {
+    private sealed class EmptyDisposable : IDisposable
+    {
+        public static readonly EmptyDisposable Instance = new();
+        public void Dispose() { }
+    }
+
     private static readonly object Sync = new();
     private static readonly Dictionary<Type, List<EnchantmentEntry>> EntriesByType = new();
     private static readonly ConcurrentDictionary<Type, byte> AutoRegisteredTypes = new();
@@ -25,6 +33,19 @@ internal static class EnchantmentRegistry
     // Compare case-insensitively so authors never have to mirror vanilla's exact casing.
     private static readonly HashSet<string> DynamicVarKeysWithContributions =
         new(StringComparer.OrdinalIgnoreCase);
+
+    // Lock-free snapshot of DynamicVarKeysWithContributions used by the hot-path HasContributionsFor
+    // check. Rebuilt under Sync whenever Install / Dispose mutates the underlying HashSet. FrozenSet
+    // gives O(1) Contains with no per-call lock acquisition — important because the DynamicVar
+    // Harmony postfix runs on every card preview recalculation.
+    private static FrozenSet<string> _dynamicVarKeysSnapshot =
+        Array.Empty<string>().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    private static FrozenSet<string> BuildDynamicVarKeysSnapshot()
+    {
+        // Caller must hold Sync.
+        return DynamicVarKeysWithContributions.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Installs an entry into the registry and registers the corresponding adapter shims with
@@ -41,6 +62,14 @@ internal static class EnchantmentRegistry
                 nameof(entry));
         }
 
+        if (AssemblyScanner.IsSealed)
+        {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Error(
+                $"[StackApi] Late registration for {entry.EnchantmentType.FullName} (assembly={entry.EnchantmentType.Assembly.GetName().Name}) rejected: registry is sealed. " +
+                "Move the Register*/ScanCallingAssembly call earlier — into the mod's [ModInitializer] — or remove the SealRegistry() call.");
+            return EmptyDisposable.Instance;
+        }
+
         InstalledShims<TEnchantment> shims = new();
 
         lock (Sync)
@@ -53,9 +82,18 @@ internal static class EnchantmentRegistry
 
             list.Add(entry);
 
+            bool keysChanged = false;
             foreach (DynamicVarContribution contribution in entry.DynamicVarContributions)
             {
-                DynamicVarKeysWithContributions.Add(contribution.VarKey);
+                if (DynamicVarKeysWithContributions.Add(contribution.VarKey))
+                {
+                    keysChanged = true;
+                }
+            }
+
+            if (keysChanged)
+            {
+                Volatile.Write(ref _dynamicVarKeysSnapshot, BuildDynamicVarKeysSnapshot());
             }
 
             if (entry.Definition != null)
@@ -156,6 +194,8 @@ internal static class EnchantmentRegistry
                         }
                     }
                 }
+
+                Volatile.Write(ref _dynamicVarKeysSnapshot, BuildDynamicVarKeysSnapshot());
             }
         }
     }
@@ -196,13 +236,43 @@ internal static class EnchantmentRegistry
     /// <summary>
     /// Fast existence check used by the <see cref="MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar"/>
     /// postfix patch to short-circuit out when no enchantment in the registry contributes to the
-    /// given key. Avoids walking the per-card enchantment list in the common case.
+    /// given key. Reads a lock-free <see cref="FrozenSet{T}"/> snapshot rebuilt under Sync on every
+    /// Install / Dispose mutation; the postfix runs on every card preview recalc, so removing the
+    /// per-call lock matters for large hands / busy frames.
     /// </summary>
     internal static bool HasContributionsFor(string varKey)
     {
+        return Volatile.Read(ref _dynamicVarKeysSnapshot).Contains(varKey);
+    }
+
+    /// <summary>
+    /// Looks up the optional <see cref="StackDefinition.MaxInstances"/> cap for an enchantment
+    /// type. Returns the lowest non-null value across all registered entries (so multiple
+    /// registrations contributing different caps converge on the strictest), or <c>null</c> if
+    /// no entry sets one. Called from <c>MultiEnchantmentStackSupport.CanStackOnto</c>.
+    /// </summary>
+    internal static int? GetMaxInstances(Type enchantmentType)
+    {
         lock (Sync)
         {
-            return DynamicVarKeysWithContributions.Contains(varKey);
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return null;
+            }
+
+            int? result = null;
+            foreach (EnchantmentEntry entry in entries)
+            {
+                int? candidate = entry.Definition?.MaxInstances;
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                result = result == null ? candidate : System.Math.Min(result.Value, candidate.Value);
+            }
+
+            return result;
         }
     }
 
@@ -215,6 +285,34 @@ internal static class EnchantmentRegistry
         lock (Sync)
         {
             return EntriesByType.ContainsKey(enchantmentType);
+        }
+    }
+
+    /// <summary>
+    /// Returns the most permissive registered <see cref="StackOverflowPolicy"/> for the
+    /// enchantment type — i.e. anything other than <see cref="StackOverflowPolicy.Reject"/>
+    /// wins over Reject. When no entry exists or all entries default to Reject, returns Reject.
+    /// </summary>
+    internal static StackOverflowPolicy GetOverflowPolicy(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return StackOverflowPolicy.Reject;
+            }
+
+            StackOverflowPolicy result = StackOverflowPolicy.Reject;
+            foreach (EnchantmentEntry entry in entries)
+            {
+                StackOverflowPolicy candidate = entry.Definition?.OnOverflow ?? StackOverflowPolicy.Reject;
+                if (candidate != StackOverflowPolicy.Reject)
+                {
+                    result = candidate;
+                }
+            }
+
+            return result;
         }
     }
 

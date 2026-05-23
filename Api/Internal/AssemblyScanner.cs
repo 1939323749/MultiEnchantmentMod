@@ -27,6 +27,22 @@ internal static class AssemblyScanner
     private static int _lastSeenAssemblyCount;
 
     /// <summary>
+    /// True once <see cref="Seal"/> has been called. Consulted by <c>EnchantmentRegistry.Install</c>
+    /// so direct fluent <c>Register&lt;T&gt;().Commit()</c> calls after seal log + no-op the same
+    /// way <see cref="ScanAssembly"/> does.
+    /// </summary>
+    internal static bool IsSealed
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return _sealed;
+            }
+        }
+    }
+
+    /// <summary>
     /// Scans <paramref name="assembly"/> for v2 definitions / attributes.
     /// Idempotent: re-scanning the same assembly does nothing. Returns the number of new
     /// registrations performed.
@@ -200,7 +216,7 @@ internal static class AssemblyScanner
         if (ctor == null)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] {type.FullName} extends EnchantmentDefinition<T> but lacks a parameterless constructor; skipping (analyzer rule MEM004).");
+                $"[StackApi] {type.FullName} (assembly={type.Assembly.GetName().Name}) extends EnchantmentDefinition<T> but lacks a parameterless constructor; skipping (analyzer rule MEM004).");
             return false;
         }
 
@@ -212,7 +228,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to instantiate {type.FullName}: {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to instantiate {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
             return false;
         }
 
@@ -223,7 +239,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to register {type.FullName}: {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to register {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
             return false;
         }
 
@@ -248,7 +264,7 @@ internal static class AssemblyScanner
         if (!typeof(EnchantmentModel).IsAssignableFrom(type))
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] [Enchantment] applied to {type.FullName} which is not an EnchantmentModel; skipping (analyzer rule MEM001).");
+                $"[StackApi] [Enchantment] applied to {type.FullName} (assembly={type.Assembly.GetName().Name}) which is not an EnchantmentModel; skipping (analyzer rule MEM001).");
             return false;
         }
 
@@ -310,7 +326,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to register attribute-only enchantment {type.FullName}: {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to register attribute-only enchantment {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
             return false;
         }
     }

@@ -12,6 +12,8 @@ internal sealed class AnalyzerSymbols
         INamedTypeSymbol? enchantmentExecutionAttribute,
         INamedTypeSymbol? enchantmentPresentationAttribute,
         INamedTypeSymbol? enchantmentApiCompatibilityAttribute,
+        INamedTypeSymbol? modifyDynamicVarAttribute,
+        INamedTypeSymbol? enchantmentStackSnapshot,
         INamedTypeSymbol? enchantmentModel)
     {
         EnchantmentAttribute = enchantmentAttribute;
@@ -21,6 +23,8 @@ internal sealed class AnalyzerSymbols
         EnchantmentExecutionAttribute = enchantmentExecutionAttribute;
         EnchantmentPresentationAttribute = enchantmentPresentationAttribute;
         EnchantmentApiCompatibilityAttribute = enchantmentApiCompatibilityAttribute;
+        ModifyDynamicVarAttribute = modifyDynamicVarAttribute;
+        EnchantmentStackSnapshot = enchantmentStackSnapshot;
         EnchantmentModel = enchantmentModel;
     }
 
@@ -31,6 +35,8 @@ internal sealed class AnalyzerSymbols
     public INamedTypeSymbol? EnchantmentExecutionAttribute { get; }
     public INamedTypeSymbol? EnchantmentPresentationAttribute { get; }
     public INamedTypeSymbol? EnchantmentApiCompatibilityAttribute { get; }
+    public INamedTypeSymbol? ModifyDynamicVarAttribute { get; }
+    public INamedTypeSymbol? EnchantmentStackSnapshot { get; }
     public INamedTypeSymbol? EnchantmentModel { get; }
 
     public static AnalyzerSymbols Create(Compilation compilation)
@@ -43,6 +49,8 @@ internal sealed class AnalyzerSymbols
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentExecutionAttribute),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentPresentationAttribute),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentApiCompatibilityAttribute),
+            compilation.GetTypeByMetadataName(MetadataNames.ModifyDynamicVarAttribute),
+            compilation.GetTypeByMetadataName(MetadataNames.EnchantmentStackSnapshot),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentModel));
     }
 }

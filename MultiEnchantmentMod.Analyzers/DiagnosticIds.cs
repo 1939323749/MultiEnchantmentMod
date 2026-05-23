@@ -10,4 +10,7 @@ internal static class DiagnosticIds
     public const string PresentationWithoutOverride = "MEM006";
     public const string MissingCompatibilityAttribute = "MEM007";
     public const string DuplicateDefinitions = "MEM008";
+    public const string ModifyDynamicVarBadSignature = "MEM009";
+    public const string MaxActivationsWithoutTrigger = "MEM011";
+    public const string MergedDeltaWithoutMergeAmount = "MEM012";
 }

@@ -55,5 +55,51 @@
   "SAMPLE_DOUBLER.extraCardText": "[gold]Damage[/gold] ×2.",
 
   "SAMPLE_UNREGISTERED.title": "Unregistered Enchant",
-  "SAMPLE_UNREGISTERED.description": "Reference sample (compatibility, no Register call). Overrides EnchantDamageAdditive to demonstrate the auto-registration safety net — first encounter auto-registers as MergeAmount with a one-time info log."
+  "SAMPLE_UNREGISTERED.description": "Reference sample (compatibility, no Register call). Overrides EnchantDamageAdditive to demonstrate the auto-registration safety net — first encounter auto-registers as MergeAmount with a one-time info log.",
+  "TWO_PLAY_FREE_ENCHANT.title": "打出两次后免费",
+  "TWO_PLAY_FREE_ENCHANT.description": "打出若干次后变为免费",
+
+  "SAMPLE_EMBER.title": "Ember",
+  "SAMPLE_EMBER.description": "Reference sample (Tier B, OnCardDiscarded + MergeAmount). Deals damage equal to stack amount to a random enemy when the host card is discarded.",
+  "SAMPLE_EMBER.extraCardText": "On discard: deal {Amount} damage to a random enemy.",
+
+  "SAMPLE_SAMSARA.title": "Samsara",
+  "SAMPLE_SAMSARA.description": "Reference sample (Tier B, OnCardExhausted). When the host card is exhausted, it returns to the draw pile instead of staying in the exhaust pile.",
+
+  "SAMPLE_WEB_TRAP.title": "Web Trap",
+  "SAMPLE_WEB_TRAP.description": "Reference sample (Tier B, OnCardChangedPiles + MergeAmount). When the host card leaves the hand and enters the discard pile, applies Weakness equal to stack amount to a random enemy.",
+
+  "SAMPLE_CHARGE_UP.title": "Charge Up",
+  "SAMPLE_CHARGE_UP.description": "Reference sample (Tier B, OnSideTurnStart(Enemy) + MergeAmount). At the start of each enemy turn, increases the enchantment's stack count — adding +2 base damage per stack permanently.",
+  "SAMPLE_CHARGE_UP.extraCardText": "[gold]Damage[/gold] +{Damage}.",
+
+  "SAMPLE_PHOENIX.title": "Phoenix",
+  "SAMPLE_PHOENIX.description": "Reference sample (Tier C, OnShouldDie). A lethal hit is prevented, the owner heals 50% MaxHp, and the enchantment removes itself.",
+
+  "SAMPLE_FULL_HP_SHIELD.title": "Full HP Shield",
+  "SAMPLE_FULL_HP_SHIELD.description": "Reference sample (Tier C, ConditionalActive + ModifyDynamicVar). Adds +5 Block while the owner is at full HP; the enchantment deactivates (not removed) when HP drops below maximum.",
+  "SAMPLE_FULL_HP_SHIELD.extraCardText": "+5 [gold]Block[/gold] while at full HP.",
+
+  "SAMPLE_TEMPO_TRACKER.title": "Tempo Tracker",
+  "SAMPLE_TEMPO_TRACKER.description": "Reference sample (Tier B, OnAnyCardPlayed broadcast hook). Counts every card played in the combat — including self — via the broadcast variant of OnCardPlayed.",
+  "SAMPLE_TEMPO_TRACKER.extraCardText": "Cards played this combat: {Amount}.",
+
+  "SAMPLE_RESONATOR.title": "Resonator",
+  "SAMPLE_RESONATOR.description": "Reference sample (Tier B, OnSiblingApplied / OnSiblingRemoved). Buffs itself by +1 stack for every other enchantment on the same card, refunding when neighbors leave.",
+  "SAMPLE_RESONATOR.extraCardText": "+{Amount} per neighboring enchantment.",
+
+  "SAMPLE_CHARGED_SURGE.title": "Charged Surge",
+  "SAMPLE_CHARGED_SURGE.description": "Reference sample (Tier C, ScopeRuntimeStateView + FormatExtraText). Adds +5 [gold]Damage[/gold] for three plays; tooltip pulls the remaining-charge count from the snapshot's ScopeStates.",
+
+  "SAMPLE_BERSERK.title": "Berserk",
+  "SAMPLE_BERSERK.description": "Reference sample (Tier C, NotifyPropsChanged). Damage scales with missing HP; OnAfterDamageReceived mutates a cached field and explicitly refreshes derived UI state.",
+
+  "SAMPLE_BOUNDED_QUEUE.title": "Bounded Queue",
+  "SAMPLE_BOUNDED_QUEUE.description": "Reference sample (Tier C, MaxInstances + StackOverflowPolicy.ReplaceOldest). Caps at 5 live instances per card; the oldest instance is evicted with RemovalReason.OverflowEvicted on overflow.",
+
+  "SAMPLE_FLEXIBLE_SCOPE.title": "Flexible Scope",
+  "SAMPLE_FLEXIBLE_SCOPE.description": "Reference sample (Tier C, per-instance scope override). Registry default is permanent, but individual applications can pass a shorter scope to MultiEnchantmentApi.Enchant or change it with SetScopeOverride.",
+  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "Scope can be overridden per application."
+
 }
+

@@ -63,7 +63,9 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
         "Assembly should declare API compatibility",
         "Assembly is missing [assembly: EnchantmentApiCompatibility(...)]",
         "Usage",
-        DiagnosticSeverity.Info,
+        // Bumped from Info to Warning during stabilization: silently missing the version tag means
+        // a downstream mod's load-time compatibility check is impossible — worth a yellow squiggle.
+        DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         customTags: new[] { WellKnownDiagnosticTags.CompilationEnd });
 
@@ -76,8 +78,32 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
         isEnabledByDefault: true,
         customTags: new[] { WellKnownDiagnosticTags.CompilationEnd });
 
+    private static readonly DiagnosticDescriptor Mem009 = new(
+        DiagnosticIds.ModifyDynamicVarBadSignature,
+        "[ModifyDynamicVar] method has wrong signature",
+        "{0}.{1} marked with [ModifyDynamicVar] must be 'decimal({2}, decimal)' but is '{3}({4})'",
+        "Usage",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem011 = new(
+        DiagnosticIds.MaxActivationsWithoutTrigger,
+        "MaxActivations without explicit Activation defaults to OnPlay",
+        "[Enchantment(MaxActivations={0})] on '{1}' does not set Activation; defaulting to OnPlay — set Activation explicitly to silence this warning",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    private static readonly DiagnosticDescriptor Mem012 = new(
+        DiagnosticIds.MergedDeltaWithoutMergeAmount,
+        "OnMergedDelta override has no effect outside MergeAmount",
+        "Definition '{0}' overrides OnMergedDelta but Stack = {1}; the override is dead code outside MergeAmount",
+        "Usage",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Mem001, Mem002, Mem003, Mem004, Mem005, Mem006, Mem007, Mem008);
+        ImmutableArray.Create(Mem001, Mem002, Mem003, Mem004, Mem005, Mem006, Mem007, Mem008, Mem009, Mem011, Mem012);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -92,7 +118,44 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
         DefinitionIndex definitionIndex = DefinitionIndex.Create(context.Compilation, symbols);
 
         context.RegisterSymbolAction(symbolContext => AnalyzeNamedType(symbolContext, symbols, definitionIndex), SymbolKind.NamedType);
+        context.RegisterSymbolAction(symbolContext => AnalyzeMethod(symbolContext, symbols), SymbolKind.Method);
         context.RegisterCompilationEndAction(compilationContext => AnalyzeCompilation(compilationContext, symbols, definitionIndex));
+    }
+
+    private static void AnalyzeMethod(SymbolAnalysisContext context, AnalyzerSymbols symbols)
+    {
+        if (symbols.ModifyDynamicVarAttribute == null || symbols.EnchantmentStackSnapshot == null)
+        {
+            return;
+        }
+
+        IMethodSymbol method = (IMethodSymbol)context.Symbol;
+        if (!method.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, symbols.ModifyDynamicVarAttribute)))
+        {
+            return;
+        }
+
+        // Required signature: decimal(EnchantmentStackSnapshot, decimal)
+        bool returnOk = method.ReturnType.SpecialType == SpecialType.System_Decimal;
+        bool paramsOk =
+            method.Parameters.Length == 2 &&
+            SymbolEqualityComparer.Default.Equals(method.Parameters[0].Type, symbols.EnchantmentStackSnapshot) &&
+            method.Parameters[1].Type.SpecialType == SpecialType.System_Decimal;
+
+        if (returnOk && paramsOk)
+        {
+            return;
+        }
+
+        string actualParams = string.Join(", ", method.Parameters.Select(p => p.Type.Name));
+        context.ReportDiagnostic(Diagnostic.Create(
+            Mem009,
+            SymbolHelpers.GetBestLocation(method),
+            method.ContainingType?.Name ?? "?",
+            method.Name,
+            symbols.EnchantmentStackSnapshot.Name,
+            method.ReturnType.Name,
+            actualParams));
     }
 
     private static void AnalyzeNamedType(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionIndex definitionIndex)
@@ -109,6 +172,22 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(
                 Mem001,
                 enchantmentAttribute.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation() ?? SymbolHelpers.GetBestLocation(type)));
+        }
+
+        // MEM011: [Enchantment(MaxActivations=N)] without explicit Activation falls back to OnPlay,
+        // which is rarely the author's intent for damage / turn-tied lifetimes.
+        if (enchantmentAttribute != null)
+        {
+            string? maxActivationsStr = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "MaxActivations");
+            bool hasActivation = enchantmentAttribute.NamedArguments.Any(static n => n.Key == "Activation");
+            if (int.TryParse(maxActivationsStr, out int maxActivations) && maxActivations > 0 && !hasActivation)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    Mem011,
+                    enchantmentAttribute.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation() ?? SymbolHelpers.GetBestLocation(type),
+                    maxActivations,
+                    type.Name));
+            }
         }
 
         if (!SymbolHelpers.DerivesFromOpenGeneric(type, symbols.EnchantmentDefinitionOfT, out INamedTypeSymbol? constructedBase) ||
@@ -136,6 +215,30 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
         AnalyzeKeywordMode(context, current);
         AnalyzeExecutionMode(context, current);
         AnalyzePresentation(context, current);
+        AnalyzeMergedDeltaOverride(context, current);
+    }
+
+    // MEM012: definition overrides OnMergedDelta but Stack != MergeAmount → dead code. Same idea
+    // as MEM005 (execution mode vs stack) but for the lifecycle override hook.
+    private static void AnalyzeMergedDeltaOverride(SymbolAnalysisContext context, DefinitionInfo definition)
+    {
+        if (definition.Stack == null || definition.Stack == "MergeAmount")
+        {
+            return;
+        }
+
+        foreach (ISymbol member in definition.DefinitionType.GetMembers("OnMergedDelta"))
+        {
+            if (member is IMethodSymbol method && method.IsOverride)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    Mem012,
+                    SymbolHelpers.GetBestLocation(method),
+                    definition.DefinitionType.Name,
+                    definition.Stack));
+                return;
+            }
+        }
     }
 
     private static void AnalyzeModelMismatch(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionInfo definition, INamedTypeSymbol enchantmentType)

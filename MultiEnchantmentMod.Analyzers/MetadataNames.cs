@@ -9,5 +9,7 @@ internal static class MetadataNames
     public const string EnchantmentExecutionAttribute = "MultiEnchantmentMod.Api.EnchantmentExecutionAttribute";
     public const string EnchantmentPresentationAttribute = "MultiEnchantmentMod.Api.EnchantmentPresentationAttribute";
     public const string EnchantmentApiCompatibilityAttribute = "MultiEnchantmentMod.Api.EnchantmentApiCompatibilityAttribute";
+    public const string ModifyDynamicVarAttribute = "MultiEnchantmentMod.Api.ModifyDynamicVarAttribute";
+    public const string EnchantmentStackSnapshot = "MultiEnchantmentMod.EnchantmentStackSnapshot";
     public const string EnchantmentModel = "MegaCrit.Sts2.Core.Models.EnchantmentModel";
 }

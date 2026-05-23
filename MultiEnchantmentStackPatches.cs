@@ -138,7 +138,7 @@ internal static class MultiEnchantmentStackPatches
 
     private static async Task HandleStackedImbuedAfterAutoPrePlayPhaseEntered(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
     {
-        if (player != imbued.Card.Owner || imbued.Card.CombatState.RoundNumber != 1)
+        if (player != imbued.Card.Owner || imbued.Card.CombatState!.RoundNumber != 1)
         {
             return;
         }

@@ -1,9 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
 using MegaCrit.Sts2.Core.Models;
+
+// The public types in this file (EnchantmentStackBehavior / EnchantmentStatusAggregation /
+// EnchantmentHookKind / HookExecutionMode / EnchantmentStackDefinition / EnchantmentExecutionPolicy
+// / EnchantmentStackSlice / EnchantmentStackSnapshot / MultiEnchantmentStackApi) live in the
+// legacy MultiEnchantmentMod namespace rather than MultiEnchantmentMod.Api for historical
+// reasons. They surface in v2 public delegate signatures (TrackKeyword, FormatExtraText,
+// VisualSlices, ModifyDynamicVar) and ExecutionPolicyBuilder, so downstream mods using v2 must
+// `using MultiEnchantmentMod;` alongside `using MultiEnchantmentMod.Api;`.
+//
+// Moving them into MultiEnchantmentMod.Api would be a source-breaking change for downstream
+// authors and is therefore deferred to the next major API version. The internal provider
+// interfaces below stay `internal` — they are not part of any contract a downstream mod should
+// implement.
 
 namespace MultiEnchantmentMod;
 
@@ -93,7 +109,8 @@ public sealed record EnchantmentStackSnapshot(
     int TotalAmount,
     IReadOnlyList<EnchantmentStackSlice> GameplaySlices,
     IReadOnlyList<EnchantmentStackSlice> VisualSlices,
-    IReadOnlyList<EnchantmentModel> LiveInstances)
+    IReadOnlyList<EnchantmentModel> LiveInstances,
+    IReadOnlyDictionary<EnchantmentModel, Api.ScopeRuntimeStateView>? ScopeStates = null)
 {
     public int ActiveInstanceCount => LiveInstances.Count(instance => instance.Status != EnchantmentStatus.Disabled);
     public int ActiveTotalAmount => GameplaySlices.Where(static slice => slice.IsActive).Sum(static slice => slice.Amount);
@@ -110,6 +127,18 @@ public sealed record EnchantmentStackSnapshot(
             HookExecutionMode.FirstActiveInstanceOnly => ActiveInstanceCount > 0 ? 1 : 0,
             _ => ActiveInstanceCount,
         };
+    }
+
+    /// <summary>
+    /// Convenience accessor for the scope runtime state of a specific enchantment instance.
+    /// Returns <c>null</c> when <paramref name="enchantment"/> is not in this snapshot's
+    /// <see cref="ScopeStates"/> (e.g. the enchantment has no scope configured, or the
+    /// snapshot was produced by a code path that doesn't populate scope states).
+    /// </summary>
+    public Api.ScopeRuntimeStateView? StateOf(EnchantmentModel enchantment)
+    {
+        if (ScopeStates == null || enchantment == null) return null;
+        return ScopeStates.TryGetValue(enchantment, out Api.ScopeRuntimeStateView? view) ? view : null;
     }
 }
 
@@ -174,6 +203,49 @@ internal interface IEnchantmentLifecycleProvider<TEnchantment>
     /// (e.g. a <c>ConditionalWeakTable&lt;CardModel, T&gt;</c>) that doesn't survive serialization.
     /// </summary>
     void OnRestored(CardModel card, TEnchantment enchantment);
+
+    // Dispatched only for enchantments where MultiEnchantmentScopeSupport.IsActive returns true
+    // at the moment the event fires. See MultiEnchantmentScopeSupport.DispatchOn*ForCard.
+
+    void OnCardPlayed(CardModel card, TEnchantment enchantment);
+    void OnCardDrawn(CardModel card, TEnchantment enchantment);
+    void OnCardExhausted(CardModel card, TEnchantment enchantment);
+    void OnCardDiscarded(CardModel card, TEnchantment enchantment);
+    void OnCardEnteredCombat(CardModel card, TEnchantment enchantment);
+
+    // Unlike the per-card hooks above, these fire for ANY card event in combat. Opt-in: the
+    // adapter null-checks the entry field and returns immediately when unset, so enchantments
+    // that don't register these hooks pay zero cost. Parameters are
+    // (eventCard, selfCard, selfEnchantment) — event card first.
+
+    void OnAnyCardPlayed(CardModel playedCard, CardModel selfCard, TEnchantment enchantment) { }
+    void OnAnyCardDrawn(CardModel drawnCard, CardModel selfCard, TEnchantment enchantment) { }
+    void OnAnyCardExhausted(CardModel exhaustedCard, CardModel selfCard, TEnchantment enchantment) { }
+    void OnAnyCardDiscarded(CardModel discardedCard, CardModel selfCard, TEnchantment enchantment) { }
+
+    // Fires when another enchantment is added to / removed from the same card.
+
+    void OnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) { }
+    void OnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, Api.RemovalReason reason) { }
+
+    /// <summary>
+    /// Bridge to <c>Hook.AfterDamageReceived</c>. Dispatched per active enchantment whose card
+    /// is owned by <see cref="Api.DamageReceivedContext.Target"/>'s player.
+    /// </summary>
+    void OnAfterDamageReceived(CardModel card, TEnchantment enchantment, Api.DamageReceivedContext context);
+
+    void OnSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side);
+    void OnBeforeSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side);
+    void OnBeforeAttack(CardModel card, TEnchantment enchantment, AttackCommand command);
+    void OnAfterAttack(CardModel card, TEnchantment enchantment, AttackCommand command);
+
+    void OnCardChangedPiles(CardModel card, TEnchantment enchantment, PileType oldPile, AbstractModel? source);
+    void OnCardRetained(CardModel card, TEnchantment enchantment);
+    void OnBeforeBlockGained(CardModel card, TEnchantment enchantment, Api.BlockGainContext context);
+    void OnBlockGained(CardModel card, TEnchantment enchantment, Api.BlockGainContext context);
+
+    /// <summary>Guard hook. Returning <c>false</c> from any active enchantment vetoes the death.</summary>
+    bool OnShouldDie(CardModel card, TEnchantment enchantment, Creature creature);
 }
 
 public static class MultiEnchantmentStackApi
@@ -486,6 +558,29 @@ public static class MultiEnchantmentStackApi
         void OnTurnStart(CardModel card, EnchantmentModel enchantment);
         void OnTurnEnd(CardModel card, EnchantmentModel enchantment);
         void OnRestored(CardModel card, EnchantmentModel enchantment);
+        void OnCardPlayed(CardModel card, EnchantmentModel enchantment);
+        void OnCardDrawn(CardModel card, EnchantmentModel enchantment);
+        void OnCardExhausted(CardModel card, EnchantmentModel enchantment);
+        void OnCardDiscarded(CardModel card, EnchantmentModel enchantment);
+        void OnCardEnteredCombat(CardModel card, EnchantmentModel enchantment);
+        void OnAfterDamageReceived(CardModel card, EnchantmentModel enchantment, Api.DamageReceivedContext context);
+        void OnSideTurnStart(CardModel card, EnchantmentModel enchantment, CombatSide side);
+        void OnBeforeSideTurnStart(CardModel card, EnchantmentModel enchantment, CombatSide side);
+        void OnBeforeAttack(CardModel card, EnchantmentModel enchantment, AttackCommand command);
+        void OnAfterAttack(CardModel card, EnchantmentModel enchantment, AttackCommand command);
+        void OnCardChangedPiles(CardModel card, EnchantmentModel enchantment, PileType oldPile, AbstractModel? source);
+        void OnCardRetained(CardModel card, EnchantmentModel enchantment);
+        void OnBeforeBlockGained(CardModel card, EnchantmentModel enchantment, Api.BlockGainContext context);
+        void OnBlockGained(CardModel card, EnchantmentModel enchantment, Api.BlockGainContext context);
+        bool OnShouldDie(CardModel card, EnchantmentModel enchantment, Creature creature);
+
+        void OnAnyCardPlayed(CardModel playedCard, CardModel selfCard, EnchantmentModel enchantment) { }
+        void OnAnyCardDrawn(CardModel drawnCard, CardModel selfCard, EnchantmentModel enchantment) { }
+        void OnAnyCardExhausted(CardModel exhaustedCard, CardModel selfCard, EnchantmentModel enchantment) { }
+        void OnAnyCardDiscarded(CardModel discardedCard, CardModel selfCard, EnchantmentModel enchantment) { }
+
+        void OnSiblingApplied(CardModel card, EnchantmentModel self, EnchantmentModel newSibling) { }
+        void OnSiblingRemoved(CardModel card, EnchantmentModel self, EnchantmentModel removedSibling, Api.RemovalReason reason) { }
     }
 
     private sealed class StackDefinitionProviderRegistration<TEnchantment> : IStackDefinitionProviderRegistration
@@ -655,6 +750,111 @@ public static class MultiEnchantmentStackApi
         public void OnRestored(CardModel card, EnchantmentModel enchantment)
         {
             _provider.OnRestored(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCardPlayed(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardPlayed(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCardDrawn(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardDrawn(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCardExhausted(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardExhausted(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCardDiscarded(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardDiscarded(card, (TEnchantment)enchantment);
+        }
+
+        public void OnCardEnteredCombat(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardEnteredCombat(card, (TEnchantment)enchantment);
+        }
+
+        public void OnAfterDamageReceived(CardModel card, EnchantmentModel enchantment, Api.DamageReceivedContext context)
+        {
+            _provider.OnAfterDamageReceived(card, (TEnchantment)enchantment, context);
+        }
+
+        public void OnSideTurnStart(CardModel card, EnchantmentModel enchantment, CombatSide side)
+        {
+            _provider.OnSideTurnStart(card, (TEnchantment)enchantment, side);
+        }
+
+        public void OnBeforeSideTurnStart(CardModel card, EnchantmentModel enchantment, CombatSide side)
+        {
+            _provider.OnBeforeSideTurnStart(card, (TEnchantment)enchantment, side);
+        }
+
+        public void OnBeforeAttack(CardModel card, EnchantmentModel enchantment, AttackCommand command)
+        {
+            _provider.OnBeforeAttack(card, (TEnchantment)enchantment, command);
+        }
+
+        public void OnAfterAttack(CardModel card, EnchantmentModel enchantment, AttackCommand command)
+        {
+            _provider.OnAfterAttack(card, (TEnchantment)enchantment, command);
+        }
+
+        public void OnCardChangedPiles(CardModel card, EnchantmentModel enchantment, PileType oldPile, AbstractModel? source)
+        {
+            _provider.OnCardChangedPiles(card, (TEnchantment)enchantment, oldPile, source);
+        }
+
+        public void OnCardRetained(CardModel card, EnchantmentModel enchantment)
+        {
+            _provider.OnCardRetained(card, (TEnchantment)enchantment);
+        }
+
+        public void OnBeforeBlockGained(CardModel card, EnchantmentModel enchantment, Api.BlockGainContext context)
+        {
+            _provider.OnBeforeBlockGained(card, (TEnchantment)enchantment, context);
+        }
+
+        public void OnBlockGained(CardModel card, EnchantmentModel enchantment, Api.BlockGainContext context)
+        {
+            _provider.OnBlockGained(card, (TEnchantment)enchantment, context);
+        }
+
+        public bool OnShouldDie(CardModel card, EnchantmentModel enchantment, Creature creature)
+        {
+            return _provider.OnShouldDie(card, (TEnchantment)enchantment, creature);
+        }
+
+        public void OnAnyCardPlayed(CardModel playedCard, CardModel selfCard, EnchantmentModel enchantment)
+        {
+            _provider.OnAnyCardPlayed(playedCard, selfCard, (TEnchantment)enchantment);
+        }
+
+        public void OnAnyCardDrawn(CardModel drawnCard, CardModel selfCard, EnchantmentModel enchantment)
+        {
+            _provider.OnAnyCardDrawn(drawnCard, selfCard, (TEnchantment)enchantment);
+        }
+
+        public void OnAnyCardExhausted(CardModel exhaustedCard, CardModel selfCard, EnchantmentModel enchantment)
+        {
+            _provider.OnAnyCardExhausted(exhaustedCard, selfCard, (TEnchantment)enchantment);
+        }
+
+        public void OnAnyCardDiscarded(CardModel discardedCard, CardModel selfCard, EnchantmentModel enchantment)
+        {
+            _provider.OnAnyCardDiscarded(discardedCard, selfCard, (TEnchantment)enchantment);
+        }
+
+        public void OnSiblingApplied(CardModel card, EnchantmentModel self, EnchantmentModel newSibling)
+        {
+            _provider.OnSiblingApplied(card, (TEnchantment)self, newSibling);
+        }
+
+        public void OnSiblingRemoved(CardModel card, EnchantmentModel self, EnchantmentModel removedSibling, Api.RemovalReason reason)
+        {
+            _provider.OnSiblingRemoved(card, (TEnchantment)self, removedSibling, reason);
         }
     }
 }

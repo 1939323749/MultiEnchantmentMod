@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
 
@@ -25,6 +28,14 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         _entry.Definition = new StackDefinition(behavior, status);
+        return this;
+    }
+
+    public IEnchantmentRegistration Stack(StackDefinition definition)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(definition);
+        _entry.Definition = definition;
         return this;
     }
 
@@ -105,6 +116,22 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration OnSiblingApplied(Action<CardModel, EnchantmentModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnSiblingApplied = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnSiblingRemoved(Action<CardModel, EnchantmentModel, EnchantmentModel, RemovalReason> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnSiblingRemoved = handler;
+        return this;
+    }
+
     public IEnchantmentRegistration OnCombatStart(Action<CardModel, EnchantmentModel> handler)
     {
         EnsureNotCommitted();
@@ -142,6 +169,158 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
         _entry.OnRestored = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardPlayed(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardPlayed = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardDrawn(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardDrawn = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardExhausted(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardExhausted = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardDiscarded(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardDiscarded = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardEnteredCombat(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardEnteredCombat = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAnyCardPlayed(Action<CardModel, CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAnyCardPlayed = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAnyCardDrawn(Action<CardModel, CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAnyCardDrawn = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAnyCardExhausted(Action<CardModel, CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAnyCardExhausted = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAnyCardDiscarded(Action<CardModel, CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAnyCardDiscarded = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAfterDamageReceived(Action<CardModel, EnchantmentModel, DamageReceivedContext> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAfterDamageReceived = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnSideTurnStart(Action<CardModel, EnchantmentModel, CombatSide> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnSideTurnStart = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnBeforeSideTurnStart(Action<CardModel, EnchantmentModel, CombatSide> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnBeforeSideTurnStart = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnBeforeAttack(Action<CardModel, EnchantmentModel, AttackCommand> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnBeforeAttack = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnAfterAttack(Action<CardModel, EnchantmentModel, AttackCommand> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnAfterAttack = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardChangedPiles(Action<CardModel, EnchantmentModel, PileType, AbstractModel?> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardChangedPiles = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardRetained(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnCardRetained = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnBeforeBlockGained(Action<CardModel, EnchantmentModel, BlockGainContext> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnBeforeBlockGained = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnBlockGained(Action<CardModel, EnchantmentModel, BlockGainContext> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnBlockGained = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnShouldDie(Func<CardModel, EnchantmentModel, Creature, bool> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnShouldDie = handler;
         return this;
     }
 

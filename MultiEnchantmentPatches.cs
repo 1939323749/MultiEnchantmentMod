@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -7,6 +8,7 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -26,9 +28,12 @@ using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Managers;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
 using MultiEnchantmentMod.Api;
+using MultiEnchantmentMod.Api.Internal;
 
 namespace MultiEnchantmentMod;
 
@@ -159,14 +164,19 @@ internal static class MultiEnchantmentPatches
         // on whether the sweep has completed, so deck-setup additions stay handled by the
         // sweep itself — see OnCardEnteredCombat for the timing rationale.
         MultiEnchantmentScopeSupport.OnCardEnteredCombat(combatState, card);
+
+        // Phase 3a T3a.5: separate lifecycle that fires on every entry, including deck-setup
+        // sweep. OnCardEnteredCombat lifecycle and OnCombatStart lifecycle are distinct — the
+        // former is the per-event "card just landed in combat" signal, the latter is the
+        // once-per-combat-per-card "initialize" signal. IsActive is enforced inside Dispatch.
+        MultiEnchantmentScopeSupport.DispatchOnCardEnteredCombatForCard(card);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
     [HarmonyPostfix]
-    private static void AfterTurnEndPostfix(ICombatState combatState, CombatSide side)
+    private static void AfterTurnEndPostfix(ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
     {
-        // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide side)
-        // sts2.dll @ min_game_version 0.105.1
+        // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
         // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
         // just Side. The file's `using Godot;` makes the unqualified name resolve to
         // Godot.Side (the UI margin enum Left/Top/Right/Bottom), which leaves Harmony with a
@@ -201,6 +211,15 @@ internal static class MultiEnchantmentPatches
         // checks can count it.
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             cardPlay?.Card, ActivationTrigger.AfterCardPlayed);
+
+        // Phase 3a T3a.1: fan the OnCardPlayed lifecycle out to active enchantments on the
+        // played card. Distinct from the activation-trigger fan-out above: that one drives
+        // scope counters (MaxActivations / RemoveWhen), this one delivers an author-facing
+        // event for arbitrary side-effects.
+        MultiEnchantmentScopeSupport.DispatchOnCardPlayedForCard(cardPlay?.Card);
+
+        // Phase 4: broadcast OnAnyCardPlayed to every enchantment in combat that opted in.
+        MultiEnchantmentScopeSupport.DispatchOnAnyCardPlayedBroadcast(cardPlay?.Card, combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
@@ -209,6 +228,12 @@ internal static class MultiEnchantmentPatches
     {
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardDrawn);
+
+        // Phase 3a T3a.2: OnCardDrawn lifecycle for active enchantments.
+        MultiEnchantmentScopeSupport.DispatchOnCardDrawnForCard(card);
+
+        // Phase 4: broadcast OnAnyCardDrawn to every enchantment in combat that opted in.
+        MultiEnchantmentScopeSupport.DispatchOnAnyCardDrawnBroadcast(card, combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardExhausted))]
@@ -217,6 +242,12 @@ internal static class MultiEnchantmentPatches
     {
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardExhausted);
+
+        // Phase 3a T3a.3: OnCardExhausted lifecycle for active enchantments.
+        MultiEnchantmentScopeSupport.DispatchOnCardExhaustedForCard(card);
+
+        // Phase 4: broadcast OnAnyCardExhausted to every enchantment in combat that opted in.
+        MultiEnchantmentScopeSupport.DispatchOnAnyCardExhaustedBroadcast(card, combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDiscarded))]
@@ -225,6 +256,12 @@ internal static class MultiEnchantmentPatches
     {
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardDiscarded);
+
+        // Phase 3a T3a.4: OnCardDiscarded lifecycle for active enchantments.
+        MultiEnchantmentScopeSupport.DispatchOnCardDiscardedForCard(card);
+
+        // Phase 4: broadcast OnAnyCardDiscarded to every enchantment in combat that opted in.
+        MultiEnchantmentScopeSupport.DispatchOnAnyCardDiscardedBroadcast(card, combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterPlayerTurnStart))]
@@ -233,6 +270,106 @@ internal static class MultiEnchantmentPatches
     {
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
             player, ActivationTrigger.AfterPlayerTurnStart);
+    }
+
+    // === Phase 3c — pile / guard / block bridges ============================================
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardChangedPiles))]
+    [HarmonyPostfix]
+    private static void HookAfterCardChangedPilesPostfix(IRunState runState, ICombatState? combatState, CardModel card, PileType oldPile, AbstractModel? clonedBy)
+    {
+        MultiEnchantmentScopeSupport.DispatchOnCardChangedPilesForCard(card, oldPile, clonedBy);
+    }
+
+    // vanilla doesn't expose a per-card AfterCardRetained Hook entry point — only AfterFlush
+    // which delivers the full retainedCards collection. Fan out from there.
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterFlush))]
+    [HarmonyPostfix]
+    private static void HookAfterFlushRetainedPostfix(
+        ICombatState combatState,
+        Player player,
+        PlayerChoiceContext playerChoiceContext,
+        IReadOnlyCollection<CardModel> flushedCards,
+        IReadOnlyCollection<CardModel> retainedCards)
+    {
+        if (retainedCards == null)
+        {
+            return;
+        }
+        foreach (CardModel card in retainedCards)
+        {
+            MultiEnchantmentScopeSupport.DispatchOnCardRetainedForCard(card);
+        }
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeBlockGained))]
+    [HarmonyPostfix]
+    private static void HookBeforeBlockGainedPostfix(ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    {
+        BlockGainContext context = new(creature, amount, cardSource);
+        MultiEnchantmentScopeSupport.DispatchOnBeforeBlockGainedForPlayer(context);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterBlockGained))]
+    [HarmonyPostfix]
+    private static void HookAfterBlockGainedPostfix(ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    {
+        BlockGainContext context = new(creature, amount, cardSource);
+        MultiEnchantmentScopeSupport.DispatchOnBlockGainedForPlayer(context);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.ShouldDie))]
+    [HarmonyPostfix]
+    private static void HookShouldDiePostfix(Creature creature, ref bool __result)
+    {
+        // Guard semantics: vanilla returns true when nothing prevented death. If it already
+        // returned false (some other listener vetoed), don't second-guess. Otherwise, ask the
+        // mod's active enchantments — any single false vetoes.
+        if (!__result)
+        {
+            return;
+        }
+        if (!MultiEnchantmentScopeSupport.DispatchOnShouldDieForCreature(creature))
+        {
+            __result = false;
+        }
+    }
+
+    // === Phase 3b — combat-flow bridges =====================================================
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterSideTurnStart))]
+    [HarmonyPostfix]
+    private static void HookAfterSideTurnStartPostfix(ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    {
+        // Phase 3b T3b.1: bridge to OnSideTurnStart lifecycle. Vanilla fires both for player and
+        // enemy turns; handlers can branch on the side parameter. The existing OnTurnStart
+        // lifecycle remains player-only for backward compatibility.
+        MultiEnchantmentScopeSupport.DispatchOnSideTurnStart(combatState, side);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeSideTurnStart))]
+    [HarmonyPostfix]
+    private static void HookBeforeSideTurnStartPostfix(ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    {
+        // Phase 3b T3b.2: bridge to OnBeforeSideTurnStart lifecycle.
+        MultiEnchantmentScopeSupport.DispatchOnBeforeSideTurnStart(combatState, side);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeAttack))]
+    [HarmonyPostfix]
+    private static void HookBeforeAttackPostfix(CombatState combatState, AttackCommand command)
+    {
+        // Phase 3b T3b.3: bridge to OnBeforeAttack lifecycle. AttackCommand exposes Attacker,
+        // CardSource, Results — handlers filter as needed.
+        MultiEnchantmentScopeSupport.DispatchOnBeforeAttack(combatState, command);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterAttack))]
+    [HarmonyPostfix]
+    private static void HookAfterAttackPostfix(CombatState combatState, AttackCommand command)
+    {
+        // Phase 3b T3b.4: bridge to OnAfterAttack lifecycle.
+        MultiEnchantmentScopeSupport.DispatchOnAfterAttack(combatState, command);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageReceived))]
@@ -257,6 +394,12 @@ internal static class MultiEnchantmentPatches
 
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
             target.Player, ActivationTrigger.AfterDamageReceived);
+
+        // Phase 3a T3a.6: deliver an author-facing OnAfterDamageReceived lifecycle in addition
+        // to the scope-counter activation trigger. Build a single context bundle here so every
+        // enchantment sees the same payload (target / damage breakdown / dealer / card source).
+        DamageReceivedContext context = new(target, result, dealer, cardSource);
+        MultiEnchantmentScopeSupport.DispatchOnAfterDamageReceivedForPlayer(target.Player, context);
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
@@ -311,12 +454,15 @@ internal static class MultiEnchantmentPatches
     private static void ToSerializablePostfix(CardModel __instance, ref SerializableCard __result)
     {
         MultiEnchantmentSupport.SerializeAdditionalEnchantments(__instance, __result);
+        MultiEnchantmentSaveSidecar.CaptureCard(__instance, __result);
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.FromSerializable))]
     [HarmonyPostfix]
     private static void FromSerializablePostfix(SerializableCard save, ref CardModel __result)
     {
+        MultiEnchantmentSaveSidecar.RestoreInto(save);
+        MultiEnchantmentSaveSidecar.CaptureSerializableCard(save);
         MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
         if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
         {
@@ -342,13 +488,45 @@ internal static class MultiEnchantmentPatches
         // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
         // for why the Scope kind itself is NOT serialized.
         MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
+        MultiEnchantmentSaveSidecar.CaptureEnchantment(__instance, __result);
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable))]
     [HarmonyPostfix]
     private static void EnchantmentFromSerializablePostfix(SerializableEnchantment save, ref EnchantmentModel __result)
     {
+        MultiEnchantmentSaveSidecar.RestoreInto(save);
+        MultiEnchantmentSaveSidecar.CaptureSerializableEnchantment(save);
         MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
+    }
+
+    [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun), new[] { typeof(SerializableRun), typeof(bool) })]
+    [HarmonyPrefix]
+    private static void SaveRunPrefix(SerializableRun save)
+    {
+        MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+    }
+
+    [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.LoadRunSave))]
+    [HarmonyPostfix]
+    private static void LoadRunSavePostfix(ReadSaveResult<SerializableRun> __result)
+    {
+        if (__result is { Success: true, SaveData: { } save })
+        {
+            MultiEnchantmentSaveSidecar.Reload();
+            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+        }
+    }
+
+    [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.LoadMultiplayerRunSave))]
+    [HarmonyPostfix]
+    private static void LoadMultiplayerRunSavePostfix(ReadSaveResult<SerializableRun> __result)
+    {
+        if (__result is { Success: true, SaveData: { } save })
+        {
+            MultiEnchantmentSaveSidecar.Reload();
+            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), "get_HoverTips")]
@@ -668,7 +846,10 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void RecalculateCardValuesPostfix(PlayerCombatState __instance)
     {
-        foreach (CardModel card in __instance.AllCards)
+        // Snapshot AllCards: RecalculateAdditionalEnchantments calls EnchantmentModel.RecalculateValues
+        // on each enchantment. Vanilla is read-only there, but a user-defined override could call
+        // into mod APIs that mutate AllCards. Defensive snapshot keeps this batch loop safe.
+        foreach (CardModel card in __instance.AllCards.ToList())
         {
             MultiEnchantmentSupport.RecalculateAdditionalEnchantments(card);
         }
@@ -761,7 +942,7 @@ internal static class MultiEnchantmentPatches
         {
             // Hook.ModifyBlock's prefix already chains ApplyDynamicVarEnchantments — see the
             // matching comment on DamageVar above.
-            value = Hook.ModifyBlock(card.CombatState, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
+            value = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
         }
         else
         {
@@ -1033,17 +1214,17 @@ internal static class MultiEnchantmentPatches
         Control before = __instance.GetNode<Control>("%Before");
         Control after = __instance.GetNode<Control>("%After");
 
-        NPreviewCardHolder beforeHolder = NPreviewCardHolder.Create(NCard.Create(card), showHoverTips: true, scaleOnHover: false);
+        NPreviewCardHolder beforeHolder = NPreviewCardHolder.Create(NCard.Create(card)!, showHoverTips: true, scaleOnHover: false)!;
         before.AddChild(beforeHolder);
-        beforeHolder.CardNode.UpdateVisuals(card.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+        beforeHolder.CardNode!.UpdateVisuals(card.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
 
-        CardModel previewCard = card.CardScope.CloneCard(card);
+        CardModel previewCard = card.CardScope!.CloneCard(card);
         MultiEnchantmentSupport.ApplyEnchantment(canonicalEnchantment.ToMutable(), previewCard, amount);
         previewCard.IsEnchantmentPreview = true;
 
-        NPreviewCardHolder afterHolder = NPreviewCardHolder.Create(NCard.Create(previewCard), showHoverTips: true, scaleOnHover: false);
+        NPreviewCardHolder afterHolder = NPreviewCardHolder.Create(NCard.Create(previewCard)!, showHoverTips: true, scaleOnHover: false)!;
         after.AddChild(afterHolder);
-        afterHolder.CardNode.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
+        afterHolder.CardNode!.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
         return false;
     }
 
@@ -1052,6 +1233,18 @@ internal static class MultiEnchantmentPatches
     private static void CardVisualsPrefix(NCard __instance, PileType pileType, CardPreviewMode previewMode)
     {
         MultiEnchantmentSupport.UpdateAdditionalEnchantmentPreviews(__instance, previewMode);
+    }
+
+    [HarmonyPatch(typeof(NCard), "OnEnchantmentChanged")]
+    [HarmonyPostfix]
+    private static void CardEnchantmentChangedPostfix(NCard __instance)
+    {
+        // Base-game NCard.OnEnchantmentChanged only refreshes enchantment icons. Re-run the full
+        // visual pass so formatter-generated extra card text is recomputed when enchantments change.
+        if (__instance.Model != null && __instance.IsNodeReady())
+        {
+            __instance.UpdateVisuals(__instance.Model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+        }
     }
 
     [HarmonyPatch(typeof(NCard), "UpdateEnchantmentVisuals")]
@@ -1435,11 +1628,11 @@ internal static class MultiEnchantmentPatches
         if (Hook.ShouldPlayerResetEnergy((ICombatState)state, player))
         {
             SfxCmd.Play("event:/sfx/ui/gain_energy");
-            player.PlayerCombatState.ResetEnergy();
+            player.PlayerCombatState!.ResetEnergy();
         }
         else
         {
-            player.PlayerCombatState.AddMaxEnergyToCurrent();
+            player.PlayerCombatState!.AddMaxEnergyToCurrent();
         }
 
         await Hook.AfterEnergyReset(state, player);
@@ -1553,7 +1746,7 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
         }
     }
 
-    private static bool TryGetCardFromGroupKey(object groupKey, out CardModel? card)
+    private static bool TryGetCardFromGroupKey(object groupKey, [NotNullWhen(true)] out CardModel? card)
     {
         card = CardGroupKeyCardField?.GetValue(groupKey) as CardModel;
         return card != null;

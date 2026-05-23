@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api.Internal;
 // MultiEnchantmentMod is BOTH the legacy namespace and the bootstrap class name, so we use
@@ -76,6 +79,27 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.OnTurnStart = (card, model) => InvokeOnTurnStart(card, (TEnchantment)model);
             entry.OnTurnEnd = (card, model) => InvokeOnTurnEnd(card, (TEnchantment)model);
             entry.OnRestored = (card, model) => InvokeOnRestored(card, (TEnchantment)model);
+            entry.OnCardPlayed = (card, model) => InvokeOnCardPlayed(card, (TEnchantment)model);
+            entry.OnCardDrawn = (card, model) => InvokeOnCardDrawn(card, (TEnchantment)model);
+            entry.OnCardExhausted = (card, model) => InvokeOnCardExhausted(card, (TEnchantment)model);
+            entry.OnCardDiscarded = (card, model) => InvokeOnCardDiscarded(card, (TEnchantment)model);
+            entry.OnCardEnteredCombat = (card, model) => InvokeOnCardEnteredCombat(card, (TEnchantment)model);
+            entry.OnAfterDamageReceived = (card, model, ctx) => InvokeOnAfterDamageReceived(card, (TEnchantment)model, ctx);
+            entry.OnSideTurnStart = (card, model, side) => InvokeOnSideTurnStart(card, (TEnchantment)model, side);
+            entry.OnBeforeSideTurnStart = (card, model, side) => InvokeOnBeforeSideTurnStart(card, (TEnchantment)model, side);
+            entry.OnBeforeAttack = (card, model, cmd) => InvokeOnBeforeAttack(card, (TEnchantment)model, cmd);
+            entry.OnAfterAttack = (card, model, cmd) => InvokeOnAfterAttack(card, (TEnchantment)model, cmd);
+            entry.OnCardChangedPiles = (card, model, pile, source) => InvokeOnCardChangedPiles(card, (TEnchantment)model, pile, source);
+            entry.OnCardRetained = (card, model) => InvokeOnCardRetained(card, (TEnchantment)model);
+            entry.OnBeforeBlockGained = (card, model, ctx) => InvokeOnBeforeBlockGained(card, (TEnchantment)model, ctx);
+            entry.OnBlockGained = (card, model, ctx) => InvokeOnBlockGained(card, (TEnchantment)model, ctx);
+            entry.OnShouldDie = (card, model, creature) => InvokeOnShouldDie(card, (TEnchantment)model, creature);
+            entry.OnAnyCardPlayed = (played, self, model) => InvokeOnAnyCardPlayed(played, self, (TEnchantment)model);
+            entry.OnAnyCardDrawn = (drawn, self, model) => InvokeOnAnyCardDrawn(drawn, self, (TEnchantment)model);
+            entry.OnAnyCardExhausted = (exhausted, self, model) => InvokeOnAnyCardExhausted(exhausted, self, (TEnchantment)model);
+            entry.OnAnyCardDiscarded = (discarded, self, model) => InvokeOnAnyCardDiscarded(discarded, self, (TEnchantment)model);
+            entry.OnSiblingApplied = (card, self, sibling) => InvokeOnSiblingApplied(card, (TEnchantment)self, sibling);
+            entry.OnSiblingRemoved = (card, self, sibling, reason) => InvokeOnSiblingRemoved(card, (TEnchantment)self, sibling, reason);
         }
 
         foreach (CardKeyword keyword in InvokeTrackedKeywords())
@@ -196,6 +220,17 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
 
     protected virtual void OnApplied(CardModel card, TEnchantment enchantment) { }
     protected virtual bool OnRemoved(CardModel card, TEnchantment enchantment, RemovalReason reason) => true;
+
+    /// <summary>
+    /// Fires when another enchantment is attached to the same card. Safe to call
+    /// <see cref="MultiEnchantmentApi.RemoveEnchantment"/> from within the handler.
+    /// </summary>
+    protected virtual void OnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) { }
+
+    /// <summary>
+    /// Fires when another enchantment is removed from the same card.
+    /// </summary>
+    protected virtual void OnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) { }
     protected virtual void OnCombatStart(CardModel card, TEnchantment enchantment) { }
     protected virtual void OnCombatEnd(CardModel card, TEnchantment enchantment) { }
     protected virtual void OnTurnStart(CardModel card, TEnchantment enchantment) { }
@@ -207,6 +242,101 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     /// runtime cache that doesn't survive serialization.
     /// </summary>
     protected virtual void OnRestored(CardModel card, TEnchantment enchantment) { }
+
+    // === Phase 3a — vanilla card-event hook bridges ===========================================
+    // Each callback only fires when the enchantment is active (see MultiEnchantmentScopeSupport
+    // .IsActive). They mirror Hook.AfterCardPlayed / AfterCardDrawn / AfterCardExhausted /
+    // AfterCardDiscarded / AfterCardEnteredCombat respectively. Default implementations do
+    // nothing — override to react.
+
+    /// <summary>Bridge to vanilla <c>Hook.AfterCardPlayed</c> scoped to this enchantment's card.</summary>
+    protected virtual void OnCardPlayed(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>Bridge to vanilla <c>Hook.AfterCardDrawn</c> scoped to this enchantment's card.</summary>
+    protected virtual void OnCardDrawn(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>Bridge to vanilla <c>Hook.AfterCardExhausted</c> scoped to this enchantment's card.</summary>
+    protected virtual void OnCardExhausted(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>Bridge to vanilla <c>Hook.AfterCardDiscarded</c> scoped to this enchantment's card.</summary>
+    protected virtual void OnCardDiscarded(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>
+    /// Bridge to vanilla <c>Hook.AfterCardEnteredCombat</c>. Fires on every entry — initial deck
+    /// sweep, Astrolabe copies, Madness-generated cards — distinct from <see cref="OnCombatStart"/>,
+    /// which fires once per combat per card.
+    /// </summary>
+    protected virtual void OnCardEnteredCombat(CardModel card, TEnchantment enchantment) { }
+
+    // === Phase 4 — broadcast card-event hooks ================================================
+    // These fire for ANY card event in combat, not just the card carrying this enchantment.
+    // Opt-in: enchantments that do not override these methods are never visited by the broadcast
+    // dispatcher (the entry field stays null and the adapter returns immediately).
+
+    /// <summary>
+    /// Fires after <b>any</b> card is played in combat. <paramref name="playedCard"/> is the card
+    /// that was just played; <paramref name="selfCard"/> is the card carrying this enchantment.
+    /// </summary>
+    protected virtual void OnAnyCardPlayed(CardModel playedCard, CardModel selfCard, TEnchantment enchantment) { }
+
+    /// <summary>
+    /// Fires after <b>any</b> card is drawn in combat. Broadcast counterpart of
+    /// <see cref="OnCardDrawn"/>.
+    /// </summary>
+    protected virtual void OnAnyCardDrawn(CardModel drawnCard, CardModel selfCard, TEnchantment enchantment) { }
+
+    /// <summary>
+    /// Fires after <b>any</b> card is exhausted in combat. Broadcast counterpart of
+    /// <see cref="OnCardExhausted"/>.
+    /// </summary>
+    protected virtual void OnAnyCardExhausted(CardModel exhaustedCard, CardModel selfCard, TEnchantment enchantment) { }
+
+    /// <summary>
+    /// Fires after <b>any</b> card is discarded in combat. Broadcast counterpart of
+    /// <see cref="OnCardDiscarded"/>.
+    /// </summary>
+    protected virtual void OnAnyCardDiscarded(CardModel discardedCard, CardModel selfCard, TEnchantment enchantment) { }
+
+    /// <summary>
+    /// Bridge to vanilla <c>Hook.AfterDamageReceived</c> scoped to the player owning this
+    /// enchantment's card. <paramref name="context"/> bundles target / damage result / dealer /
+    /// source so handlers can branch without taking five parameters.
+    /// </summary>
+    protected virtual void OnAfterDamageReceived(CardModel card, TEnchantment enchantment, DamageReceivedContext context) { }
+
+    // === Phase 3b — combat-flow bridges ======================================================
+
+    /// <summary>Bridge to <c>Hook.AfterSideTurnStart</c>. Fires for both player and enemy turns.</summary>
+    protected virtual void OnSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side) { }
+
+    /// <summary>Bridge to <c>Hook.BeforeSideTurnStart</c>.</summary>
+    protected virtual void OnBeforeSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side) { }
+
+    /// <summary>Bridge to <c>Hook.BeforeAttack</c>. <paramref name="command"/> exposes attacker / results / card source.</summary>
+    protected virtual void OnBeforeAttack(CardModel card, TEnchantment enchantment, AttackCommand command) { }
+
+    /// <summary>Bridge to <c>Hook.AfterAttack</c>.</summary>
+    protected virtual void OnAfterAttack(CardModel card, TEnchantment enchantment, AttackCommand command) { }
+
+    // === Phase 3c — pile / guard / block bridges ============================================
+
+    /// <summary>Bridge to <c>Hook.AfterCardChangedPiles</c>. Inspect <c>card.Pile.Type</c> for the new pile.</summary>
+    protected virtual void OnCardChangedPiles(CardModel card, TEnchantment enchantment, PileType oldPile, AbstractModel? source) { }
+
+    /// <summary>Bridge to <c>Hook.AfterCardRetained</c>.</summary>
+    protected virtual void OnCardRetained(CardModel card, TEnchantment enchantment) { }
+
+    /// <summary>Bridge to <c>Hook.BeforeBlockGained</c>.</summary>
+    protected virtual void OnBeforeBlockGained(CardModel card, TEnchantment enchantment, BlockGainContext context) { }
+
+    /// <summary>Bridge to <c>Hook.AfterBlockGained</c>.</summary>
+    protected virtual void OnBlockGained(CardModel card, TEnchantment enchantment, BlockGainContext context) { }
+
+    /// <summary>
+    /// Guard hook bridging <c>Hook.ShouldDie</c>. Return <c>false</c> to prevent the creature
+    /// from dying; <c>true</c> means "no objection". Default returns <c>true</c>.
+    /// </summary>
+    protected virtual bool OnShouldDie(CardModel card, TEnchantment enchantment, Creature creature) => true;
 
     /// <summary>
     /// Card keywords that this enchantment can add or remove while it's active. Each keyword
@@ -279,8 +409,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             .Concat(Internal.ModifyDynamicVarScanner.ScanType(typeof(TEnchantment)));
 
     /// <summary>
-    /// Optional override that supplies a custom extra-text string for the card description.
-    /// Return <c>false</c> to keep the default text.
+    /// Optional override that supplies custom extra text for the card description. The
+    /// <paramref name="defaultText"/> argument is the vanilla/localized text when present, or an
+    /// empty string when the enchantment has no base extra text. Return <c>true</c> with non-empty
+    /// <paramref name="formattedText"/> to create or replace the displayed text; return
+    /// <c>false</c> to keep the default text when one exists.
     /// </summary>
     protected virtual bool TryFormatExtraText(EnchantmentStackSnapshot snapshot, string defaultText, out string formattedText)
     {
@@ -322,7 +455,28 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
                Overrides(nameof(OnCombatEnd), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnTurnStart), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnTurnEnd), typeof(CardModel), typeof(TEnchantment)) ||
-               Overrides(nameof(OnRestored), typeof(CardModel), typeof(TEnchantment));
+               Overrides(nameof(OnRestored), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnCardPlayed), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnCardDrawn), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnCardExhausted), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnCardDiscarded), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnCardEnteredCombat), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnAfterDamageReceived), typeof(CardModel), typeof(TEnchantment), typeof(DamageReceivedContext)) ||
+               Overrides(nameof(OnSideTurnStart), typeof(CardModel), typeof(TEnchantment), typeof(CombatSide)) ||
+               Overrides(nameof(OnBeforeSideTurnStart), typeof(CardModel), typeof(TEnchantment), typeof(CombatSide)) ||
+               Overrides(nameof(OnBeforeAttack), typeof(CardModel), typeof(TEnchantment), typeof(AttackCommand)) ||
+               Overrides(nameof(OnAfterAttack), typeof(CardModel), typeof(TEnchantment), typeof(AttackCommand)) ||
+               Overrides(nameof(OnCardChangedPiles), typeof(CardModel), typeof(TEnchantment), typeof(PileType), typeof(AbstractModel)) ||
+               Overrides(nameof(OnCardRetained), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnBeforeBlockGained), typeof(CardModel), typeof(TEnchantment), typeof(BlockGainContext)) ||
+               Overrides(nameof(OnBlockGained), typeof(CardModel), typeof(TEnchantment), typeof(BlockGainContext)) ||
+               Overrides(nameof(OnShouldDie), typeof(CardModel), typeof(TEnchantment), typeof(Creature)) ||
+               Overrides(nameof(OnAnyCardPlayed), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnAnyCardDrawn), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnAnyCardExhausted), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnAnyCardDiscarded), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
+               Overrides(nameof(OnSiblingApplied), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel)) ||
+               Overrides(nameof(OnSiblingRemoved), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel), typeof(RemovalReason));
     }
 
     private bool Overrides(string methodName, params Type[] parameterTypes)
@@ -353,4 +507,25 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal void InvokeOnTurnStart(CardModel card, TEnchantment enchantment) => OnTurnStart(card, enchantment);
     internal void InvokeOnTurnEnd(CardModel card, TEnchantment enchantment) => OnTurnEnd(card, enchantment);
     internal void InvokeOnRestored(CardModel card, TEnchantment enchantment) => OnRestored(card, enchantment);
+    internal void InvokeOnCardPlayed(CardModel card, TEnchantment enchantment) => OnCardPlayed(card, enchantment);
+    internal void InvokeOnCardDrawn(CardModel card, TEnchantment enchantment) => OnCardDrawn(card, enchantment);
+    internal void InvokeOnCardExhausted(CardModel card, TEnchantment enchantment) => OnCardExhausted(card, enchantment);
+    internal void InvokeOnCardDiscarded(CardModel card, TEnchantment enchantment) => OnCardDiscarded(card, enchantment);
+    internal void InvokeOnCardEnteredCombat(CardModel card, TEnchantment enchantment) => OnCardEnteredCombat(card, enchantment);
+    internal void InvokeOnAfterDamageReceived(CardModel card, TEnchantment enchantment, DamageReceivedContext context) => OnAfterDamageReceived(card, enchantment, context);
+    internal void InvokeOnSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side) => OnSideTurnStart(card, enchantment, side);
+    internal void InvokeOnBeforeSideTurnStart(CardModel card, TEnchantment enchantment, CombatSide side) => OnBeforeSideTurnStart(card, enchantment, side);
+    internal void InvokeOnBeforeAttack(CardModel card, TEnchantment enchantment, AttackCommand command) => OnBeforeAttack(card, enchantment, command);
+    internal void InvokeOnAfterAttack(CardModel card, TEnchantment enchantment, AttackCommand command) => OnAfterAttack(card, enchantment, command);
+    internal void InvokeOnCardChangedPiles(CardModel card, TEnchantment enchantment, PileType oldPile, AbstractModel? source) => OnCardChangedPiles(card, enchantment, oldPile, source);
+    internal void InvokeOnCardRetained(CardModel card, TEnchantment enchantment) => OnCardRetained(card, enchantment);
+    internal void InvokeOnBeforeBlockGained(CardModel card, TEnchantment enchantment, BlockGainContext context) => OnBeforeBlockGained(card, enchantment, context);
+    internal void InvokeOnBlockGained(CardModel card, TEnchantment enchantment, BlockGainContext context) => OnBlockGained(card, enchantment, context);
+    internal bool InvokeOnShouldDie(CardModel card, TEnchantment enchantment, Creature creature) => OnShouldDie(card, enchantment, creature);
+    internal void InvokeOnAnyCardPlayed(CardModel played, CardModel self, TEnchantment enchantment) => OnAnyCardPlayed(played, self, enchantment);
+    internal void InvokeOnAnyCardDrawn(CardModel drawn, CardModel self, TEnchantment enchantment) => OnAnyCardDrawn(drawn, self, enchantment);
+    internal void InvokeOnAnyCardExhausted(CardModel exhausted, CardModel self, TEnchantment enchantment) => OnAnyCardExhausted(exhausted, self, enchantment);
+    internal void InvokeOnAnyCardDiscarded(CardModel discarded, CardModel self, TEnchantment enchantment) => OnAnyCardDiscarded(discarded, self, enchantment);
+    internal void InvokeOnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) => OnSiblingApplied(card, self, newSibling);
+    internal void InvokeOnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) => OnSiblingRemoved(card, self, removedSibling, reason);
 }

@@ -49,6 +49,15 @@ internal static class MultiEnchantmentSupport
     private static readonly ConditionalWeakTable<NCard, CardUiState> CardUiStates = new();
     private static readonly ConditionalWeakTable<Node, EnchantmentVfxSnapshotState> PendingEnchantVfxSnapshots = new();
 
+    /// <summary>
+    /// Reentrancy guard for <see cref="ApplyDynamicVarEnchantments"/>. Tracks (card, varKey) pairs
+    /// that are currently being evaluated. If a contribution callback recursively queries the same
+    /// card+varKey (e.g. enchantment A reads enchantment B's damage contribution, which itself reads A),
+    /// we short-circuit and return the base value to prevent stack overflow.
+    /// </summary>
+    [ThreadStatic]
+    private static HashSet<(CardModel Card, string VarKey)>? _activeDynamicVarKeys;
+
     private static readonly FieldInfo? CardEnchantmentChangedField =
         AccessTools.Field(typeof(CardModel), nameof(CardModel.EnchantmentChanged));
     private static readonly PropertyInfo? CardCurrentTargetProperty =
@@ -256,7 +265,10 @@ internal static class MultiEnchantmentSupport
 
     public static void RecalculateAdditionalEnchantments(CardModel card)
     {
-        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
+        // Snapshot the extra enchantment list: a user-overridden RecalculateValues could call
+        // mod APIs (RemoveEnchantment, Enchant, etc.) that mutate state.ExtraEnchantments.
+        // Defensive snapshot keeps this loop safe even when called from vanilla recalc paths.
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
         {
             enchantment.RecalculateValues();
         }
@@ -296,8 +308,8 @@ internal static class MultiEnchantmentSupport
                 continue;
             }
 
-            result += EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockAdditive(result, props));
-            result *= EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockMultiplicative(result, props));
+            result += EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockAdditive(result));
+            result *= EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockMultiplicative(result));
         }
 
         return result;
@@ -323,38 +335,58 @@ internal static class MultiEnchantmentSupport
             return baseValue;
         }
 
-        decimal result = baseValue;
-        foreach (OrderedDynamicVarEnchantmentEntry entry in GetOrderedDynamicVarEnchantmentEntries(card))
+        // Reentrancy guard: prevent stack overflow when a contribution callback recursively
+        // triggers evaluation of the same card+varKey (e.g. enchantment A reads B's damage, B reads A).
+        // Default tuple equality uses EqualityComparer<T>.Default per element — for CardModel
+        // (reference type without overridden Equals) this falls back to reference equality.
+        _activeDynamicVarKeys ??= new HashSet<(CardModel, string)>();
+        (CardModel, string) key = (card, varKey);
+        if (!_activeDynamicVarKeys.Add(key))
         {
-            Type enchantmentType = entry.Enchantment.GetType();
-            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
-            {
-                continue;
-            }
-
-            IReadOnlyList<DynamicVarContribution> contributions =
-                EnchantmentRegistry.GetContributions(enchantmentType, varKey);
-            if (contributions.Count == 0)
-            {
-                continue;
-            }
-
-            foreach (DynamicVarContribution contribution in contributions)
-            {
-                try
-                {
-                    result = contribution.Contribution(entry.Snapshot, result);
-                }
-                catch (Exception ex)
-                {
-                    MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment] ModifyDynamicVar({varKey}) contribution from " +
-                        $"{enchantmentType.FullName} threw; skipping. Error: {ex.GetBaseException().Message}");
-                }
-            }
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] ModifyDynamicVar reentrancy detected for var={varKey} on card={card.Id}; skipping nested call.");
+            return baseValue;
         }
 
-        return result;
+        try
+        {
+            decimal result = baseValue;
+            foreach (OrderedDynamicVarEnchantmentEntry entry in GetOrderedDynamicVarEnchantmentEntries(card))
+            {
+                Type enchantmentType = entry.Enchantment.GetType();
+                if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+                {
+                    continue;
+                }
+
+                IReadOnlyList<DynamicVarContribution> contributions =
+                    EnchantmentRegistry.GetContributions(enchantmentType, varKey);
+                if (contributions.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (DynamicVarContribution contribution in contributions)
+                {
+                    try
+                    {
+                        result = contribution.Contribution(entry.Snapshot, result);
+                    }
+                    catch (Exception ex)
+                    {
+                        MultiEnchantmentMod.Logger.Warn(
+                            $"[MultiEnchantment] ModifyDynamicVar({varKey}) contribution from " +
+                            $"{enchantmentType.FullName} threw; skipping. Error: {ex.GetBaseException().Message}");
+                    }
+                }
+            }
+
+            return result;
+        }
+        finally
+        {
+            _activeDynamicVarKeys.Remove(key);
+        }
     }
 
     /// <summary>
@@ -429,6 +461,15 @@ internal static class MultiEnchantmentSupport
 
     public static EnchantmentModel ApplyEnchantment(EnchantmentModel enchantment, CardModel card, decimal amount)
     {
+        return ApplyEnchantmentWithScopeOverride(enchantment, card, amount, scopeOverride: null);
+    }
+
+    internal static EnchantmentModel ApplyEnchantmentWithScopeOverride(
+        EnchantmentModel enchantment,
+        CardModel card,
+        decimal amount,
+        EnchantmentScope? scopeOverride)
+    {
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
 
@@ -454,6 +495,7 @@ internal static class MultiEnchantmentSupport
             MultiEnchantmentStackSupport.AppendMergedStackAmount(existing, previousTotalAmount, addedAmount);
             MultiEnchantmentStackSupport.ApplyMergedAmountDelta(existing, addedAmount);
             MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, existing, scopeOverride);
             SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior);
             card.DynamicVars.RecalculateForUpgradeOrEnchant();
             card.FinalizeUpgradeInternal();
@@ -470,7 +512,8 @@ internal static class MultiEnchantmentSupport
             enchantment,
             appliedAmount,
             modifyCard: true,
-            triggerChanged: false);
+            triggerChanged: false,
+            scopeOverride);
 
         SyncDeckVersionEnchantment(card, applied.GetType(), appliedAmount, behavior);
         card.FinalizeUpgradeInternal();
@@ -497,7 +540,8 @@ internal static class MultiEnchantmentSupport
         EnchantmentModel enchantment,
         int stackCount,
         bool modifyCard,
-        bool triggerChanged)
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
     {
         // New applications may need to fan out one requested stack count into multiple concrete
         // enchantment instances when the behavior is DuplicateInstance/ExistenceStack.
@@ -506,6 +550,10 @@ internal static class MultiEnchantmentSupport
         SeedMissingApplicationOrder(card);
 
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
+
+        // Phase 4-9: enforce MaxInstances overflow policy before attaching new instances.
+        EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+
         if (ShouldFanOutAppliedStacks(behavior) && stackCount > 1)
         {
             EnchantmentModel firstApplied = AttachEnchantmentState(
@@ -513,12 +561,13 @@ internal static class MultiEnchantmentSupport
                 enchantment,
                 1,
                 modifyCard,
-                triggerChanged: false);
+                triggerChanged: false,
+                scopeOverride);
             AppendApplicationOrder(card, enchantment.Id);
             for (int i = 1; i < stackCount; i++)
             {
                 EnchantmentModel extra = (EnchantmentModel)enchantment.ClonePreservingMutability();
-                AttachEnchantmentState(card, extra, 1, modifyCard, triggerChanged: false);
+                AttachEnchantmentState(card, extra, 1, modifyCard, triggerChanged: false, scopeOverride);
                 AppendApplicationOrder(card, extra.Id);
             }
 
@@ -530,7 +579,7 @@ internal static class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged);
+        EnchantmentModel applied = AttachEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
     }
@@ -540,12 +589,17 @@ internal static class MultiEnchantmentSupport
         EnchantmentModel enchantment,
         int stackCount,
         bool modifyCard,
-        bool triggerChanged)
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
     {
         enchantment.AssertMutable();
         card.AssertMutable();
         SeedMissingApplicationOrder(card);
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
+
+        // Phase 4-9: enforce MaxInstances overflow policy before attaching new instances.
+        EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+
         if (ShouldFanOutAppliedStacks(behavior) && stackCount > 1)
         {
             EnchantmentModel firstApplied = AttachAdditionalEnchantmentState(
@@ -553,7 +607,8 @@ internal static class MultiEnchantmentSupport
                 enchantment,
                 1,
                 modifyCard,
-                triggerChanged: false);
+                triggerChanged: false,
+                scopeOverride);
             AppendApplicationOrder(card, enchantment.Id);
             for (int i = 1; i < stackCount; i++)
             {
@@ -563,7 +618,8 @@ internal static class MultiEnchantmentSupport
                     clone,
                     1,
                     modifyCard,
-                    triggerChanged: false);
+                    triggerChanged: false,
+                    scopeOverride);
                 AppendApplicationOrder(card, clone.Id);
             }
 
@@ -575,7 +631,7 @@ internal static class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachAdditionalEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged);
+        EnchantmentModel applied = AttachAdditionalEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
     }
@@ -585,7 +641,8 @@ internal static class MultiEnchantmentSupport
         EnchantmentModel enchantment,
         int amount,
         bool modifyCard,
-        bool triggerChanged)
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
     {
         // Low-level exact-state attach. This method never interprets Amount as "how many more
         // stacks to create"; it attaches one concrete enchantment instance with the given state.
@@ -595,13 +652,16 @@ internal static class MultiEnchantmentSupport
         CardEnchantmentState state = CardStates.GetOrCreateValue(card);
         state.ExtraEnchantments.Add(enchantment);
         state.LastAppliedEnchantment = enchantment;
-        EnsureScopeState(card, enchantment);
+        MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
 
         if (modifyCard)
         {
             bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
             ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
             MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+
+            // Phase 5: notify siblings that a new enchantment joined the card.
+            MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
         }
 
         if (triggerChanged)
@@ -627,6 +687,57 @@ internal static class MultiEnchantmentSupport
             enchantment.Amount,
             modifyCard,
             triggerChanged);
+    }
+
+    /// <summary>
+    /// Phase 4-9: enforces the configured <see cref="Api.StackOverflowPolicy"/> when attaching
+    /// new instances would push the card past <see cref="Api.StackDefinition.MaxInstances"/>.
+    /// For <c>ReplaceOldest</c> / <c>ReplaceNewest</c>, evicts existing instances in the right
+    /// direction. For <c>Reject</c>, this method is a no-op (CanStackOnto already rejected).
+    /// </summary>
+    private static void EnforceOverflowPolicy(
+        CardModel card,
+        Type enchantmentType,
+        int incomingCount,
+        EnchantmentStackBehavior behavior)
+    {
+        if (behavior is not (EnchantmentStackBehavior.DuplicateInstance or EnchantmentStackBehavior.ExistenceStack))
+        {
+            return;
+        }
+
+        int? cap = Api.Internal.EnchantmentRegistry.GetMaxInstances(enchantmentType);
+        if (!cap.HasValue) return;
+
+        Api.StackOverflowPolicy policy = Api.Internal.EnchantmentRegistry.GetOverflowPolicy(enchantmentType);
+        if (policy == Api.StackOverflowPolicy.Reject) return;
+
+        // Snapshot current matching instances in card application order. ExtraEnchantments is
+        // append-on-attach, so its order matches application order for that type.
+        List<EnchantmentModel> existing = GetEnchantments(card)
+            .Where(e => e.GetType() == enchantmentType)
+            .ToList();
+        int totalAfter = existing.Count + incomingCount;
+        int evictionsNeeded = totalAfter - cap.Value;
+        if (evictionsNeeded <= 0) return;
+
+        evictionsNeeded = Math.Min(evictionsNeeded, existing.Count);
+
+        IEnumerable<EnchantmentModel> evictionOrder = policy == Api.StackOverflowPolicy.ReplaceOldest
+            ? existing
+            : ((IEnumerable<EnchantmentModel>)existing).Reverse();
+
+        foreach (EnchantmentModel victim in evictionOrder.Take(evictionsNeeded).ToList())
+        {
+            // Skip the primary slot — vanilla `card.Enchantment` is owned by the upgrade pipeline
+            // and shouldn't be removed here. ReplaceOldest/Newest applies only to the v2
+            // multi-instance pool.
+            if (ReferenceEquals(card.Enchantment, victim)) continue;
+
+            RemoveEnchantmentInternal(
+                card, victim, Api.RemovalReason.OverflowEvicted,
+                bypassVeto: true, refreshCard: false, triggerChanged: false);
+        }
     }
 
     private static bool RemoveAdditionalEnchantmentState(CardModel card, EnchantmentModel enchantment)
@@ -879,20 +990,26 @@ internal static class MultiEnchantmentSupport
     public static void AppendAdditionalExtraCardText(CardModel card, ref string description)
     {
         HashSet<(Type EnchantmentType, string Text)> seenLines = new();
-        if (TryGetFormattedExtraCardText(card.Enchantment, out string rawPrimaryText) &&
-            TryGetFormattedExtraCardTextForDescription(card, card.Enchantment, out string primaryText))
+        List<string> lines = new();
+
+        bool hasRawPrimaryText = TryGetFormattedExtraCardText(card.Enchantment, out string rawPrimaryText);
+        bool hasPrimaryText = TryGetFormattedExtraCardTextForDescription(card, card.Enchantment, out string primaryText);
+        if (hasPrimaryText && card.Enchantment != null)
         {
-            if (rawPrimaryText != primaryText)
+            if (hasRawPrimaryText && rawPrimaryText != primaryText)
             {
                 description = description.Replace(
                     "[purple]" + rawPrimaryText + "[/purple]",
                     "[purple]" + primaryText + "[/purple]");
             }
+            else if (!hasRawPrimaryText)
+            {
+                lines.Add("[purple]" + primaryText + "[/purple]");
+            }
 
-            seenLines.Add((card.Enchantment!.GetType(), primaryText));
+            seenLines.Add((card.Enchantment.GetType(), primaryText));
         }
 
-        List<string> lines = new();
         foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
         {
             if (!TryGetFormattedExtraCardTextForDescription(card, enchantment, out string text))
@@ -916,7 +1033,13 @@ internal static class MultiEnchantmentSupport
 
     public static IEnumerable<IHoverTip> AppendAdditionalHoverTips(CardModel card, IEnumerable<IHoverTip> original)
     {
-        return original.Concat(GetAdditionalEnchantments(card).SelectMany(static enchantment => enchantment.HoverTips)).Distinct();
+        // Phase 1.5 T1.5.1: inactive enchantments (gated via .WhenActive(false) / scope predicates)
+        // should appear absent in the UI. Skip their hover tips so authors get the "doesn't exist"
+        // semantic they expect — consistent with the IsActive gating already applied to damage /
+        // block / dynamic-var pipelines.
+        return original.Concat(GetAdditionalEnchantments(card)
+            .Where(enchantment => MultiEnchantmentScopeSupport.IsActive(card, enchantment))
+            .SelectMany(static enchantment => enchantment.HoverTips)).Distinct();
     }
 
     public static void UpdateAdditionalEnchantmentPreviews(NCard cardNode, CardPreviewMode previewMode)
@@ -935,9 +1058,22 @@ internal static class MultiEnchantmentSupport
 
         Creature? previewTarget = NCardPreviewTargetField?.GetValue(cardNode) as Creature;
         Creature? target = previewTarget ?? model.CurrentTarget;
-        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(model))
+        // Snapshot the extra enchantment list: IsActive predicates and DynamicVar updates can
+        // invoke user-defined code (ConditionalActive lambdas, [ModifyDynamicVar] methods) that
+        // may chain into mod APIs and mutate state.ExtraEnchantments. Defensive snapshot.
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(model).ToList())
         {
+            // Always clear the previous preview first so stale numbers don't leak when an
+            // enchantment toggles from active → inactive between hover refreshes.
             enchantment.DynamicVars.ClearPreview();
+            // Phase 1.5 T1.5.2: skip preview recomputation for inactive enchantments so the
+            // numbers a player sees on hover match what will actually happen on play. Without
+            // this guard, .WhenActive(false) enchantments still contribute to displayed damage /
+            // block totals — inconsistent with the IsActive gating in the actual damage pipeline.
+            if (!MultiEnchantmentScopeSupport.IsActive(model, enchantment))
+            {
+                continue;
+            }
             model.UpdateDynamicVarPreview(previewMode, target, enchantment.DynamicVars);
         }
     }
@@ -1099,7 +1235,10 @@ internal static class MultiEnchantmentSupport
         {
             foreach (CardModel card in player.Deck.Cards.Where(static card => !card.HasBeenRemovedFromState))
             {
-                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
+                // Snapshot the extra enchantment list: a downstream virtual (e.g.
+                // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the
+                // live ExtraEnchantments list and would otherwise crash the enumerator.
+                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
                 {
                     // Honor WhenActive / ConditionalActive on the listener path. Without this,
                     // an enchantment whose IsActive predicate is false still fires its
@@ -1129,7 +1268,10 @@ internal static class MultiEnchantmentSupport
         {
             foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static card => !card.HasBeenRemovedFromState))
             {
-                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card))
+                // Snapshot the extra enchantment list: a downstream virtual (e.g.
+                // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the
+                // live ExtraEnchantments list and would otherwise crash the enumerator.
+                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
                 {
                     // See AppendRunStateExtraEnchantments for why IsActive gates the listener
                     // path as well as the value-modifier pipelines.
@@ -1608,9 +1750,15 @@ internal static class MultiEnchantmentSupport
 
             CardModelClearEnchantmentInternalMethod.Invoke(card, null);
         }
-        else if (!RemoveAdditionalEnchantmentState(card, enchantment))
+        else
         {
-            return false;
+            // Phase 5: notify siblings before the enchantment is actually removed from the list,
+            // so handlers see the leaving enchantment at its current state.
+            MultiEnchantmentScopeSupport.DispatchOnSiblingRemoved(card, leaving: enchantment, reason);
+            if (!RemoveAdditionalEnchantmentState(card, enchantment))
+            {
+                return false;
+            }
         }
 
         state ??= CardStates.TryGetValue(card, out CardEnchantmentState? updatedState) ? updatedState : null;
@@ -1700,6 +1848,7 @@ internal static class MultiEnchantmentSupport
 
         ScopeRuntimeState targetScopeState = EnsureScopeState(targetCard, targetEnchantment);
         targetScopeState.Scope = sourceScopeState.Scope;
+        targetScopeState.OverrideScope = sourceScopeState.OverrideScope;
         targetScopeState.ActivationCount = sourceScopeState.ActivationCount;
         targetScopeState.TurnsRemaining = sourceScopeState.TurnsRemaining;
     }
@@ -2040,16 +2189,21 @@ internal static class MultiEnchantmentSupport
 
     private static bool TryGetFormattedExtraCardTextForDescription(CardModel card, EnchantmentModel? enchantment, out string text)
     {
-        if (!TryGetFormattedExtraCardText(enchantment, out text))
-        {
-            return false;
-        }
+        bool hasBaseText = TryGetFormattedExtraCardText(enchantment, out string baseText);
+        text = hasBaseText ? baseText : string.Empty;
 
         if (enchantment != null &&
-            MultiEnchantmentStackSupport.TryFormatExtraCardText(enchantment, text, out string formattedText))
+            MultiEnchantmentStackSupport.TryFormatExtraCardText(enchantment, text, out string formattedText) &&
+            !string.IsNullOrEmpty(formattedText))
         {
             text = formattedText;
             return true;
+        }
+
+        if (!hasBaseText)
+        {
+            text = string.Empty;
+            return false;
         }
 
         if (enchantment is Goopy)
@@ -2090,6 +2244,25 @@ internal static class MultiEnchantmentSupport
         {
             action();
         }
+    }
+
+    /// <summary>
+    /// Refreshes all derived state (DynamicVars, keywords, UI signals) for
+    /// <paramref name="enchantment"/>'s owning card after its <see cref="EnchantmentModel.Props"/>
+    /// have been mutated by user code. Called from
+    /// <see cref="MultiEnchantmentApi.NotifyPropsChanged"/>.
+    /// </summary>
+    internal static void RefreshDerivedStateFor(EnchantmentModel enchantment)
+    {
+        CardModel? card = enchantment.Card;
+        if (card == null)
+        {
+            return;
+        }
+
+        card.DynamicVars.RecalculateForUpgradeOrEnchant();
+        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        TriggerEnchantmentChanged(card);
     }
 
     private static void RememberLastAppliedEnchantment(CardModel card, EnchantmentModel enchantment)
@@ -2262,7 +2435,8 @@ internal static class MultiEnchantmentSupport
         EnchantmentModel enchantment,
         int amount,
         bool modifyCard,
-        bool triggerChanged)
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
     {
         enchantment.AssertMutable();
         card.AssertMutable();
@@ -2271,7 +2445,7 @@ internal static class MultiEnchantmentSupport
             // Match the base-game "primary enchantment" path first so downstream code that expects
             // CardModel.Enchantment to be populated continues to behave like vanilla.
             card.EnchantInternal(enchantment, amount);
-            EnsureScopeState(card, enchantment);
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
             if (modifyCard)
             {
                 ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard: true);
@@ -2719,5 +2893,8 @@ internal static class MultiEnchantmentSupport
 
         [SavedProperty]
         public int[] MultiEnchantmentMergedStackAmounts { get; set; } = Array.Empty<int>();
+
+        [SavedProperty]
+        public string MultiEnchantmentScopeData { get; set; } = string.Empty;
     }
 }

@@ -55,5 +55,50 @@
   "SAMPLE_DOUBLER.extraCardText": "[gold]伤害[/gold] ×2。",
 
   "SAMPLE_UNREGISTERED.title": "未注册附魔",
-  "SAMPLE_UNREGISTERED.description": "参考示例（兼容性，未调用 Register）。重写 EnchantDamageAdditive 以演示自动注册兜底——第一次被检测到时自动按 MergeAmount 注册，并记录一次性 info 日志。"
+  "SAMPLE_UNREGISTERED.description": "参考示例（兼容性，未调用 Register）。重写 EnchantDamageAdditive 以演示自动注册兜底——第一次被检测到时自动按 MergeAmount 注册，并记录一次性 info 日志。",
+  
+  "TWO_PLAY_FREE_ENCHANT.title": "打出两次后免费",
+  "TWO_PLAY_FREE_ENCHANT.description": "打出若干次后变为免费",
+
+  "SAMPLE_EMBER.title": "余烬",
+  "SAMPLE_EMBER.description": "参考示例（B 级，OnCardDiscarded + MergeAmount）。弃牌时对随机敌人造成等同于叠层数的伤害。",
+  "SAMPLE_EMBER.extraCardText": "弃牌时：对随机敌人造成 {Amount} 点伤害。",
+
+  "SAMPLE_SAMSARA.title": "轮回",
+  "SAMPLE_SAMSARA.description": "参考示例（B 级，OnCardExhausted）。卡牌被消耗时回到抽牌堆，而非留在消耗堆。",
+
+  "SAMPLE_WEB_TRAP.title": "蛛网",
+  "SAMPLE_WEB_TRAP.description": "参考示例（B 级，OnCardChangedPiles + MergeAmount）。卡牌从手牌进入弃牌堆时，给随机敌人施加等同于叠层数的虚弱。",
+
+  "SAMPLE_CHARGE_UP.title": "蓄能",
+  "SAMPLE_CHARGE_UP.description": "参考示例（B 级，OnSideTurnStart(Enemy) + MergeAmount）。每个敌方回合开始时叠层 +1，永久增加 +2 基础伤害 / 层。",
+  "SAMPLE_CHARGE_UP.extraCardText": "[gold]伤害[/gold] +{Damage}。",
+
+  "SAMPLE_PHOENIX.title": "不死鸟",
+  "SAMPLE_PHOENIX.description": "参考示例（C 级，OnShouldDie）。致死伤害被阻止，回复 50% 最大生命值，附魔自行移除。",
+
+  "SAMPLE_FULL_HP_SHIELD.title": "满血护盾",
+  "SAMPLE_FULL_HP_SHIELD.description": "参考示例（C 级，ConditionalActive + ModifyDynamicVar）。满血时额外 +5 格挡；受伤后附魔休眠（不移除），回满血后自动恢复。",
+  "SAMPLE_FULL_HP_SHIELD.extraCardText": "满血时：+5 [gold]格挡[/gold]。",
+
+  "SAMPLE_TEMPO_TRACKER.title": "节奏追踪",
+  "SAMPLE_TEMPO_TRACKER.description": "参考示例（B 级，OnAnyCardPlayed 广播钩子）。通过 OnCardPlayed 的广播变体，统计本场战斗内打出的所有牌——包括自己。",
+  "SAMPLE_TEMPO_TRACKER.extraCardText": "本场已打出：{Amount} 张。",
+
+  "SAMPLE_RESONATOR.title": "共鸣器",
+  "SAMPLE_RESONATOR.description": "参考示例（B 级，OnSiblingApplied / OnSiblingRemoved）。每当同一张卡上多出一道附魔时自身 +1 层；邻位附魔被移除时退回 1 层。",
+  "SAMPLE_RESONATOR.extraCardText": "每位邻居附魔 +{Amount}。",
+
+  "SAMPLE_CHARGED_SURGE.title": "充能涌动",
+  "SAMPLE_CHARGED_SURGE.description": "参考示例（C 级，ScopeRuntimeStateView + FormatExtraText）。可释放三次，每次出牌 +5 [gold]伤害[/gold]；提示文本从快照的 ScopeStates 读取剩余次数。",
+
+  "SAMPLE_BERSERK.title": "狂暴",
+  "SAMPLE_BERSERK.description": "参考示例（C 级，NotifyPropsChanged）。损失生命越多伤害越高；OnAfterDamageReceived 改写缓存字段后显式调用 NotifyPropsChanged 让 UI 立即刷新。",
+
+  "SAMPLE_BOUNDED_QUEUE.title": "有界队列",
+  "SAMPLE_BOUNDED_QUEUE.description": "参考示例（C 级，MaxInstances + StackOverflowPolicy.ReplaceOldest）。每张卡上限 5 个实例；超出时按 FIFO 顺序移除最旧实例，移除原因为 RemovalReason.OverflowEvicted。",
+
+  "SAMPLE_FLEXIBLE_SCOPE.title": "灵活作用域",
+  "SAMPLE_FLEXIBLE_SCOPE.description": "参考示例（C 级，单实例 scope 覆盖）。注册默认是永久，但单次应用可给 MultiEnchantmentApi.Enchant 传入更短的 scope，也可用 SetScopeOverride 追溯修改。",
+  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "每次应用都可以单独覆盖作用域。"
 }

@@ -105,6 +105,24 @@ internal static class MultiEnchantmentStackSupport
                 ? gameplaySlices
                 : BuildSlices(anchorInstance, liveInstances, definition, sliceAmounts);
 
+        // Phase 3-7: build ScopeStates view for live instances that have scope state.
+        Dictionary<EnchantmentModel, Api.ScopeRuntimeStateView>? scopeStates = null;
+        if (card != null)
+        {
+            foreach (EnchantmentModel instance in liveInstances)
+            {
+                if (MultiEnchantmentSupport.TryGetExistingScopeState(card, instance, out ScopeRuntimeState? state) && state != null)
+                {
+                    scopeStates ??= new Dictionary<EnchantmentModel, Api.ScopeRuntimeStateView>(ReferenceEqualityComparer.Instance);
+                    scopeStates[instance] = new Api.ScopeRuntimeStateView(
+                        state.Scope,
+                        state.ActivationCount,
+                        state.TurnsRemaining,
+                        state.OverrideScope is not null);
+                }
+            }
+        }
+
         return new EnchantmentStackSnapshot(
             card,
             anchorInstance.GetType(),
@@ -113,7 +131,8 @@ internal static class MultiEnchantmentStackSupport
             totalAmount,
             gameplaySlices,
             visualSlices,
-            liveInstances);
+            liveInstances,
+            scopeStates);
     }
 
     public static EnchantmentStackSnapshot CreateSingleSliceSnapshot(
@@ -129,7 +148,8 @@ internal static class MultiEnchantmentStackSupport
             Math.Max(1, slice.Amount),
             slices,
             slices,
-            source.LiveInstances);
+            source.LiveInstances,
+            source.ScopeStates);
     }
 
     public static IReadOnlyList<EnchantmentStackSnapshot> GetSnapshots(CardModel? card)
@@ -165,8 +185,63 @@ internal static class MultiEnchantmentStackSupport
         // Internal predicate: "card already has a same-type enchantment AND the type permits
         // merging". Used by ApplyEnchantment to skip the strict CanEnchant gate above when a
         // legitimate merge is happening.
-        return GetEnchantmentCount(card, enchantmentType) > 0 &&
-               GetBehavior(enchantmentType) != EnchantmentStackBehavior.DisallowDuplicate;
+        int existing = GetEnchantmentCount(card, enchantmentType);
+        if (existing == 0)
+        {
+            return false;
+        }
+
+        EnchantmentStackBehavior behavior = GetBehavior(enchantmentType);
+        if (behavior == EnchantmentStackBehavior.DisallowDuplicate)
+        {
+            return false;
+        }
+
+        // v2-only MaxInstances cap: only applies to instance-multiplying behaviors. MergeAmount
+        // keeps a single instance regardless of stacking, so the cap is meaningless there.
+        if (behavior is EnchantmentStackBehavior.DuplicateInstance or EnchantmentStackBehavior.ExistenceStack)
+        {
+            int? cap = Api.Internal.EnchantmentRegistry.GetMaxInstances(enchantmentType);
+            if (cap.HasValue && existing >= cap.Value)
+            {
+                // Phase 4-9: ReplaceOldest / ReplaceNewest let CanStackOnto succeed; the actual
+                // eviction happens in ApplyEnchantment via EnforceOverflowPolicy. Reject is the
+                // legacy behavior — log and fail.
+                Api.StackOverflowPolicy policy = Api.Internal.EnchantmentRegistry.GetOverflowPolicy(enchantmentType);
+                if (policy == Api.StackOverflowPolicy.Reject)
+                {
+                    LogMaxInstancesRejection(enchantmentType, existing, cap.Value);
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns the configured overflow policy for <paramref name="enchantmentType"/>. Used by
+    /// the apply pipeline to decide whether to evict an existing instance before attaching a
+    /// new one when the cap is hit.
+    /// </summary>
+    public static Api.StackOverflowPolicy GetOverflowPolicy(Type enchantmentType)
+    {
+        return Api.Internal.EnchantmentRegistry.GetOverflowPolicy(enchantmentType);
+    }
+
+    // Throttle MaxInstances log spam: a runaway loop could call CanStackOnto thousands of times
+    // per turn. We log full detail once per (type, cap) per process, and silently reject after.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, byte> MaxInstancesLogged = new();
+
+    private static void LogMaxInstancesRejection(Type enchantmentType, int existing, int cap)
+    {
+        if (!MaxInstancesLogged.TryAdd(enchantmentType, 0))
+        {
+            return;
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] Rejected stacking {enchantmentType.FullName}: {existing} instance(s) already on card; MaxInstances cap is {cap}. Subsequent rejections will be silent until process restart.");
     }
 
     public static bool PassesAdditionalCanEnchantRules(EnchantmentModel enchantment, CardModel card)
