@@ -100,6 +100,14 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration WhenActiveStatus(Func<CardModel, EnchantmentModel, bool> predicate)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(predicate);
+        _entry.GetActiveStatus = predicate;
+        return this;
+    }
+
     public IEnchantmentRegistration OnApplied(Action<CardModel, EnchantmentModel> handler)
     {
         EnsureNotCommitted();
@@ -359,6 +367,30 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         }
         ArgumentNullException.ThrowIfNull(contribution);
         _entry.DynamicVarContributions.Add(new DynamicVarContribution(varKey, contribution));
+        return this;
+    }
+
+    public IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode)
+    {
+        EnsureNotCommitted();
+        _entry.HistoryDisplay = mode;
+        return this;
+    }
+
+    public IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode, string groupHeader)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(groupHeader);
+        _entry.HistoryDisplay = mode;
+        _entry.HistoryGroupHeader = groupHeader;
+        return this;
+    }
+
+    public IEnchantmentRegistration HistoryText(HistoryTextFormatter formatter)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(formatter);
+        _entry.HistoryTextFormatter = formatter;
         return this;
     }
 

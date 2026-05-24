@@ -448,6 +448,111 @@ Custom trigger 会被缓存 — 同一个 `identifier` 每次返回同一个实�
 
 这意味着 `.WhenActive((card, e) => card.Type == CardType.Attack)` 会完整地抑制附魔的所有可见效果 — 作者无需在每个逻辑分支里手动检查。
 
+## 战斗记录自定义显示
+
+v2 允许附魔作者控制"战斗结束后，这条附魔的应用记录出现在哪里（或是否显示）"。默认（`Auto` 模式）根据作用域自动判断：永久性附魔记录到奖励区，临时性附魔隐藏不显示。
+
+### HistoryDisplayMode 枚举
+
+| 值 | 含义 |
+| --- | --- |
+| `Auto` | 默认。`Permanent` / `ConditionalActive` / `RemoveWhen` → 显示在奖励区；`UntilCombatEnds` / `UntilTurnEnds` / `LingerForTurns` / `MaxActivations` → 隐藏 |
+| `InRewards` | 强制显示在奖励区，无论作用域 |
+| `Hidden` | 强制隐藏，不在任何地方显示 |
+| `InActions` | 显示在行动区（与"打出了 X 牌"并列），而非奖励区 |
+| `CustomGroup` | 以自定义分组标题显示，附加在行动区末尾 |
+
+### Attribute 写法（Tier A）
+
+```csharp
+// 强制隐藏（内部标记类附魔，不希望玩家看到记录）
+[Enchantment(
+    Stack = StackBehavior.DisallowDuplicate,
+    Status = StatusAggregation.NotApplicable,
+    HistoryDisplay = HistoryDisplayMode.Hidden)]
+public sealed class InternalMarker : EnchantmentModel { }
+
+// 临时战斗增强，但仍显示在行动区
+[Enchantment(
+    Stack = StackBehavior.MergeAmount,
+    Status = StatusAggregation.SharedAcrossStack,
+    Scope = ScopeKind.UntilCombatEnds,
+    HistoryDisplay = HistoryDisplayMode.InActions)]
+public sealed class CombatBoost : EnchantmentModel { }
+
+// 永久附魔，以自定义分组显示
+[Enchantment(
+    Stack = StackBehavior.MergeAmount,
+    Status = StatusAggregation.SharedAcrossStack,
+    HistoryDisplay = HistoryDisplayMode.CustomGroup,
+    HistoryGroupHeader = "战斗强化")]
+public sealed class BattleEnhancement : EnchantmentModel { }
+```
+
+### Definition 写法（Tier B）
+
+覆写 `HistoryDisplay`、`HistoryGroupHeader`（`CustomGroup` 时）和 `FormatHistoryText`（自定义单条记录文本时）：
+
+```csharp
+public sealed class SpecialEnchantDefinition : EnchantmentDefinition<SpecialEnchant>
+{
+    public override HistoryDisplayMode HistoryDisplay => HistoryDisplayMode.CustomGroup;
+    public override string? HistoryGroupHeader => "战斗强化";
+
+    // 可选：自定义单条记录的文本格式。不覆写时使用 vanilla 默认文本。
+    // 返回 null 表示回退到默认格式。
+    protected override string? FormatHistoryText(string cardTitle, string enchantmentTitle)
+    {
+        return $"[{enchantmentTitle}] 强化了 {cardTitle}";
+    }
+}
+```
+
+### Fluent 写法（Tier C）
+
+```csharp
+// 仅指定模式
+MultiEnchantmentApi.Register<CombatBoost>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .HistoryDisplay(HistoryDisplayMode.InActions)
+    .Commit();
+
+// 自定义分组（携带分组标题，隐式 CustomGroup 模式）
+MultiEnchantmentApi.Register<BattleEnhancement>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .HistoryDisplay(HistoryDisplayMode.CustomGroup, "战斗强化")
+    .Commit();
+
+// 自定义每条记录的文本（可与 InRewards / InActions / CustomGroup 组合）
+MultiEnchantmentApi.Register<SpecialEnchant>()
+    .Stack(StackBehavior.DisallowDuplicate, StatusAggregation.NotApplicable)
+    .HistoryDisplay(HistoryDisplayMode.InRewards)
+    .HistoryText((cardTitle, enchantmentTitle) => $"强化了 {cardTitle}: {enchantmentTitle}")
+    .Commit();
+```
+
+### Auto 模式判断逻辑
+
+`Auto` 模式按注册的作用域类型判断，不依赖运行时状态：
+
+| 作用域 | Auto 下的显示位置 |
+| --- | --- |
+| `Permanent`（默认） | 奖励区 |
+| `ConditionalActive` / `WhenActive` | 奖励区（附魔本身永久存在，只控制活跃状态） |
+| `RemoveWhen` | 奖励区（初始是长期附魔，条件满足才消失） |
+| `UntilCombatEnds` | 隐藏 |
+| `UntilTurnEnds` | 隐藏 |
+| `LingerForTurns(n)` | 隐藏 |
+| `MaxActivations(n, trigger)` | 隐藏 |
+
+临时性作用域的附魔在战斗结束时已经消失，`Auto` 默认隐藏它们的历史记录。如果临时附魔仍需显示（例如"本场战斗临时强化了哪些牌"），显式指定 `HistoryDisplay = HistoryDisplayMode.InActions`。
+
+### 显示区域说明
+
+- **奖励区（InRewards）**：战斗结束后的奖励界面中，与"获得了遗物 X"并列的附魔记录。格式由 vanilla `_enchanted` LocString 驱动；提供 `HistoryText` / `FormatHistoryText` 后使用自定义文本。
+- **行动区（InActions）**：战斗记录界面的行动文字列表（"打出了 X""消耗了 Y"所在区域），附加在末尾。
+- **自定义分组（CustomGroup）**：以 `HistoryGroupHeader` 字符串作为分隔符（原样输出，不自动加 BBCode），属于同一分组的记录归组显示在行动区末尾。`HistoryGroupHeader` 不能为 `null`（未设置时回退到 `"Enchantments"`）。
+
 ## Hook 执行策略
 
 当一个附魔有多层或多个实例时，hook 调用次数由 `HookExecutionMode` 控制。
@@ -633,13 +738,19 @@ v2 的生命周期计数器（`ActivationCount`、`TurnsRemaining`）自动序�
 6. 修改伤害/格挡等动态变量时优先使用 `ModifyDynamicVar`，并避免和旧的 `EnchantDamage*` / `EnchantBlock*` 通道重复叠加。
 7. 复杂调试或 UI 用 `MultiEnchantmentApi.Snapshots`，普通业务逻辑优先用便捷 API。
 
+**战斗记录：**
+
+8. 临时附魔（`UntilCombatEnds` / `UntilTurnEnds` / `LingerForTurns` / `MaxActivations`）默认不在战斗记录里显示（`Auto` 模式自动隐藏）。如果你的临时附魔仍需展示，显式指定 `.HistoryDisplay(HistoryDisplayMode.InActions)`。
+9. 永久性附魔如果是内部实现细节（不希望玩家看到），指定 `.HistoryDisplay(HistoryDisplayMode.Hidden)` 或 `[Enchantment(HistoryDisplay = HistoryDisplayMode.Hidden)]`。
+10. 需要把同一类型多条附魔记录归组显示时，用 `CustomGroup` 加 `HistoryGroupHeader`；需要完全替换显示文本时，用 `.HistoryText(formatter)` 或 `Definition.FormatHistoryText`。
+
 **生命周期与 hook：**
 
-8. 响应卡牌事件（打出、抽牌、消耗等）时**优先使用 lifecycle 回调**（`OnCardPlayed`、`OnCardExhausted` 等），而非重写 `EnchantmentModel` 虚方法。lifecycle 回调自动受 `IsActive` 守门保护。
-9. 需要跨存档/多人同步的运行时状态，写进 `enchantment.Props.strings`。读档后用 `OnRestored` 重建内存缓存。
-10. `WhenActive` 和 `RemoveWhen` 的 predicate 必须是纯函数 — 不序列化、读档后从 registry 重新回填。
-11. 想做"满足条件就移除"用 `RemoveWhen`；想做"满足条件才生效、不满足就休眠"用 `WhenActive`。二者不是替代关系。
-12. `OnSideTurnStart(side)` 会给**所有卡上所有附魔**广播，在 handler 里用 `side` 参数过滤。只关心玩家回合时用 `OnTurnStart` 更简洁。
+11. 响应卡牌事件（打出、抽牌、消耗等）时**优先使用 lifecycle 回调**（`OnCardPlayed`、`OnCardExhausted` 等），而非重写 `EnchantmentModel` 虚方法。lifecycle 回调自动受 `IsActive` 守门保护。
+12. 需要跨存档/多人同步的运行时状态，写进 `enchantment.Props.strings`。读档后用 `OnRestored` 重建内存缓存。
+13. `WhenActive` 和 `RemoveWhen` 的 predicate 必须是纯函数 — 不序列化、读档后从 registry 重新回填。
+14. 想做"满足条件就移除"用 `RemoveWhen`；想做"满足条件才生效、不满足就休眠"用 `WhenActive`。二者不是替代关系。
+15. `OnSideTurnStart(side)` 会给**所有卡上所有附魔**广播，在 handler 里用 `side` 参数过滤。只关心玩家回合时用 `OnTurnStart` 更简洁。
 
 ## 常见问题
 
@@ -739,6 +850,43 @@ public override decimal EnchantBlockMultiplicative(decimal originalBlock) { ... 
 
 历史 bug 参考：v2.0 在多个附魔在 `OnCardChangedPiles` 同时调 `RemoveEnchantment` 时会抛 `InvalidOperationException`；v2.1 已修复。
 
+### 为什么我的临时附魔（`UntilCombatEnds`）没出现在战斗记录里？
+
+`Auto` 模式下，临时性作用域（`UntilCombatEnds` / `UntilTurnEnds` / `LingerForTurns` / `MaxActivations`）的附魔记录默认隐藏。战斗结束时这些附魔本就消失，记录意义不大。
+
+如果仍需在战斗记录里显示，显式声明：
+
+```csharp
+// Attribute 写法
+[Enchantment(
+    Stack = StackBehavior.MergeAmount,
+    Status = StatusAggregation.SharedAcrossStack,
+    Scope = ScopeKind.UntilCombatEnds,
+    HistoryDisplay = HistoryDisplayMode.InActions)]
+public sealed class CombatBoost : EnchantmentModel { }
+
+// Fluent 写法
+MultiEnchantmentApi.Register<CombatBoost>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .WithScope(EnchantmentScope.UntilCombatEnds)
+    .HistoryDisplay(HistoryDisplayMode.InActions)
+    .Commit();
+```
+
+### `HistoryText` / `FormatHistoryText` 返回 `null` 会怎样？
+
+会回退到 vanilla 的默认格式（"附魔了 <卡名>"）。这是故意设计的 — 可以在部分条件下返回 `null` 让 vanilla 处理，只在特殊情况返回自定义文本。
+
+### `CustomGroup` 的分组标题是什么格式？
+
+原样输出的字符串，框架不做任何包装。想要粗体就自己写 BBCode：
+
+```csharp
+HistoryGroupHeader = "[b]战斗强化[/b]"
+```
+
+纯文本也完全可以，视觉效果与行动区其他条目一致。
+
 ## 增量 API 速查（缺口完善轮）
 
 > 详细说明见 `docs/v2-lifecycle-wiki.md`「增量钩子」一节。本节为速查表。
@@ -801,3 +949,4 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 清除覆盖
 - 生命周期示例：`MultiEnchantmentMod.Samples/Samples/08_UntilCombatEndsScope.cs` 到 `13_LifecycleAndVetoHooks.cs`
 - API 类型签名：`Api/IEnchantmentRegistration.cs`（接口 + 强类型扩展方法）
 - Definition 基类：`Api/EnchantmentDefinition.cs`（`protected virtual` 回调列表）
+- 战斗记录类型定义：`Api/HistoryDisplayMode.cs`（`HistoryDisplayMode` 枚举 + `HistoryTextFormatter` 委托）

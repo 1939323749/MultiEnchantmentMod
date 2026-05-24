@@ -496,14 +496,18 @@ internal static class MultiEnchantmentSupport
             MultiEnchantmentStackSupport.ApplyMergedAmountDelta(existing, addedAmount);
             MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
             MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, existing, scopeOverride);
-            SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior);
+            if (IsScopeEffectivelyPermanent(existing.GetType(), scopeOverride))
+            {
+                SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior);
+            }
             card.DynamicVars.RecalculateForUpgradeOrEnchant();
             card.FinalizeUpgradeInternal();
             RememberLastAppliedEnchantment(card, existing);
             AppendApplicationOrder(card, enchantment.Id);
+            MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
             MultiEnchantmentStackSupport.RefreshDerivedState(card);
             TriggerEnchantmentChanged(card);
-            RecordEnchantmentHistory(card, enchantment.Id);
+            RecordEnchantmentHistory(card, enchantment);
             return existing;
         }
 
@@ -515,11 +519,15 @@ internal static class MultiEnchantmentSupport
             triggerChanged: false,
             scopeOverride);
 
-        SyncDeckVersionEnchantment(card, applied.GetType(), appliedAmount, behavior);
+        if (IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
+        {
+            SyncDeckVersionEnchantment(card, applied.GetType(), appliedAmount, behavior);
+        }
+
         card.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
         TriggerEnchantmentChanged(card);
-        RecordEnchantmentHistory(card, enchantment.Id);
+        RecordEnchantmentHistory(card, enchantment);
         return applied;
     }
 
@@ -663,6 +671,9 @@ internal static class MultiEnchantmentSupport
             // Phase 5: notify siblings that a new enchantment joined the card.
             MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
         }
+
+        // Sync active-status predicate immediately so the enchantment dims on first appearance.
+        MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
 
         if (triggerChanged)
         {
@@ -1773,6 +1784,11 @@ internal static class MultiEnchantmentSupport
                 RemoveOneApplicationOrder(state, enchantment.Id);
             }
 
+            // Capture the scope override BEFORE removing the scope state, so the deck-version
+            // sync below can determine whether this was a transient (combat-only) application.
+            state.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? removedScopeState);
+            EnchantmentScope? removedOverrideScope = removedScopeState?.OverrideScope;
+
             state.ScopeStates.Remove(enchantment);
             state.PendingRemovals.RemoveAll(entry => ReferenceEquals(entry.Enchantment, enchantment));
             if (ReferenceEquals(state.LastAppliedEnchantment, enchantment))
@@ -1781,6 +1797,16 @@ internal static class MultiEnchantmentSupport
             }
 
             PruneEmptyCardState(card, state);
+        }
+
+        // Sync removal to deck version only for permanently-scoped enchantments. Transient
+        // enchantments (UntilCombatEnds / UntilTurnEnds / LingerForTurns / MaxActivations)
+        // were never synced to the deck version on apply, so removing them from the deck
+        // version would silently destroy any permanent copy of the same type.
+        if (IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope))
+        {
+            SyncDeckVersionEnchantmentRemoval(card, enchantment.GetType(),
+                MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType()));
         }
 
         if (refreshCard)
@@ -2225,9 +2251,21 @@ internal static class MultiEnchantmentSupport
         properties?.strings?.RemoveAll(property => property.name == propertyName);
     }
 
-    private static void RecordEnchantmentHistory(CardModel card, ModelId enchantmentId)
+    private static void RecordEnchantmentHistory(CardModel card, EnchantmentModel enchantment)
     {
         if (card.Pile == null)
+        {
+            return;
+        }
+
+        Type enchantmentType = enchantment.GetType();
+        HistoryDisplayMode mode = EnchantmentRegistry.GetHistoryDisplayMode(enchantmentType);
+        if (mode == HistoryDisplayMode.Hidden)
+        {
+            return;
+        }
+
+        if (mode == HistoryDisplayMode.Auto && !EnchantmentRegistry.IsPermanentScope(enchantmentType))
         {
             return;
         }
@@ -2235,10 +2273,10 @@ internal static class MultiEnchantmentSupport
         card.Owner.RunState.CurrentMapPointHistoryEntry?
             .GetEntry(card.Owner.NetId)
             .CardsEnchanted
-            .Add(new CardEnchantmentHistoryEntry(card, enchantmentId));
+            .Add(new CardEnchantmentHistoryEntry(card, enchantment.Id));
     }
 
-    private static void TriggerEnchantmentChanged(CardModel card)
+    internal static void TriggerEnchantmentChanged(CardModel card)
     {
         if (CardEnchantmentChangedField?.GetValue(card) is Action action)
         {
@@ -2260,6 +2298,7 @@ internal static class MultiEnchantmentSupport
             return;
         }
 
+        MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
         card.DynamicVars.RecalculateForUpgradeOrEnchant();
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
         TriggerEnchantmentChanged(card);
@@ -2366,6 +2405,25 @@ internal static class MultiEnchantmentSupport
         return toRemove.Count > 0;
     }
 
+    /// <summary>
+    /// Returns <c>true</c> when the effective scope (override-first, then registry) is a
+    /// persisted scope that survives combat. Only persisted-scope enchantments should be
+    /// mirrored to <see cref="CardModel.DeckVersion"/>; transient ones (<c>UntilCombatEnds</c>,
+    /// <c>UntilTurnEnds</c>, <c>LingerForTurns</c>, <c>MaxActivations</c>) should not, because
+    /// the deck version is the pre-combat baseline and must not accumulate combat-only state.
+    /// </summary>
+    private static bool IsScopeEffectivelyPermanent(Type enchantmentType, EnchantmentScope? overrideScope)
+    {
+        if (overrideScope != null)
+        {
+            return overrideScope is EnchantmentScope.PermanentScope
+                or EnchantmentScope.ConditionalActiveScope
+                or EnchantmentScope.RemoveWhenScope;
+        }
+
+        return EnchantmentRegistry.IsPermanentScope(enchantmentType);
+    }
+
     private static void SyncDeckVersionEnchantment(
         CardModel card,
         Type enchantmentType,
@@ -2402,6 +2460,60 @@ internal static class MultiEnchantmentSupport
         deckVersion.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(deckVersion);
         TriggerEnchantmentChanged(deckVersion);
+    }
+
+    /// <summary>
+    /// Mirrors a removal from a combat card onto its <see cref="CardModel.DeckVersion"/> so the
+    /// enchantment does not reappear in the next combat. For <see cref="EnchantmentStackBehavior.MergeAmount"/>
+    /// stacks, decrements Amount by 1; for instance-based stacks, removes one concrete instance.
+    /// </summary>
+    private static void SyncDeckVersionEnchantmentRemoval(
+        CardModel card,
+        Type enchantmentType,
+        EnchantmentStackBehavior behavior)
+    {
+        CardModel? deckVersion = card.DeckVersion;
+        if (deckVersion == null || ReferenceEquals(deckVersion, card))
+        {
+            return;
+        }
+
+        EnchantmentModel? existing = GetEnchantment(deckVersion, enchantmentType);
+        if (existing == null)
+        {
+            return;
+        }
+
+        if (behavior == EnchantmentStackBehavior.MergeAmount)
+        {
+            if (existing.Amount <= 1)
+            {
+                RemoveEnchantmentInternal(deckVersion, existing, RemovalReason.Manual,
+                    bypassVeto: true, refreshCard: true, triggerChanged: false);
+            }
+            else
+            {
+                existing.Amount -= 1;
+                MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
+                deckVersion.DynamicVars.RecalculateForUpgradeOrEnchant();
+                deckVersion.FinalizeUpgradeInternal();
+                MultiEnchantmentStackSupport.RefreshDerivedState(deckVersion);
+            }
+        }
+        else
+        {
+            // DuplicateInstance / ExistenceStack: remove one instance from deck version.
+            // Find the last instance of this type (mirror of "last applied, first removed").
+            List<EnchantmentModel> instances = GetEnchantments(deckVersion)
+                .Where(e => e.GetType() == enchantmentType)
+                .ToList();
+            if (instances.Count > 0)
+            {
+                EnchantmentModel target = instances[^1];
+                RemoveEnchantmentInternal(deckVersion, target, RemovalReason.Manual,
+                    bypassVeto: true, refreshCard: true, triggerChanged: false);
+            }
+        }
     }
 
     private static void ApplyInitialEnchantmentState(EnchantmentModel enchantment, bool isFirstOfTypeOnCard)
@@ -2451,6 +2563,9 @@ internal static class MultiEnchantmentSupport
                 ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard: true);
                 MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
             }
+
+            // Sync active-status predicate immediately for the primary enchantment.
+            MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
 
             RememberLastAppliedEnchantment(card, enchantment);
             return enchantment;

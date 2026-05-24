@@ -246,6 +246,22 @@ internal interface IEnchantmentLifecycleProvider<TEnchantment>
 
     /// <summary>Guard hook. Returning <c>false</c> from any active enchantment vetoes the death.</summary>
     bool OnShouldDie(CardModel card, TEnchantment enchantment, Creature creature);
+
+    /// <summary>
+    /// When <c>true</c>, this provider carries an active-status predicate (see
+    /// <see cref="IEnchantmentRegistration.WhenActive"/> / <see cref="ShouldBeActive"/>). The
+    /// runtime will call <see cref="ShouldBeActive"/> and sync <c>enchantment.Status</c>
+    /// accordingly. Defaults to <c>false</c> for compatibility with providers that don't use
+    /// this feature.
+    /// </summary>
+    bool HasActiveStatusPredicate => false;
+
+    /// <summary>
+    /// Evaluates the active-status predicate. Only called when
+    /// <see cref="HasActiveStatusPredicate"/> is <c>true</c>. Must return <c>true</c>
+    /// (active / <c>Status.Normal</c>) or <c>false</c> (inactive / <c>Status.Disabled</c>).
+    /// </summary>
+    bool ShouldBeActive(CardModel card, TEnchantment enchantment) => true;
 }
 
 public static class MultiEnchantmentStackApi
@@ -581,6 +597,9 @@ public static class MultiEnchantmentStackApi
 
         void OnSiblingApplied(CardModel card, EnchantmentModel self, EnchantmentModel newSibling) { }
         void OnSiblingRemoved(CardModel card, EnchantmentModel self, EnchantmentModel removedSibling, Api.RemovalReason reason) { }
+
+        bool HasActiveStatusPredicate => false;
+        bool ShouldBeActive(CardModel card, EnchantmentModel enchantment) => true;
     }
 
     private sealed class StackDefinitionProviderRegistration<TEnchantment> : IStackDefinitionProviderRegistration
@@ -856,5 +875,10 @@ public static class MultiEnchantmentStackApi
         {
             _provider.OnSiblingRemoved(card, (TEnchantment)self, removedSibling, reason);
         }
+
+        public bool HasActiveStatusPredicate => _provider.HasActiveStatusPredicate;
+
+        public bool ShouldBeActive(CardModel card, EnchantmentModel enchantment) =>
+            _provider.ShouldBeActive(card, (TEnchantment)enchantment);
     }
 }

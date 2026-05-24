@@ -1,5 +1,6 @@
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Enchantments;
 using MultiEnchantmentMod.Api;
 
 namespace MultiEnchantmentMod.Samples;
@@ -28,7 +29,7 @@ public sealed class SampleExhaustAdder : EnchantmentModel
 [EnchantmentKeyword(CardKeyword.Exhaust, Mode = KeywordEvalMode.Custom)]
 public sealed class SampleConditionalExhaust : EnchantmentModel
 {
-    public override bool ShowAmount => true;
+    // public override bool ShowAmount => true;
 }
 
 public sealed class SampleConditionalExhaustDefinition : EnchantmentDefinition<SampleConditionalExhaust>
@@ -43,6 +44,6 @@ public sealed class SampleConditionalExhaustDefinition : EnchantmentDefinition<S
         }
 
         // Only contribute Exhaust once the merged total reaches 3.
-        return snapshot.ActiveTotalAmount >= 3 ? 1 : 0;
+        return snapshot.ActiveInstanceCount >= 3 ? 1 : 0;
     }
 }

@@ -649,7 +649,7 @@ internal static class MultiEnchantmentStackSupport
             EnchantmentStatusAggregation.PresenceOnly => liveInstances.Any(static instance => instance.Status != EnchantmentStatus.Disabled)
                 ? EnchantmentStatus.Normal
                 : EnchantmentStatus.Disabled,
-            EnchantmentStatusAggregation.None => EnchantmentStatus.Normal,
+            EnchantmentStatusAggregation.None => anchor.Status,
             _ => liveInstances.FirstOrDefault()?.Status ?? anchor.Status,
         };
     }

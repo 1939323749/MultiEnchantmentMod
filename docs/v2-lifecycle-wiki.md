@@ -42,6 +42,8 @@
 | `ConditionalActive(predicate)` | 不自动移除，只控制活跃状态 | 不适用 | 条件满足时才生效 |
 | `RemoveWhen(predicate, triggers)` | 指定 trigger 时 predicate 为 true 即移除 | `ConditionMet` | 满足条件后永久消失 |
 
+> **战斗记录显示与作用域的关系：** `HistoryDisplayMode.Auto` 基于作用域类型决定附魔应用记录是否出现在战斗记录界面。`Permanent` / `ConditionalActive` / `RemoveWhen` → 显示在奖励区；`UntilCombatEnds` / `UntilTurnEnds` / `LingerForTurns` / `MaxActivations` → 默认隐藏（临时附魔战斗结束时已消失，记录意义不大）。如需覆盖，在注册时显式指定 `HistoryDisplay`；详见 `docs/v2-api-wiki.md` 「战斗记录自定义显示」一节。
+
 ### Permanent
 
 `Permanent` 是默认长期作用域。它不会因为回合结束或战斗结束自动消失。

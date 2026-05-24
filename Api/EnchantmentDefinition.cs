@@ -69,6 +69,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.GetVisualSliceAmounts = InvokeGetVisualSliceAmounts;
         }
 
+        if (Overrides(nameof(ShouldBeActive), typeof(CardModel), typeof(TEnchantment)))
+        {
+            entry.GetActiveStatus = (card, model) => InvokeShouldBeActive(card, (TEnchantment)model);
+        }
+
         if (HasExplicitScopeOrLifecycle())
         {
             entry.GetScope = InvokeScope;
@@ -112,6 +117,14 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         foreach (DynamicVarContribution contribution in InvokeDynamicVarContributions())
         {
             entry.DynamicVarContributions.Add(contribution);
+        }
+
+        entry.HistoryDisplay = HistoryDisplay;
+        entry.HistoryGroupHeader = HistoryGroupHeader;
+
+        if (Overrides(nameof(FormatHistoryText), typeof(string), typeof(string)))
+        {
+            entry.HistoryTextFormatter = InvokeFormatHistoryText;
         }
 
         return EnchantmentRegistry.Install<TEnchantment>(entry);
@@ -197,6 +210,55 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             };
         }
     }
+
+    /// <summary>
+    /// Controls how this enchantment appears in the per-floor battle history tooltip.
+    /// Defaults to the attribute value if present, otherwise <see cref="HistoryDisplayMode.Auto"/>.
+    /// </summary>
+    public virtual HistoryDisplayMode HistoryDisplay
+    {
+        get
+        {
+            EnchantmentAttribute? attribute = (EnchantmentAttribute?)Attribute.GetCustomAttribute(
+                typeof(TEnchantment), typeof(EnchantmentAttribute));
+            return attribute?.HistoryDisplay ?? HistoryDisplayMode.Auto;
+        }
+    }
+
+    /// <summary>
+    /// Custom group header for <see cref="HistoryDisplayMode.CustomGroup"/>. Defaults to the
+    /// attribute value if present, otherwise <c>null</c>.
+    /// </summary>
+    public virtual string? HistoryGroupHeader
+    {
+        get
+        {
+            EnchantmentAttribute? attribute = (EnchantmentAttribute?)Attribute.GetCustomAttribute(
+                typeof(TEnchantment), typeof(EnchantmentAttribute));
+            return attribute?.HistoryGroupHeader;
+        }
+    }
+
+    /// <summary>
+    /// Optional custom text formatter for battle history display. Return <c>null</c> to use
+    /// the default format. Receives card title and enchantment title.
+    /// </summary>
+    protected virtual string? FormatHistoryText(string cardTitle, string enchantmentTitle) => null;
+
+    /// <summary>
+    /// When overridden to return <c>false</c>, the enchantment's <c>Status</c> is set to
+    /// <c>Disabled</c> and it is treated as inactive — no lifecycle callbacks, no dynamic-variable
+    /// contributions, no derived keywords, and a dimmed visual badge. When it returns <c>true</c>
+    /// (or when left at the default), the enchantment behaves normally. Only wired when this
+    /// definition actually overrides the method; returning <c>true</c> unconditionally is a no-op.
+    /// Definition-based counterpart of <see cref="IEnchantmentRegistration.WhenActive"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>This predicate does not occupy the scope slot — it composes freely with
+    /// <see cref="Scope"/> for lifetime/removal behavior (e.g. <c>UntilCombatEnds</c> +
+    /// <c>ShouldBeActive</c>).</para>
+    /// </remarks>
+    protected virtual bool ShouldBeActive(CardModel card, TEnchantment enchantment) => true;
 
     /// <summary>
     /// Invoked once per merge application (i.e. every time <c>Amount</c> grows because another
@@ -500,6 +562,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal bool InvokeTryFormatExtraText(EnchantmentStackSnapshot s, string defaultText, out string text)
         => TryFormatExtraText(s, defaultText, out text);
     internal EnchantmentScope InvokeScope() => Scope;
+    internal bool InvokeShouldBeActive(CardModel card, TEnchantment enchantment) => ShouldBeActive(card, enchantment);
     internal void InvokeOnApplied(CardModel card, TEnchantment enchantment) => OnApplied(card, enchantment);
     internal bool InvokeOnRemoved(CardModel card, TEnchantment enchantment, RemovalReason reason) => OnRemoved(card, enchantment, reason);
     internal void InvokeOnCombatStart(CardModel card, TEnchantment enchantment) => OnCombatStart(card, enchantment);
@@ -528,4 +591,5 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal void InvokeOnAnyCardDiscarded(CardModel discarded, CardModel self, TEnchantment enchantment) => OnAnyCardDiscarded(discarded, self, enchantment);
     internal void InvokeOnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) => OnSiblingApplied(card, self, newSibling);
     internal void InvokeOnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) => OnSiblingRemoved(card, self, removedSibling, reason);
+    internal string? InvokeFormatHistoryText(string cardTitle, string enchantmentTitle) => FormatHistoryText(cardTitle, enchantmentTitle);
 }

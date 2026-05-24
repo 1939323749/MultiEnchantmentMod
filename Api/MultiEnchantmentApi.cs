@@ -246,9 +246,9 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
-    /// Returns <c>true</c> when <paramref name="enchantment"/> is currently active (not gated
-    /// by a <c>ConditionalActive</c> predicate). Useful from custom <c>WhenActive</c> predicates
-    /// and debug overlays.
+    /// Returns <c>true</c> when <paramref name="enchantment"/> is currently active (not disabled
+    /// by a <see cref="IEnchantmentRegistration.WhenActive"/> predicate or scope gate). Useful
+    /// from custom active predicates and debug overlays.
     /// </summary>
     [EditorBrowsable(EditorBrowsableState.Advanced)]
     public static bool IsActive(EnchantmentModel enchantment)

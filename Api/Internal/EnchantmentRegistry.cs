@@ -141,12 +141,35 @@ internal static class EnchantmentRegistry
 
             bool wantsLifecycleShim =
                 entry.GetScope != null ||
+                entry.GetActiveStatus != null ||
                 entry.OnApplied != null ||
                 entry.OnRemoved != null ||
                 entry.OnCombatStart != null ||
                 entry.OnCombatEnd != null ||
                 entry.OnTurnStart != null ||
-                entry.OnTurnEnd != null;
+                entry.OnTurnEnd != null ||
+                entry.OnRestored != null ||
+                entry.OnCardPlayed != null ||
+                entry.OnCardDrawn != null ||
+                entry.OnCardExhausted != null ||
+                entry.OnCardDiscarded != null ||
+                entry.OnCardEnteredCombat != null ||
+                entry.OnAfterDamageReceived != null ||
+                entry.OnSideTurnStart != null ||
+                entry.OnBeforeSideTurnStart != null ||
+                entry.OnBeforeAttack != null ||
+                entry.OnAfterAttack != null ||
+                entry.OnCardChangedPiles != null ||
+                entry.OnCardRetained != null ||
+                entry.OnBeforeBlockGained != null ||
+                entry.OnBlockGained != null ||
+                entry.OnShouldDie != null ||
+                entry.OnAnyCardPlayed != null ||
+                entry.OnAnyCardDrawn != null ||
+                entry.OnAnyCardExhausted != null ||
+                entry.OnAnyCardDiscarded != null ||
+                entry.OnSiblingApplied != null ||
+                entry.OnSiblingRemoved != null;
             if (wantsLifecycleShim)
             {
                 shims.Lifecycle = new AdapterLifecycleProvider<TEnchantment> { Entry = entry };
@@ -340,6 +363,110 @@ internal static class EnchantmentRegistry
             }
 
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns the effective <see cref="HistoryDisplayMode"/> for the given enchantment type.
+    /// Last explicit non-Auto value wins; falls back to Auto.
+    /// </summary>
+    internal static HistoryDisplayMode GetHistoryDisplayMode(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return HistoryDisplayMode.Auto;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (entries[i].HistoryDisplay != HistoryDisplayMode.Auto)
+                {
+                    return entries[i].HistoryDisplay;
+                }
+            }
+
+            return HistoryDisplayMode.Auto;
+        }
+    }
+
+    /// <summary>
+    /// Returns the custom group header registered for the given enchantment type, or <c>null</c>.
+    /// </summary>
+    internal static string? GetHistoryGroupHeader(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return null;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (entries[i].HistoryGroupHeader != null)
+                {
+                    return entries[i].HistoryGroupHeader;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns the custom history text formatter registered for the given enchantment type, or
+    /// <c>null</c> for the default format.
+    /// </summary>
+    internal static HistoryTextFormatter? GetHistoryTextFormatter(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return null;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (entries[i].HistoryTextFormatter != null)
+                {
+                    return entries[i].HistoryTextFormatter;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> if the resolved scope for the given enchantment type is permanent
+    /// (i.e. <see cref="EnchantmentScope.PermanentScope"/>, <see cref="EnchantmentScope.ConditionalActiveScope"/>,
+    /// or <see cref="EnchantmentScope.RemoveWhenScope"/>). Used by <c>RecordEnchantmentHistory</c>
+    /// to implement <see cref="HistoryDisplayMode.Auto"/>.
+    /// </summary>
+    internal static bool IsPermanentScope(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return true;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (entries[i].GetScope is { } getScope)
+                {
+                    EnchantmentScope scope = getScope();
+                    return scope is EnchantmentScope.PermanentScope
+                        or EnchantmentScope.ConditionalActiveScope
+                        or EnchantmentScope.RemoveWhenScope;
+                }
+            }
+
+            return true;
         }
     }
 

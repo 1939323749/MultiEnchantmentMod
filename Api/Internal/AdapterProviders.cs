@@ -371,4 +371,16 @@ internal sealed class AdapterLifecycleProvider<TEnchantment>
         SafeInvoker.Run(Entry.EnchantmentType, nameof(Entry.OnSiblingRemoved),
             () => Entry.OnSiblingRemoved!(card, self, removedSibling, reason));
     }
+
+    public bool HasActiveStatusPredicate => Entry.GetActiveStatus != null;
+
+    public bool ShouldBeActive(CardModel card, TEnchantment enchantment)
+    {
+        if (Entry.GetActiveStatus == null) return true;
+        return SafeInvoker.Run(
+            Entry.EnchantmentType,
+            nameof(Entry.GetActiveStatus),
+            () => Entry.GetActiveStatus!(card, enchantment),
+            fallback: true);
+    }
 }

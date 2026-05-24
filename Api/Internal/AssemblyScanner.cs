@@ -320,6 +320,15 @@ internal static class AssemblyScanner
                 registration.ModifyDynamicVar(contribution.VarKey, contribution.Contribution);
             }
 
+            if (attribute.HistoryGroupHeader != null)
+            {
+                registration.HistoryDisplay(attribute.HistoryDisplay, attribute.HistoryGroupHeader);
+            }
+            else if (attribute.HistoryDisplay != HistoryDisplayMode.Auto)
+            {
+                registration.HistoryDisplay(attribute.HistoryDisplay);
+            }
+
             registration.Commit();
             return true;
         }

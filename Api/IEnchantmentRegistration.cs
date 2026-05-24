@@ -231,7 +231,29 @@ public interface IEnchantmentRegistration
     IEnchantmentRegistration WithScope(EnchantmentScope scope);
     IEnchantmentRegistration LingerForTurns(int turns);
     IEnchantmentRegistration MaxActivations(int n, ActivationTrigger? t = null);
+
+    /// <summary>
+    /// Legacy scope-gating predicate. When <paramref name="predicate"/> returns <c>false</c>, the
+    /// enchantment remains attached but does not receive active-gated callbacks. Does not mutate
+    /// <c>enchantment.Status</c>.
+    /// </summary>
     IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate);
+
+    /// <summary>
+    /// Declares an active-status predicate for this enchantment. When <paramref name="predicate"/>
+    /// returns <c>true</c>, <c>enchantment.Status = Normal</c>; when <c>false</c>,
+    /// <c>enchantment.Status = Disabled</c>. The predicate is re-evaluated at refresh points
+    /// (apply, restore, pile change, turn/combat boundaries) and whenever
+    /// <see cref="MultiEnchantmentApi.NotifyPropsChanged"/> is called.
+    /// </summary>
+    /// <remarks>
+    /// <para>This predicate does <em>not</em> replace <see cref="EnchantmentScope"/> — it
+    /// composes freely with <see cref="WithScope"/>, <see cref="LingerForTurns"/>,
+    /// <see cref="MaxActivations"/>, and <see cref="RemoveWhen"/>. The enchantment stays
+    /// attached under its registered scope; only its <c>Status</c> and activity are
+    /// affected.</para>
+    /// </remarks>
+    IEnchantmentRegistration WhenActiveStatus(Func<CardModel, EnchantmentModel, bool> predicate);
 
     /// <summary>
     /// Schedules removal as soon as <paramref name="predicate"/> evaluates to <c>true</c>. The
@@ -326,6 +348,27 @@ public interface IEnchantmentRegistration
     IEnchantmentRegistration ModifyDynamicVar(
         string varKey,
         Func<EnchantmentStackSnapshot, decimal, decimal> contribution);
+
+    /// <summary>
+    /// Sets how this enchantment appears in the per-floor battle history tooltip. Defaults to
+    /// <see cref="HistoryDisplayMode.Auto"/>, which hides non-permanent scoped enchantments
+    /// and shows permanent ones in the rewards section.
+    /// </summary>
+    IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode);
+
+    /// <summary>
+    /// Sets how this enchantment appears in the battle history with a custom group header.
+    /// Implies <see cref="HistoryDisplayMode.CustomGroup"/>.
+    /// </summary>
+    IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode, string groupHeader);
+
+    /// <summary>
+    /// Sets a custom text formatter for battle history display. The formatter receives the card
+    /// title and enchantment title and returns the full formatted line. Return <c>null</c> to
+    /// fall back to the default format. Can be combined with any <see cref="HistoryDisplayMode"/>
+    /// except <see cref="HistoryDisplayMode.Hidden"/>.
+    /// </summary>
+    IEnchantmentRegistration HistoryText(HistoryTextFormatter formatter);
 
     /// <summary>
     /// Finalizes the registration and writes it into the runtime registry. Returns a handle that

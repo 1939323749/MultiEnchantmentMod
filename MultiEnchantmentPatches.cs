@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
@@ -17,6 +18,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -25,9 +27,11 @@ using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Managers;
 using MegaCrit.Sts2.Core.Saves.Runs;
@@ -1804,5 +1808,225 @@ internal static class MultiEnchantmentSerializableCardGroupingPatches
             SavedPropertiesComparer.GetStringHashCode(__instance.Props,
                 MultiEnchantmentSupport.OrderSavePropertyName));
         return false;
+    }
+
+    // === Battle history display customization ===================================================
+
+    private static readonly FieldInfo? HistoryTipActionStatsField =
+        AccessTools.Field(typeof(NMapPointHistoryHoverTip), "_actionStats");
+    private static readonly FieldInfo? HistoryTipEnchantedLocField =
+        AccessTools.Field(typeof(NMapPointHistoryHoverTip), "_enchanted");
+    private static readonly FieldInfo? HistoryTipRewardRowsField =
+        AccessTools.Field(typeof(NMapPointHistoryHoverTip), "_rewardRows");
+    private static readonly FieldInfo? HistoryTipRewardContainerField =
+        AccessTools.Field(typeof(NMapPointHistoryHoverTip), "_rewardStatsContainer");
+
+    [ThreadStatic] private static List<CardEnchantmentHistoryEntry>? _savedCardsEnchanted;
+
+    private readonly struct SeparatedHistoryEntry
+    {
+        public readonly CardEnchantmentHistoryEntry Entry;
+        public readonly HistoryDisplayMode Mode;
+        public readonly string? GroupHeader;
+        public readonly HistoryTextFormatter? Formatter;
+
+        public SeparatedHistoryEntry(
+            CardEnchantmentHistoryEntry entry, HistoryDisplayMode mode,
+            string? groupHeader, HistoryTextFormatter? formatter)
+        {
+            Entry = entry;
+            Mode = mode;
+            GroupHeader = groupHeader;
+            Formatter = formatter;
+        }
+    }
+
+    [ThreadStatic] private static List<SeparatedHistoryEntry>? _separatedHistoryEntries;
+
+    [HarmonyPatch(typeof(NMapPointHistoryHoverTip), "PopulateRewardAndSkippedEntries")]
+    [HarmonyPrefix]
+    private static void PopulateRewardAndSkippedEntriesPrefix(PlayerMapPointHistoryEntry playerEntry)
+    {
+        _savedCardsEnchanted = null;
+        _separatedHistoryEntries = null;
+
+        List<CardEnchantmentHistoryEntry> original = playerEntry.CardsEnchanted;
+        if (original.Count == 0) return;
+
+        List<SeparatedHistoryEntry>? separated = null;
+
+        for (int i = original.Count - 1; i >= 0; i--)
+        {
+            CardEnchantmentHistoryEntry entry = original[i];
+            EnchantmentModel enchModel = SaveUtil.EnchantmentOrDeprecated(entry.Enchantment);
+            Type enchType = enchModel.GetType();
+
+            HistoryDisplayMode mode = EnchantmentRegistry.GetHistoryDisplayMode(enchType);
+            if (mode == HistoryDisplayMode.Auto)
+            {
+                mode = HistoryDisplayMode.InRewards;
+            }
+
+            if (mode == HistoryDisplayMode.Hidden)
+            {
+                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                original.RemoveAt(i);
+                continue;
+            }
+
+            if (mode is HistoryDisplayMode.InActions or HistoryDisplayMode.CustomGroup)
+            {
+                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                string? groupHeader = mode == HistoryDisplayMode.CustomGroup
+                    ? EnchantmentRegistry.GetHistoryGroupHeader(enchType)
+                    : null;
+                HistoryTextFormatter? formatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
+                separated ??= new();
+                separated.Add(new SeparatedHistoryEntry(entry, mode, groupHeader, formatter));
+                original.RemoveAt(i);
+                continue;
+            }
+
+            HistoryTextFormatter? rewFormatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
+            if (rewFormatter != null)
+            {
+                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                separated ??= new();
+                separated.Add(new SeparatedHistoryEntry(entry, HistoryDisplayMode.InRewards, null, rewFormatter));
+                original.RemoveAt(i);
+            }
+        }
+
+        if (separated != null)
+        {
+            separated.Reverse();
+            _separatedHistoryEntries = separated;
+        }
+    }
+
+    [HarmonyPatch(typeof(NMapPointHistoryHoverTip), "PopulateRewardAndSkippedEntries")]
+    [HarmonyPostfix]
+    private static void PopulateRewardAndSkippedEntriesPostfix(
+        NMapPointHistoryHoverTip __instance,
+        PlayerMapPointHistoryEntry playerEntry)
+    {
+        if (_savedCardsEnchanted != null)
+        {
+            playerEntry.CardsEnchanted.Clear();
+            playerEntry.CardsEnchanted.AddRange(_savedCardsEnchanted);
+            _savedCardsEnchanted = null;
+        }
+
+        if (_separatedHistoryEntries == null) return;
+
+        try
+        {
+            RichTextLabel? actionStats = HistoryTipActionStatsField?.GetValue(__instance) as RichTextLabel;
+            LocString? enchantedLoc = HistoryTipEnchantedLocField?.GetValue(__instance) as LocString;
+            List<RichTextLabel>? rewardRows = HistoryTipRewardRowsField?.GetValue(__instance) as List<RichTextLabel>;
+            Control? rewardContainer = HistoryTipRewardContainerField?.GetValue(__instance) as Control;
+
+            List<string>? rewardTexts = null;
+            StringBuilder? actionText = null;
+            Dictionary<string, List<string>>? customGroups = null;
+
+            foreach (SeparatedHistoryEntry sep in _separatedHistoryEntries)
+            {
+                string cardTitle = CardModel.FromSerializable(sep.Entry.Card)?.Title ?? "";
+                string enchTitle = SaveUtil.EnchantmentOrDeprecated(sep.Entry.Enchantment).Title.GetFormattedText() ?? "";
+
+                string text;
+                if (sep.Formatter != null)
+                {
+                    text = sep.Formatter(cardTitle, enchTitle)
+                        ?? FormatEnchantedHistoryText(enchantedLoc, cardTitle, enchTitle);
+                }
+                else
+                {
+                    text = FormatEnchantedHistoryText(enchantedLoc, cardTitle, enchTitle);
+                }
+
+                switch (sep.Mode)
+                {
+                    case HistoryDisplayMode.InRewards:
+                        rewardTexts ??= new();
+                        rewardTexts.Add(text);
+                        break;
+                    case HistoryDisplayMode.InActions:
+                        actionText ??= new();
+                        actionText.Append(text).Append('\n');
+                        break;
+                    case HistoryDisplayMode.CustomGroup:
+                        string header = sep.GroupHeader ?? "Enchantments";
+                        customGroups ??= new();
+                        if (!customGroups.TryGetValue(header, out List<string>? groupList))
+                        {
+                            groupList = new();
+                            customGroups[header] = groupList;
+                        }
+                        groupList.Add(text);
+                        break;
+                }
+            }
+
+            if (rewardTexts != null && rewardRows is { Count: > 0 } && rewardContainer != null)
+            {
+                rewardContainer.Visible = true;
+                foreach (string text in rewardTexts)
+                {
+                    rewardRows[0].Text += "\n\t" + text;
+                }
+            }
+
+            if (actionText is { Length: > 0 } && actionStats != null)
+            {
+                string existing = actionStats.Text;
+                string newText = actionText.ToString().TrimEnd('\n');
+                actionStats.Text = string.IsNullOrEmpty(existing)
+                    ? newText
+                    : existing + "\n" + newText;
+            }
+
+            if (customGroups != null && actionStats != null)
+            {
+                StringBuilder sb = new();
+                foreach (KeyValuePair<string, List<string>> kvp in customGroups)
+                {
+                    sb.Append('\n').Append(kvp.Key).Append('\n');
+                    foreach (string text in kvp.Value)
+                    {
+                        sb.Append('\t').Append(text).Append('\n');
+                    }
+                }
+
+                string existing = actionStats.Text;
+                string groupText = sb.ToString().TrimEnd('\n');
+                actionStats.Text = string.IsNullOrEmpty(existing)
+                    ? groupText.TrimStart('\n')
+                    : existing + groupText;
+            }
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] History display postfix failed: {ex}");
+        }
+        finally
+        {
+            _separatedHistoryEntries = null;
+        }
+    }
+
+    private static string FormatEnchantedHistoryText(LocString? enchantedLoc, string cardTitle, string enchTitle)
+    {
+        if (enchantedLoc != null)
+        {
+            enchantedLoc.Add("Icon", "[img=top]res://images/packed/sprite_fonts/card_icon.png[/img]");
+            enchantedLoc.Add("Title1", cardTitle);
+            enchantedLoc.Add("Title2", enchTitle);
+            return enchantedLoc.GetFormattedText() ?? $"{cardTitle} → {enchTitle}";
+        }
+
+        return $"{cardTitle} → {enchTitle}";
     }
 }

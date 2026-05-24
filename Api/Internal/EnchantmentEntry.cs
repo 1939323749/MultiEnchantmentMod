@@ -27,6 +27,22 @@ internal sealed class EnchantmentEntry
     public PresentationTextFormatter? FormatExtraText { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<int>?>? GetVisualSliceAmounts { get; set; }
     public Func<EnchantmentScope>? GetScope { get; set; }
+
+    public HistoryDisplayMode HistoryDisplay { get; set; } = HistoryDisplayMode.Auto;
+    public string? HistoryGroupHeader { get; set; }
+    public HistoryTextFormatter? HistoryTextFormatter { get; set; }
+
+    /// <summary>
+    /// When non-null, <see cref="MultiEnchantmentScopeSupport"/> will call this predicate,
+    /// set <c>enchantment.Status = Normal</c> when it returns <c>true</c>, and set
+    /// <c>enchantment.Status = Disabled</c> when it returns <c>false</c>. Set by
+    /// <see cref="IEnchantmentRegistration.WhenActive"/> and
+    /// <see cref="EnchantmentDefinition{TEnchantment}.ShouldBeActive"/>. This predicate does
+    /// not occupy <see cref="EnchantmentScope"/>, so it composes naturally with
+    /// <see cref="WithScope"/> / <see cref="LingerForTurns"/> / <see cref="MaxActivations"/> /
+    /// <see cref="RemoveWhen"/>.
+    /// </summary>
+    public Func<CardModel, EnchantmentModel, bool>? GetActiveStatus { get; set; }
     public Action<CardModel, EnchantmentModel>? OnApplied { get; set; }
     public Func<CardModel, EnchantmentModel, RemovalReason, bool>? OnRemoved { get; set; }
     public Action<CardModel, EnchantmentModel>? OnCombatStart { get; set; }

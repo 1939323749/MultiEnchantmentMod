@@ -5,20 +5,25 @@ using MultiEnchantmentMod.Api;
 
 namespace MultiEnchantmentMod.Samples;
 
-// Tier C — fluent builder, ConditionalActive (predicate-gated activity).
+// Tier C — fluent builder, WhenActive (predicate-gated scope via ConditionalActiveScope).
 //
 // Goal: keep the enchantment attached permanently but make it contribute to gameplay only
 // while a predicate returns true.
 //
-// WhenActive(predicate) installs an EnchantmentScope.ConditionalActive. The mod short-
-// circuits IsActive(card, enchantment) inside ApplyDamageEnchantments, ApplyBlockEnchantments
-// and the OnPlay dispatch, so an inactive enchantment is invisible to the runtime — yet it
-// stays attached and re-activates the moment the predicate flips back to true. There is no
-// removal: the predicate is the only gate.
+// WhenActive(predicate) sets GetScope = ConditionalActiveScope(predicate), which gates
+// lifecycle dispatch through IsActive(card, enchantment). It does NOT touch EnchantmentStatus
+// or the status badge — for status-badge dimming use WhenActiveStatus(predicate) instead,
+// which sets GetActiveStatus and syncs EnchantmentStatus.Normal / Disabled.
+// The mod short-circuits IsActive(card, enchantment) inside ApplyDamageEnchantments,
+// ApplyBlockEnchantments and the OnPlay dispatch, so an inactive enchantment is invisible
+// to the runtime — yet it stays attached and re-activates the moment the predicate flips
+// back to true. There is no removal: the predicate is the only gate.
+// WhenActive composes with any scope (e.g. UntilCombatEnds + WhenActive).
 //
-// The predicate runs on every check, so it must be cheap. Exceptions inside the predicate are
-// caught and logged by the mod and the enchantment falls back to "active" so a buggy
-// predicate cannot silently disable a working enchantment.
+// The predicate is re-evaluated at refresh points (apply, combat start, turn start/end, pile
+// change, NotifyPropsChanged). Exceptions inside the predicate are caught and logged by the
+// mod and the enchantment falls back to "active" so a buggy predicate cannot silently
+// disable a working enchantment.
 
 public sealed class SampleHandOnlySharpen : EnchantmentModel
 {

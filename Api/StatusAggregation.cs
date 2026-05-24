@@ -7,9 +7,14 @@ namespace MultiEnchantmentMod.Api;
 public enum StatusAggregation
 {
     /// <summary>
-    /// Status is not meaningful for this enchantment — every slice is treated as
-    /// <see cref="MegaCrit.Sts2.Core.Entities.Enchantments.EnchantmentStatus.Normal"/>.
-    /// Use when the enchantment cannot be disabled (no Goopy-like once-per-turn semantics).
+    /// Status per-slice is taken directly from the anchor (first live) instance rather than
+    /// being aggregated across slices. When no <c>WhenActiveStatus</c> predicate is registered
+    /// the anchor's status defaults to <see cref="MegaCrit.Sts2.Core.Entities.Enchantments.EnchantmentStatus.Normal"/>,
+    /// so the enchantment always appears active — use this when the enchantment has no
+    /// once-per-turn or conditional-disable semantics (no Goopy-like behaviour).
+    /// If a <c>WhenActiveStatus</c> predicate <em>is</em> registered, it can still drive the
+    /// anchor status to <see cref="MegaCrit.Sts2.Core.Entities.Enchantments.EnchantmentStatus.Disabled"/>,
+    /// which this aggregation mode then mirrors faithfully across all slices.
     /// </summary>
     NotApplicable,
 

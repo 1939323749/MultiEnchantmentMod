@@ -39,4 +39,16 @@ public sealed class EnchantmentAttribute : Attribute
     public int MaxActivations { get; init; }
     public int LingerTurns { get; init; }
     public ActivationTrigger Activation { get; init; } = ActivationTrigger.OnPlay;
+
+    /// <summary>
+    /// Controls how this enchantment appears in the per-floor battle history tooltip.
+    /// Defaults to <see cref="HistoryDisplayMode.Auto"/>.
+    /// </summary>
+    public HistoryDisplayMode HistoryDisplay { get; init; } = HistoryDisplayMode.Auto;
+
+    /// <summary>
+    /// Custom group header used when <see cref="HistoryDisplay"/> is
+    /// <see cref="HistoryDisplayMode.CustomGroup"/>.
+    /// </summary>
+    public string? HistoryGroupHeader { get; init; }
 }
