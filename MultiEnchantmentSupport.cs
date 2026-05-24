@@ -1773,6 +1773,12 @@ internal static class MultiEnchantmentSupport
         }
 
         state ??= CardStates.TryGetValue(card, out CardEnchantmentState? updatedState) ? updatedState : null;
+
+        // Capture the scope override BEFORE removing the scope state, so the deck-version
+        // sync below can determine whether this was a transient (combat-only) application.
+        // Declared at this scope so the post-state-cleanup check can still see it.
+        EnchantmentScope? removedOverrideScope = null;
+
         if (state != null)
         {
             if (isPrimary)
@@ -1784,10 +1790,10 @@ internal static class MultiEnchantmentSupport
                 RemoveOneApplicationOrder(state, enchantment.Id);
             }
 
-            // Capture the scope override BEFORE removing the scope state, so the deck-version
-            // sync below can determine whether this was a transient (combat-only) application.
-            state.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? removedScopeState);
-            EnchantmentScope? removedOverrideScope = removedScopeState?.OverrideScope;
+            if (state.ScopeStates.TryGetValue(enchantment, out ScopeRuntimeState? removedScopeState))
+            {
+                removedOverrideScope = removedScopeState?.OverrideScope;
+            }
 
             state.ScopeStates.Remove(enchantment);
             state.PendingRemovals.RemoveAll(entry => ReferenceEquals(entry.Enchantment, enchantment));
