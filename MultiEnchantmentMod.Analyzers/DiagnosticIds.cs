@@ -13,4 +13,5 @@ internal static class DiagnosticIds
     public const string ModifyDynamicVarBadSignature = "MEM009";
     public const string MaxActivationsWithoutTrigger = "MEM011";
     public const string MergedDeltaWithoutMergeAmount = "MEM012";
+    public const string NumericContributionBadSignature = "MEM013";
 }

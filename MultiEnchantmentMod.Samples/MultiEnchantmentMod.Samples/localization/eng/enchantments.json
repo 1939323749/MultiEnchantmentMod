@@ -99,7 +99,40 @@
 
   "SAMPLE_FLEXIBLE_SCOPE.title": "Flexible Scope",
   "SAMPLE_FLEXIBLE_SCOPE.description": "Reference sample (Tier C, per-instance scope override). Registry default is permanent, but individual applications can pass a shorter scope to MultiEnchantmentApi.Enchant or change it with SetScopeOverride.",
-  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "Scope can be overridden per application."
+  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "Scope can be overridden per application.",
+
+  "SAMPLE_SCALED_ON_PLAY_ONCE.title": "Single Settlement",
+  "SAMPLE_SCALED_ON_PLAY_ONCE.description": "Reference sample (Tier A, HookExecutionMode.PerLiveInstance). When legacy OnPlay already scales by Amount, run only the merged anchor once to avoid quadratic scaling.",
+  "SAMPLE_SCALED_ON_PLAY_ONCE.extraCardText": "Legacy OnPlay: resolves once using the total stack.",
+
+  "SAMPLE_PER_STACK_ON_PLAY.title": "Per-Stack Settlement",
+  "SAMPLE_PER_STACK_ON_PLAY.description": "Reference sample (Tier B, HookExecutionMode.MergedTotal). When legacy OnPlay represents one layer of effect per call, run it once per active stack.",
+  "SAMPLE_PER_STACK_ON_PLAY.extraCardText": "Legacy OnPlay: resolves once per stack.",
+
+  "SAMPLE_HEAVY_PLATING.title": "Heavy Plating",
+  "SAMPLE_HEAVY_PLATING.description": "Reference sample (Tier A, [ModifyEnergyCost]). Uses a folded cost contribution so each stack adds +1 combat energy cost and multiple enchantments compose cleanly.",
+  "SAMPLE_HEAVY_PLATING.extraCardText": "Combat cost +{Amount}.",
+
+  "SAMPLE_EXTRA_SWING.title": "Extra Swing",
+  "SAMPLE_EXTRA_SWING.description": "Reference sample (Tier A, [ModifyCardPlayCount]). Uses a folded play-count contribution so each stack adds one extra play, suitable for ExtraHit-style effects.",
+  "SAMPLE_EXTRA_SWING.extraCardText": "Play count +{Amount}.",
+
+  "SAMPLE_NUMERIC_CONTRIBUTION_REGISTRATION_ONLY.title": "Numeric Fold Registration",
+  "SAMPLE_NUMERIC_CONTRIBUTION_REGISTRATION_ONLY.description": "Reference sample (Tier C, fluent numeric contributions). Declares combat energy-cost and play-count contributions directly on the Register chain without attributes.",
+
+  "SAMPLE_STACKED_TACTICS.title": "Stacked Tactics",
+  "SAMPLE_STACKED_TACTICS.description": "Reference sample (Tier B, stack-aware async hooks). Demonstrates OnPlayStacked, Before/AfterCardPlayedStacked, AfterAnyCardDrawnStacked, BeforeFlushStacked, and AfterDamageGivenStacked aggregation semantics.",
+  "SAMPLE_STACKED_TACTICS.extraCardText": "Aggregates by enchantment type instead of repeating prompts or random rolls per stack.",
+
+  "SAMPLE_HAND_STATUS_SHARPEN.title": "Hand Status Sharpen",
+  "SAMPLE_HAND_STATUS_SHARPEN.description": "Reference sample (Tier C, WhenActiveStatus). The enchantment lasts two turns, but is active only while the host card is in hand; outside the hand the badge darkens and contributes no value.",
+
+  "SAMPLE_FRAMEWORK_EVENTS.title": "Framework Event Recorder",
+  "SAMPLE_FRAMEWORK_EVENTS.description": "Reference sample (Tier B, HistoryDisplay + OnRestored + broadcast events). Demonstrates combat-history grouping, save/sync restore, any-card draw/exhaust/discard broadcasts, and block events.",
+  "SAMPLE_FRAMEWORK_EVENTS.extraCardText": "Records framework event counts.",
+
+  "SAMPLE_ALTERNATING_BADGES.title": "Alternating Badges",
+  "SAMPLE_ALTERNATING_BADGES.description": "Reference sample (Tier B, per-badge status and icon presentation). Odd rounds light the first badge; even rounds light the second.",
+  "SAMPLE_ALTERNATING_BADGES.extraCardText": "Alternates between two badge states and icons."
 
 }
-

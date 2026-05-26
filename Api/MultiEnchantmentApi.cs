@@ -279,7 +279,7 @@ public static class MultiEnchantmentApi
     // --- Advanced read-only snapshot API -----------------------------------------------------
 
     /// <summary>
-    /// Power-user accessors that mirror the legacy <c>MultiEnchantmentStackApi.GetSnapshot</c>
+    /// Power-user accessors that mirror <c>MultiEnchantmentStackApi.GetSnapshot</c>
     /// surface. Reserved for tools, debug overlays, and analyzer-driven content. Most consumers
     /// do not need these.
     /// </summary>

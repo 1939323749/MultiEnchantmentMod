@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -11,6 +12,7 @@ using MultiEnchantmentMod.Api.Internal;
 // aliases for the types we pull across.
 using LegacyExecutionPolicy = MultiEnchantmentMod.EnchantmentExecutionPolicy;
 using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
+using EnchantmentVisualSlice = MultiEnchantmentMod.EnchantmentVisualSlice;
 
 namespace MultiEnchantmentMod.Api;
 
@@ -33,8 +35,8 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Materializes the virtual-method bag below into an <see cref="EnchantmentRegistry"/> entry
-    /// and installs the corresponding adapter shims into the legacy provider tables. Idempotent
+    /// Materializes the virtual-method bag below into an <see cref="EnchantmentRegistry"/> entry.
+    /// Idempotent
     /// only in the sense that calling <c>Register()</c> twice on the same instance creates two
     /// registrations (and two disposables); typical usage is to call it once from the assembly
     /// scanner or from a manual <c>[ModInitializer]</c>.
@@ -67,6 +69,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         if (Overrides(nameof(GetVisualSliceAmounts), typeof(EnchantmentStackSnapshot)))
         {
             entry.GetVisualSliceAmounts = InvokeGetVisualSliceAmounts;
+        }
+
+        if (Overrides(nameof(GetVisualSlices), typeof(EnchantmentStackSnapshot)))
+        {
+            entry.GetVisualSlices = InvokeGetVisualSlices;
         }
 
         if (Overrides(nameof(ShouldBeActive), typeof(CardModel), typeof(TEnchantment)))
@@ -119,8 +126,53 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.DynamicVarContributions.Add(contribution);
         }
 
+        foreach (EnergyCostContribution contribution in InvokeEnergyCostContributions())
+        {
+            entry.EnergyCostContributions.Add(contribution);
+        }
+
+        foreach (CardPlayCountContribution contribution in InvokeCardPlayCountContributions())
+        {
+            entry.CardPlayCountContributions.Add(contribution);
+        }
+
         entry.HistoryDisplay = HistoryDisplay;
         entry.HistoryGroupHeader = HistoryGroupHeader;
+
+        if (Overrides(nameof(OnPlayStacked), typeof(StackedOnPlayContext)))
+        {
+            entry.OnPlayStacked = InvokeOnPlayStacked;
+        }
+
+        if (Overrides(nameof(BeforeCardPlayedStacked), typeof(StackedBeforeCardPlayedContext)))
+        {
+            entry.BeforeCardPlayedStacked = InvokeBeforeCardPlayedStacked;
+        }
+
+        if (Overrides(nameof(AfterCardPlayedStacked), typeof(StackedAfterCardPlayedContext)))
+        {
+            entry.AfterCardPlayedStacked = InvokeAfterCardPlayedStacked;
+        }
+
+        if (Overrides(nameof(AfterCardDrawnStacked), typeof(StackedAfterCardDrawnContext)))
+        {
+            entry.AfterCardDrawnStacked = InvokeAfterCardDrawnStacked;
+        }
+
+        if (Overrides(nameof(AfterAnyCardDrawnStacked), typeof(StackedAfterCardDrawnContext)))
+        {
+            entry.AfterAnyCardDrawnStacked = InvokeAfterAnyCardDrawnStacked;
+        }
+
+        if (Overrides(nameof(BeforeFlushStacked), typeof(StackedBeforeFlushContext)))
+        {
+            entry.BeforeFlushStacked = InvokeBeforeFlushStacked;
+        }
+
+        if (Overrides(nameof(AfterDamageGivenStacked), typeof(StackedAfterDamageGivenContext)))
+        {
+            entry.AfterDamageGivenStacked = InvokeAfterDamageGivenStacked;
+        }
 
         if (Overrides(nameof(FormatHistoryText), typeof(string), typeof(string)))
         {
@@ -162,9 +214,8 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
 
         if (attribute == null)
         {
-            // No explicit override — return null so EnchantmentRegistry.Install doesn't wire an
-            // adapter shim that would otherwise force-override the legacy behavior-derived
-            // defaults with an all-Default record.
+            // No explicit override — return null so direct registry dispatch keeps using the
+            // legacy behavior-derived defaults instead of an all-Default record.
             return null;
         }
 
@@ -333,7 +384,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     // === Phase 4 — broadcast card-event hooks ================================================
     // These fire for ANY card event in combat, not just the card carrying this enchantment.
     // Opt-in: enchantments that do not override these methods are never visited by the broadcast
-    // dispatcher (the entry field stays null and the adapter returns immediately).
+    // dispatcher (the entry field stays null and direct dispatch skips it).
 
     /// <summary>
     /// Fires after <b>any</b> card is played in combat. <paramref name="playedCard"/> is the card
@@ -403,7 +454,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     /// <summary>
     /// Card keywords that this enchantment can add or remove while it's active. Each keyword
     /// returned here will trigger <see cref="KeywordSourceAmount"/> on every refresh; the sum
-    /// across all definitions and keyword providers determines whether the keyword is present.
+    /// across all definitions and registrations determines whether the keyword is present.
     /// Defaults to the union of every <see cref="EnchantmentKeywordAttribute"/> on the type.
     /// </summary>
     protected virtual IEnumerable<CardKeyword> TrackedKeywords
@@ -461,6 +512,17 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     protected virtual IReadOnlyList<int>? GetVisualSliceAmounts(EnchantmentStackSnapshot snapshot) => null;
 
     /// <summary>
+    /// Optional custom visual slices with per-badge status. Override this when UI badges need
+    /// their own active/disabled state. Return <c>null</c> to use
+    /// <see cref="GetVisualSliceAmounts"/> or the default visual slice computation.
+    /// <c>ShowAmount</c> only decides whether the badge draws a number; the slice itself is
+    /// available for both numbered and non-numbered enchantments. When <c>ShowAmount</c> is
+    /// true, returned amounts must sum to the snapshot total; when false, amounts only act as
+    /// positive placeholders for badge count/layout.
+    /// </summary>
+    protected virtual IReadOnlyList<EnchantmentVisualSlice>? GetVisualSlices(EnchantmentStackSnapshot snapshot) => null;
+
+    /// <summary>
     /// Dynamic-variable contributions registered by this definition. The default scans methods on
     /// both this definition class and <typeparamref name="TEnchantment"/> for
     /// <see cref="ModifyDynamicVarAttribute"/> and yields one contribution per match. Override to
@@ -469,6 +531,30 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     protected virtual IEnumerable<DynamicVarContribution> DynamicVarContributions =>
         Internal.ModifyDynamicVarScanner.ScanType(GetType())
             .Concat(Internal.ModifyDynamicVarScanner.ScanType(typeof(TEnchantment)));
+
+    /// <summary>
+    /// Optional combat energy-cost contributions. Contributions fold over the running combat
+    /// cost from <c>Hook.ModifyEnergyCostInCombat</c>.
+    /// </summary>
+    protected virtual IEnumerable<EnergyCostContribution> EnergyCostContributions =>
+        Internal.NumericContributionScanner.ScanEnergyCost(GetType())
+            .Concat(Internal.NumericContributionScanner.ScanEnergyCost(typeof(TEnchantment)));
+
+    /// <summary>
+    /// Optional card play-count contributions. Contributions fold over the running play count in
+    /// the card-play wrapper after vanilla <c>Hook.ModifyCardPlayCount</c> has run.
+    /// </summary>
+    protected virtual IEnumerable<CardPlayCountContribution> CardPlayCountContributions =>
+        Internal.NumericContributionScanner.ScanCardPlayCount(GetType())
+            .Concat(Internal.NumericContributionScanner.ScanCardPlayCount(typeof(TEnchantment)));
+
+    protected virtual Task OnPlayStacked(StackedOnPlayContext context) => Task.CompletedTask;
+    protected virtual Task BeforeCardPlayedStacked(StackedBeforeCardPlayedContext context) => Task.CompletedTask;
+    protected virtual Task AfterCardPlayedStacked(StackedAfterCardPlayedContext context) => Task.CompletedTask;
+    protected virtual Task AfterCardDrawnStacked(StackedAfterCardDrawnContext context) => Task.CompletedTask;
+    protected virtual Task AfterAnyCardDrawnStacked(StackedAfterCardDrawnContext context) => Task.CompletedTask;
+    protected virtual Task BeforeFlushStacked(StackedBeforeFlushContext context) => Task.CompletedTask;
+    protected virtual Task AfterDamageGivenStacked(StackedAfterDamageGivenContext context) => Task.CompletedTask;
 
     /// <summary>
     /// Optional override that supplies custom extra text for the card description. The
@@ -552,13 +638,16 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         return method != null && method.DeclaringType != typeof(EnchantmentDefinition<TEnchantment>);
     }
 
-    // --- Internal accessors so the adapter / registry can reach the protected virtuals ---
+    // --- Internal accessors so the registry can reach the protected virtuals ---
     internal IEnumerable<DynamicVarContribution> InvokeDynamicVarContributions() => DynamicVarContributions;
+    internal IEnumerable<EnergyCostContribution> InvokeEnergyCostContributions() => EnergyCostContributions;
+    internal IEnumerable<CardPlayCountContribution> InvokeCardPlayCountContributions() => CardPlayCountContributions;
     internal void InvokeOnMergedDelta(TEnchantment enchantment, int addedAmount) => OnMergedDelta(enchantment, addedAmount);
     internal void InvokeOnMergedRefresh(TEnchantment enchantment) => OnMergedRefresh(enchantment);
     internal IEnumerable<CardKeyword> InvokeTrackedKeywords() => TrackedKeywords;
     internal int InvokeKeywordSourceAmount(EnchantmentStackSnapshot s, CardKeyword k) => KeywordSourceAmount(s, k);
     internal IReadOnlyList<int>? InvokeGetVisualSliceAmounts(EnchantmentStackSnapshot s) => GetVisualSliceAmounts(s);
+    internal IReadOnlyList<EnchantmentVisualSlice>? InvokeGetVisualSlices(EnchantmentStackSnapshot s) => GetVisualSlices(s);
     internal bool InvokeTryFormatExtraText(EnchantmentStackSnapshot s, string defaultText, out string text)
         => TryFormatExtraText(s, defaultText, out text);
     internal EnchantmentScope InvokeScope() => Scope;
@@ -592,4 +681,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal void InvokeOnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) => OnSiblingApplied(card, self, newSibling);
     internal void InvokeOnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) => OnSiblingRemoved(card, self, removedSibling, reason);
     internal string? InvokeFormatHistoryText(string cardTitle, string enchantmentTitle) => FormatHistoryText(cardTitle, enchantmentTitle);
+    internal Task InvokeOnPlayStacked(StackedOnPlayContext context) => OnPlayStacked(context);
+    internal Task InvokeBeforeCardPlayedStacked(StackedBeforeCardPlayedContext context) => BeforeCardPlayedStacked(context);
+    internal Task InvokeAfterCardPlayedStacked(StackedAfterCardPlayedContext context) => AfterCardPlayedStacked(context);
+    internal Task InvokeAfterCardDrawnStacked(StackedAfterCardDrawnContext context) => AfterCardDrawnStacked(context);
+    internal Task InvokeAfterAnyCardDrawnStacked(StackedAfterCardDrawnContext context) => AfterAnyCardDrawnStacked(context);
+    internal Task InvokeBeforeFlushStacked(StackedBeforeFlushContext context) => BeforeFlushStacked(context);
+    internal Task InvokeAfterDamageGivenStacked(StackedAfterDamageGivenContext context) => AfterDamageGivenStacked(context);
 }

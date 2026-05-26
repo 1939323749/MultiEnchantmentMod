@@ -13,9 +13,8 @@ public interface IEnchantmentDefinition
     Type EnchantmentType { get; }
 
     /// <summary>
-    /// Materializes this definition into a v2 registry entry and registers the corresponding
-    /// adapter shims with the legacy provider tables. Returns a disposable handle that fully
-    /// reverses the registration when disposed.
+    /// Materializes this definition into a v2 registry entry. Returns a disposable handle that
+    /// fully reverses the registration when disposed.
     /// </summary>
     IDisposable Register();
 }

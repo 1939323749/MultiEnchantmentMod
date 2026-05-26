@@ -58,7 +58,7 @@ internal static class SafeInvoker
         FailureCounts.Clear();
     }
 
-    private static void LogFailure(Type enchantmentType, string hookName, Exception ex)
+    internal static void LogFailure(Type enchantmentType, string hookName, Exception ex)
     {
         (Type Type, string Hook) key = (enchantmentType, hookName);
         int count = FailureCounts.AddOrUpdate(key, 1, static (_, prior) => prior + 1);

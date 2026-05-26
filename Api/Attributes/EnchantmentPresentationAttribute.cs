@@ -18,7 +18,8 @@ public sealed class EnchantmentPresentationAttribute : Attribute
 
     /// <summary>
     /// The companion class overrides
-    /// <see cref="EnchantmentDefinition{TEnchantment}.GetVisualSliceAmounts"/>.
+    /// <see cref="EnchantmentDefinition{TEnchantment}.GetVisualSliceAmounts"/> or
+    /// <see cref="EnchantmentDefinition{TEnchantment}.GetVisualSlices"/>.
     /// </summary>
     public bool HasVisualSliceOverride { get; init; }
 }

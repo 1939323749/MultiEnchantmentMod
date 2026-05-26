@@ -162,6 +162,16 @@ MultiEnchantmentApi.Register<HandOnlyEnchant>()
 
 重点：条件不满足时，附魔仍然存在，只是当前不活跃。如果你希望它消失，需要使用临时作用域、`RemoveWhen` 或主动移除。
 
+注意：fluent `.WhenActive(...)` 本身会设置 `ConditionalActive` scope；如果同一条注册链里又调用 `.WithScope(...)`、`.LingerForTurns(...)`、`.MaxActivations(...)` 或 `.RemoveWhen(...)`，后调用的 scope 会覆盖前调用的 scope。需要“生命周期 scope + 条件活跃状态”同时存在时，用 `.WhenActiveStatus(...)` 或覆写 `EnchantmentDefinition<T>.ShouldBeActive(...)` 来控制状态。
+
+```csharp
+MultiEnchantmentApi.Register<CombatHandOnlyEnchant>()
+    .Stack(StackBehavior.DisallowDuplicate, StatusAggregation.NotApplicable)
+    .WithScope(EnchantmentScope.UntilCombatEnds)
+    .WhenActiveStatus((card, enchantment) => card.Pile?.Type == PileType.Hand)
+    .Commit();
+```
+
 ### RemoveWhen
 
 `RemoveWhen(predicate, triggers)` 在指定的 `ActivationTrigger` 触发时重新评估 predicate；一旦返回 `true`，附魔立即被移除（`RemovalReason.ConditionMet`）。与 `ConditionalActive` 的区别：`ConditionalActive` 让附魔"休眠但保留"，`RemoveWhen` 让附魔"满足条件后永久消失"。
@@ -301,6 +311,7 @@ MultiEnchantmentApi.Register<LifecycleEnchant>()
 - `OnApplied` 只表示”新应用”，不应当作为存档恢复或克隆恢复逻辑。存档恢复请用 `OnRestored`。
 - `OnRemoved` 返回 `false` 可以阻止大多数移除，但 `CardCleared` 会绕过 veto。
 - **所有** vanilla hook 桥接回调都受 `IsActive` 守门 — 失活附魔不会收到任何事件。
+- 这些 lifecycle 回调是同步、轻量的状态通知。需要 `await` 命令、弹选牌 UI、随机目标、读实际伤害结果并施加 power 时，优先看主文档里的 `OnPlayStacked` / `AfterAnyCardDrawnStacked` / `AfterDamageGivenStacked`；`BeforeFlushStacked` 只适合做收尾，不提供可用的 `ChoiceContext`。
 - 回调异常会被捕获并记录，避免单个 handler 直接破坏战斗流程；但仍应让回调尽量简单、可预测。
 - `OnShouldDie` 是唯一带返回值的回调：返回 `false` 阻止死亡，`true` 表示不反对。多个附魔中**任一返回 `false`** 即阻止死亡（与 vanilla 语义一致）。
 
@@ -656,6 +667,10 @@ protected override bool OnRemoved(CardModel card, MyEnchant enchantment, Removal
 1. **predicate 必须是纯函数** —— 只依赖参数 `(card, enchantment)`，不引用 mod 之外的静态状态、不读取 `DateTime.Now`、不依赖战斗外可变全局变量。否则同一存档在不同时间打开可能产生不同结果。
 2. predicate 闭包捕获的局部变量也会丢失（因为它来自 registry 注册时的 lambda），但运行期生效的状态可以通过 `enchantment.Props` / `enchantment.SavedProperties` 持久化。
 3. 多人模式下双方都从各自的 registry 解析 scope，确保双方 mod 注册一致是 modder 的责任。
+
+### `WhenActive` 能和 `RemoveWhen` / `LingerForTurns` 一起用吗？
+
+fluent `.WhenActive(...)` 和 `.RemoveWhen(...)` 都是 scope 设置器；同一条链里后调用的会覆盖前调用的。想同时表达“条件活跃”和“到期/条件移除”，推荐把“是否活跃”写成 `.WhenActiveStatus(...)` 或 definition 的 `ShouldBeActive(...)`，把“何时移除”交给 `.RemoveWhen(...)`、`.LingerForTurns(...)` 或 `.MaxActivations(...)`。
 
 ### `MaxActivations` / `LingerForTurns` 计数器读档后会重置吗？
 

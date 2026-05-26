@@ -71,11 +71,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Alchyr.Sts2.BaseLib" Version="0.2.0" PrivateAssets="All" />
-        <PackageReference Include="Alchyr.Sts2.ModAnalyzers" Version="*"/>
-    </ItemGroup>
-
-    <ItemGroup>
         <Compile Remove="MultiEnchantmentMod/**"/>
         <Compile Remove="materials/**"/>
         <Compile Remove="shaders/**"/>

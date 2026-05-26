@@ -18,7 +18,9 @@ namespace MultiEnchantmentMod.Samples;
 // ApplyBlockEnchantments and the OnPlay dispatch, so an inactive enchantment is invisible
 // to the runtime — yet it stays attached and re-activates the moment the predicate flips
 // back to true. There is no removal: the predicate is the only gate.
-// WhenActive composes with any scope (e.g. UntilCombatEnds + WhenActive).
+// Note: the fluent WhenActive(...) call itself sets a ConditionalActive scope. If you need a
+// lifetime scope (UntilCombatEnds / RemoveWhen / etc.) plus status gating, use
+// WhenActiveStatus(predicate) or EnchantmentDefinition<T>.ShouldBeActive instead.
 //
 // The predicate is re-evaluated at refresh points (apply, combat start, turn start/end, pile
 // change, NotifyPropsChanged). Exceptions inside the predicate are caught and logged by the

@@ -6,15 +6,11 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using MegaCrit.Sts2.Core.Models;
-// MultiEnchantmentMod is both the legacy namespace and the bootstrap class name; alias the
-// legacy entry point to dodge the ambiguity.
-using LegacyStackApi = MultiEnchantmentMod.MultiEnchantmentStackApi;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
 /// <summary>
-/// Process-wide registry of v2 <see cref="EnchantmentEntry"/> values plus their translation into
-/// the legacy <c>MultiEnchantmentStackApi</c> provider tables. The registry is the single
+/// Process-wide registry of v2 <see cref="EnchantmentEntry"/> values. The registry is the single
 /// authoritative installer: every successful <c>Commit()</c> on a fluent registration ends here.
 /// </summary>
 internal static class EnchantmentRegistry
@@ -48,8 +44,7 @@ internal static class EnchantmentRegistry
     }
 
     /// <summary>
-    /// Installs an entry into the registry and registers the corresponding adapter shims with
-    /// the legacy provider tables. Returns a disposable handle that fully reverses the
+    /// Installs an entry into the registry. Returns a disposable handle that fully reverses the
     /// registration when disposed (useful for tests / hot-reload).
     /// </summary>
     internal static IDisposable Install<TEnchantment>(EnchantmentEntry entry)
@@ -69,8 +64,6 @@ internal static class EnchantmentRegistry
                 "Move the Register*/ScanCallingAssembly call earlier — into the mod's [ModInitializer] — or remove the SealRegistry() call.");
             return EmptyDisposable.Instance;
         }
-
-        InstalledShims<TEnchantment> shims = new();
 
         lock (Sync)
         {
@@ -95,103 +88,16 @@ internal static class EnchantmentRegistry
             {
                 Volatile.Write(ref _dynamicVarKeysSnapshot, BuildDynamicVarKeysSnapshot());
             }
-
-            if (entry.Definition != null)
-            {
-                shims.Definition = new AdapterDefinitionProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterDefinitionProvider(shims.Definition);
-            }
-
-            if (entry.ExecutionPolicy != null)
-            {
-                shims.Execution = new AdapterExecutionPolicyProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterExecutionPolicyProvider(shims.Execution);
-            }
-
-            // Merged-state shim is only meaningful for MergeAmount stacks — the underlying
-            // ApplyMergedAmountDelta / RefreshMergedEnchantmentState helpers in the legacy
-            // support layer short-circuit non-MergeAmount enchantments before consulting any
-            // provider. Use the effective definition instead of only the current entry's
-            // Definition so secondary registrations can add merge callbacks on top of an existing
-            // Stack(MergeAmount, ...) registration.
-            bool hasMergedCallbacks = entry.OnMergedDelta != null || entry.OnMergedRefresh != null;
-            StackDefinition effectiveDefinition = entry.Definition
-                ?? list.LastOrDefault(static existing => existing.Definition != null)?.Definition
-                ?? BuiltInDefaults.GetDefinition(typeof(TEnchantment));
-            bool wantsMergedShim =
-                hasMergedCallbacks &&
-                effectiveDefinition.Behavior == StackBehavior.MergeAmount;
-            if (wantsMergedShim)
-            {
-                shims.Merged = new AdapterMergedStateProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterMergedStateProvider(shims.Merged);
-            }
-
-            if (entry.Keywords.Count > 0)
-            {
-                shims.Keyword = new AdapterKeywordSourceProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterKeywordProvider(shims.Keyword);
-            }
-
-            if (entry.GetVisualSliceAmounts != null || entry.FormatExtraText != null)
-            {
-                shims.Presentation = new AdapterPresentationProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterPresentationProvider(shims.Presentation);
-            }
-
-            bool wantsLifecycleShim =
-                entry.GetScope != null ||
-                entry.GetActiveStatus != null ||
-                entry.OnApplied != null ||
-                entry.OnRemoved != null ||
-                entry.OnCombatStart != null ||
-                entry.OnCombatEnd != null ||
-                entry.OnTurnStart != null ||
-                entry.OnTurnEnd != null ||
-                entry.OnRestored != null ||
-                entry.OnCardPlayed != null ||
-                entry.OnCardDrawn != null ||
-                entry.OnCardExhausted != null ||
-                entry.OnCardDiscarded != null ||
-                entry.OnCardEnteredCombat != null ||
-                entry.OnAfterDamageReceived != null ||
-                entry.OnSideTurnStart != null ||
-                entry.OnBeforeSideTurnStart != null ||
-                entry.OnBeforeAttack != null ||
-                entry.OnAfterAttack != null ||
-                entry.OnCardChangedPiles != null ||
-                entry.OnCardRetained != null ||
-                entry.OnBeforeBlockGained != null ||
-                entry.OnBlockGained != null ||
-                entry.OnShouldDie != null ||
-                entry.OnAnyCardPlayed != null ||
-                entry.OnAnyCardDrawn != null ||
-                entry.OnAnyCardExhausted != null ||
-                entry.OnAnyCardDiscarded != null ||
-                entry.OnSiblingApplied != null ||
-                entry.OnSiblingRemoved != null;
-            if (wantsLifecycleShim)
-            {
-                shims.Lifecycle = new AdapterLifecycleProvider<TEnchantment> { Entry = entry };
-                LegacyStackApi.RegisterLifecycleProvider(shims.Lifecycle);
-            }
         }
 
-        return new RegistrationHandle<TEnchantment>(entry, shims);
+        return new RegistrationHandle<TEnchantment>(entry);
     }
 
-    private static void Uninstall<TEnchantment>(EnchantmentEntry entry, InstalledShims<TEnchantment> shims)
+    private static void Uninstall<TEnchantment>(EnchantmentEntry entry)
         where TEnchantment : EnchantmentModel
     {
         lock (Sync)
         {
-            if (shims.Definition != null) LegacyStackApi.UnregisterDefinitionProvider(shims.Definition);
-            if (shims.Execution != null) LegacyStackApi.UnregisterExecutionPolicyProvider(shims.Execution);
-            if (shims.Merged != null) LegacyStackApi.UnregisterMergedStateProvider(shims.Merged);
-            if (shims.Keyword != null) LegacyStackApi.UnregisterKeywordProvider(shims.Keyword);
-            if (shims.Presentation != null) LegacyStackApi.UnregisterPresentationProvider(shims.Presentation);
-            if (shims.Lifecycle != null) LegacyStackApi.UnregisterLifecycleProvider(shims.Lifecycle);
-
             if (EntriesByType.TryGetValue(typeof(TEnchantment), out List<EnchantmentEntry>? list))
             {
                 list.Remove(entry);
@@ -230,6 +136,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static IReadOnlyList<DynamicVarContribution> GetContributions(Type enchantmentType, string varKey)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -256,6 +163,69 @@ internal static class EnchantmentRegistry
         }
     }
 
+
+    internal static EnchantmentEntry? GetSingleEntry(Type enchantmentType)
+    {
+        AssemblyScanner.EnsureScanned();
+        lock (Sync)
+        {
+            return EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries) &&
+                   entries.Count > 0
+                ? entries[^1]
+                : null;
+        }
+    }
+
+    internal static EnchantmentEntry? GetLastEntry(Type enchantmentType, Func<EnchantmentEntry, bool> predicate)
+    {
+        AssemblyScanner.EnsureScanned();
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return null;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (predicate(entries[i]))
+                {
+                    return entries[i];
+                }
+            }
+
+            return null;
+        }
+    }
+
+    private static readonly Func<EnchantmentEntry, bool> HasLifecycleHandlersPredicate = static entry =>
+        entry.GetScope != null ||
+        entry.GetActiveStatus != null ||
+        entry.OnApplied != null ||
+        entry.OnRemoved != null ||
+        entry.OnCombatStart != null ||
+        entry.OnCombatEnd != null ||
+        entry.OnTurnStart != null ||
+        entry.OnTurnEnd != null ||
+        entry.OnRestored != null;
+
+    internal static bool HasLifecycleHandlers(Type enchantmentType)
+    {
+        AssemblyScanner.EnsureScanned();
+        return GetLastEntry(enchantmentType, HasLifecycleHandlersPredicate) != null;
+    }
+
+    internal static IReadOnlyList<EnchantmentEntry> GetEntries(Type enchantmentType)
+    {
+        AssemblyScanner.EnsureScanned();
+        lock (Sync)
+        {
+            return EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries)
+                ? entries.ToArray()
+                : Array.Empty<EnchantmentEntry>();
+        }
+    }
+
     /// <summary>
     /// Fast existence check used by the <see cref="MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar"/>
     /// postfix patch to short-circuit out when no enchantment in the registry contributes to the
@@ -265,6 +235,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool HasContributionsFor(string varKey)
     {
+        AssemblyScanner.EnsureScanned();
         return Volatile.Read(ref _dynamicVarKeysSnapshot).Contains(varKey);
     }
 
@@ -276,6 +247,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static int? GetMaxInstances(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -318,6 +290,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static StackOverflowPolicy GetOverflowPolicy(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -347,6 +320,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool HasAnyDynamicVarContributions(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -372,6 +346,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static HistoryDisplayMode GetHistoryDisplayMode(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -396,6 +371,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static string? GetHistoryGroupHeader(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -421,6 +397,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static HistoryTextFormatter? GetHistoryTextFormatter(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -448,6 +425,7 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool IsPermanentScope(Type enchantmentType)
     {
+        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -457,9 +435,9 @@ internal static class EnchantmentRegistry
 
             for (int i = entries.Count - 1; i >= 0; i--)
             {
-                if (entries[i].GetScope is { } getScope)
+                if (entries[i].GetScope is { })
                 {
-                    EnchantmentScope scope = getScope();
+                    EnchantmentScope scope = entries[i].GetSafeScope();
                     return scope is EnchantmentScope.PermanentScope
                         or EnchantmentScope.ConditionalActiveScope
                         or EnchantmentScope.RemoveWhenScope;
@@ -574,28 +552,15 @@ internal static class EnchantmentRegistry
         return false;
     }
 
-    private sealed class InstalledShims<TEnchantment>
-        where TEnchantment : EnchantmentModel
-    {
-        public AdapterDefinitionProvider<TEnchantment>? Definition;
-        public AdapterExecutionPolicyProvider<TEnchantment>? Execution;
-        public AdapterMergedStateProvider<TEnchantment>? Merged;
-        public AdapterKeywordSourceProvider<TEnchantment>? Keyword;
-        public AdapterPresentationProvider<TEnchantment>? Presentation;
-        public AdapterLifecycleProvider<TEnchantment>? Lifecycle;
-    }
-
     private sealed class RegistrationHandle<TEnchantment> : IDisposable
         where TEnchantment : EnchantmentModel
     {
         private readonly EnchantmentEntry _entry;
-        private readonly InstalledShims<TEnchantment> _shims;
         private bool _disposed;
 
-        public RegistrationHandle(EnchantmentEntry entry, InstalledShims<TEnchantment> shims)
+        public RegistrationHandle(EnchantmentEntry entry)
         {
             _entry = entry;
-            _shims = shims;
         }
 
         public void Dispose()
@@ -606,7 +571,7 @@ internal static class EnchantmentRegistry
             }
 
             _disposed = true;
-            Uninstall(_entry, _shims);
+            Uninstall<TEnchantment>(_entry);
         }
     }
 }

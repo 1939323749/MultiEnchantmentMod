@@ -17,6 +17,7 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MultiEnchantmentMod.Api;
+using MultiEnchantmentMod.Api.Internal;
 
 namespace MultiEnchantmentMod;
 
@@ -122,7 +123,7 @@ internal static class MultiEnchantmentScopeSupport
             state.TurnsRemaining = linger.Turns;
         }
 
-        InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnApplied(owner, model));
+        InvokeLifecycle(card, enchantment, static entry => entry.OnApplied != null, static (entry, owner, model) => entry.RunOnApplied(owner, model));
     }
 
     /// <summary>
@@ -140,14 +141,13 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        // Sync active-status predicates after deserialization.
-        RefreshActiveStatuses(card);
-
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
         {
             EnsureScopeState(card, enchantment);
-            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnRestored(owner, model));
+            InvokeLifecycle(card, enchantment, static entry => entry.OnRestored != null, static (entry, owner, model) => entry.RunOnRestored(owner, model));
         }
+
+        RefreshActiveStatuses(card);
 
         // OnRestored handlers may have mutated Status / Amount / Props as part of cache rebuild;
         // refresh derived state (keywords, DynamicVars, UI) so callers don't have to remember to
@@ -256,7 +256,7 @@ internal static class MultiEnchantmentScopeSupport
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
         {
             EnsureScopeState(card, enchantment);
-            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnCombatStart(owner, model));
+            InvokeLifecycle(card, enchantment, static entry => entry.OnCombatStart != null, static (entry, owner, model) => entry.RunOnCombatStart(owner, model));
         }
 
         // OnCombatStart handlers may mutate Status / Amount / Props (e.g. priming counters,
@@ -324,7 +324,7 @@ internal static class MultiEnchantmentScopeSupport
             foreach (EnchantmentModel enchantment in enchantments)
             {
                 EnsureScopeState(card, enchantment);
-                InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnTurnStart(owner, model));
+                InvokeLifecycle(card, enchantment, static entry => entry.OnTurnStart != null, static (entry, owner, model) => entry.RunOnTurnStart(owner, model));
             }
 
             // Turn start can flip active-status predicates / mutate Status. Refresh derived
@@ -451,7 +451,8 @@ internal static class MultiEnchantmentScopeSupport
 
     private static void DispatchCardLifecycle(
         CardModel? card,
-        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, CardModel, EnchantmentModel> action)
+        Func<EnchantmentEntry, bool> hasHandler,
+        Action<EnchantmentEntry, CardModel, EnchantmentModel> action)
     {
         if (card == null)
         {
@@ -464,7 +465,7 @@ internal static class MultiEnchantmentScopeSupport
             {
                 continue;
             }
-            InvokeLifecycle(card, enchantment, action);
+            InvokeLifecycle(card, enchantment, hasHandler, action);
         }
 
         // Card-event handlers (OnCardPlayed / Drawn / Exhausted / Discarded / EnteredCombat /
@@ -473,26 +474,24 @@ internal static class MultiEnchantmentScopeSupport
     }
 
     internal static void DispatchOnCardPlayedForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardPlayed(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardPlayed != null, static (e, c, m) => e.RunOnCardPlayed(c, m));
 
     internal static void DispatchOnCardDrawnForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardDrawn(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardDrawn != null, static (e, c, m) => e.RunOnCardDrawn(c, m));
 
     internal static void DispatchOnCardExhaustedForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardExhausted(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardExhausted != null, static (e, c, m) => e.RunOnCardExhausted(c, m));
 
     internal static void DispatchOnCardDiscardedForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardDiscarded(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardDiscarded != null, static (e, c, m) => e.RunOnCardDiscarded(c, m));
 
     internal static void DispatchOnCardEnteredCombatForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardEnteredCombat(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardEnteredCombat != null, static (e, c, m) => e.RunOnCardEnteredCombat(c, m));
 
     // === Phase 4 — broadcast card-event hooks ================================================
     // Unlike DispatchOnCard*ForCard (per-card only), these fire for ANY card event in combat.
-    // Opt-in: the adapter's null-check returns immediately for enchantments that don't register
-    // the broadcast hook. The inner InvokeLifecycleWithContext call resolves the lifecycle
-    // provider once per enchantment (caching is handled by the registry); the adapter method
-    // OnAnyCardPlayed/etc. does the actual null-check + SafeInvoker.Run.
+    // Opt-in: only entries with the matching broadcast hook are resolved. The entry helper
+    // centralizes the null-check + SafeInvoker.Run behavior.
 
     /// <summary>
     /// Broadcasts an "any card played" event to every active enchantment in combat that
@@ -503,40 +502,44 @@ internal static class MultiEnchantmentScopeSupport
     {
         if (playedCard == null || combatState == null) return;
         DispatchBroadcastLifecycle(combatState, playedCard,
-            static (p, played, selfCard, ench) => p.OnAnyCardPlayed(played, selfCard, ench));
+            static e => e.OnAnyCardPlayed != null,
+            static (e, played, selfCard, ench) => e.RunOnAnyCardPlayed(played, selfCard, ench));
     }
 
     internal static void DispatchOnAnyCardDrawnBroadcast(CardModel? drawnCard, ICombatState? combatState)
     {
         if (drawnCard == null || combatState == null) return;
         DispatchBroadcastLifecycle(combatState, drawnCard,
-            static (p, drawn, selfCard, ench) => p.OnAnyCardDrawn(drawn, selfCard, ench));
+            static e => e.OnAnyCardDrawn != null,
+            static (e, drawn, selfCard, ench) => e.RunOnAnyCardDrawn(drawn, selfCard, ench));
     }
 
     internal static void DispatchOnAnyCardExhaustedBroadcast(CardModel? exhaustedCard, ICombatState? combatState)
     {
         if (exhaustedCard == null || combatState == null) return;
         DispatchBroadcastLifecycle(combatState, exhaustedCard,
-            static (p, exhausted, selfCard, ench) => p.OnAnyCardExhausted(exhausted, selfCard, ench));
+            static e => e.OnAnyCardExhausted != null,
+            static (e, exhausted, selfCard, ench) => e.RunOnAnyCardExhausted(exhausted, selfCard, ench));
     }
 
     internal static void DispatchOnAnyCardDiscardedBroadcast(CardModel? discardedCard, ICombatState? combatState)
     {
         if (discardedCard == null || combatState == null) return;
         DispatchBroadcastLifecycle(combatState, discardedCard,
-            static (p, discarded, selfCard, ench) => p.OnAnyCardDiscarded(discarded, selfCard, ench));
+            static e => e.OnAnyCardDiscarded != null,
+            static (e, discarded, selfCard, ench) => e.RunOnAnyCardDiscarded(discarded, selfCard, ench));
     }
 
     /// <summary>
     /// Fans out a broadcast card-event hook across every active enchantment on every card in
-    /// combat. The adapter's null-check (OnAnyCardPlayed == null → return) is the opt-in gate;
-    /// enchantments that don't register the hook are visited but immediately skipped at
-    /// constant time.
+    /// combat. Only entries that register the hook are resolved, so enchantments without the
+    /// hook are skipped before invocation.
     /// </summary>
     private static void DispatchBroadcastLifecycle<TContext>(
         ICombatState combatState,
         TContext context,
-        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+        Func<EnchantmentEntry, bool> hasHandler,
+        Action<EnchantmentEntry, TContext, CardModel, EnchantmentModel> action)
     {
         if (combatState is not CombatState concreteState)
         {
@@ -552,7 +555,7 @@ internal static class MultiEnchantmentScopeSupport
                 {
                     anyEnchantments = true;
                     if (!IsActive(selfCard, ench)) continue;
-                    InvokeLifecycleWithContext(selfCard, ench, context, action);
+                    InvokeLifecycleWithContext(selfCard, ench, context, hasHandler, action);
                 }
 
                 // Broadcast handlers (OnAnyCardPlayed / Drawn / etc.) may mutate state. Refresh.
@@ -578,7 +581,8 @@ internal static class MultiEnchantmentScopeSupport
             if (ReferenceEquals(sibling, newcomer)) continue;
             if (!IsActive(card, sibling)) continue;
             InvokeLifecycleWithContext(card, sibling, newcomer,
-                static (provider, newcomer_, selfCard, self) => provider.OnSiblingApplied(selfCard, self, newcomer_));
+                static entry => entry.OnSiblingApplied != null,
+                static (entry, newcomer_, selfCard, self) => entry.RunOnSiblingApplied(selfCard, self, newcomer_));
         }
 
         // OnSiblingApplied handlers may mutate sibling Status / Amount (e.g. combo-counter
@@ -599,7 +603,8 @@ internal static class MultiEnchantmentScopeSupport
             if (ReferenceEquals(sibling, leaving)) continue;
             if (!IsActive(card, sibling)) continue;
             InvokeLifecycleWithContext(card, sibling, (leaving, reason),
-                static (provider, ctx, selfCard, self) => provider.OnSiblingRemoved(selfCard, self, ctx.leaving, ctx.reason));
+                static entry => entry.OnSiblingRemoved != null,
+                static (entry, ctx, selfCard, self) => entry.RunOnSiblingRemoved(selfCard, self, ctx.leaving, ctx.reason));
         }
 
         // OnSiblingRemoved handlers may mutate sibling Status / Amount (e.g. combo-counter
@@ -632,7 +637,8 @@ internal static class MultiEnchantmentScopeSupport
                     continue;
                 }
                 InvokeLifecycleWithContext(card, enchantment, context,
-                    static (provider, ctx, owner, model) => provider.OnAfterDamageReceived(owner, model, ctx));
+                    static entry => entry.OnAfterDamageReceived != null,
+                    static (entry, ctx, owner, model) => entry.RunOnAfterDamageReceived(owner, model, ctx));
             }
             if (anyEnchantments) RefreshAfterUserCallbacks(card);
         }
@@ -646,7 +652,8 @@ internal static class MultiEnchantmentScopeSupport
     private static void DispatchCombatLifecycle<TContext>(
         ICombatState? combatState,
         TContext context,
-        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+        Func<EnchantmentEntry, bool> hasHandler,
+        Action<EnchantmentEntry, TContext, CardModel, EnchantmentModel> action)
     {
         if (combatState is not CombatState concreteState)
         {
@@ -665,7 +672,7 @@ internal static class MultiEnchantmentScopeSupport
                     {
                         continue;
                     }
-                    InvokeLifecycleWithContext(card, enchantment, context, action);
+                    InvokeLifecycleWithContext(card, enchantment, context, hasHandler, action);
                 }
 
                 // Side-turn / attack handlers (OnBeforeSideTurnStart, OnSideTurnStart,
@@ -682,16 +689,16 @@ internal static class MultiEnchantmentScopeSupport
     }
 
     internal static void DispatchOnSideTurnStart(ICombatState? combatState, CombatSide side) =>
-        DispatchCombatLifecycle(combatState, side, static (p, s, c, m) => p.OnSideTurnStart(c, m, s));
+        DispatchCombatLifecycle(combatState, side, static e => e.OnSideTurnStart != null, static (e, s, c, m) => e.RunOnSideTurnStart(c, m, s));
 
     internal static void DispatchOnBeforeSideTurnStart(ICombatState? combatState, CombatSide side) =>
-        DispatchCombatLifecycle(combatState, side, static (p, s, c, m) => p.OnBeforeSideTurnStart(c, m, s));
+        DispatchCombatLifecycle(combatState, side, static e => e.OnBeforeSideTurnStart != null, static (e, s, c, m) => e.RunOnBeforeSideTurnStart(c, m, s));
 
     internal static void DispatchOnBeforeAttack(ICombatState? combatState, AttackCommand command) =>
-        DispatchCombatLifecycle(combatState, command, static (p, cmd, c, m) => p.OnBeforeAttack(c, m, cmd));
+        DispatchCombatLifecycle(combatState, command, static e => e.OnBeforeAttack != null, static (e, cmd, c, m) => e.RunOnBeforeAttack(c, m, cmd));
 
     internal static void DispatchOnAfterAttack(ICombatState? combatState, AttackCommand command) =>
-        DispatchCombatLifecycle(combatState, command, static (p, cmd, c, m) => p.OnAfterAttack(c, m, cmd));
+        DispatchCombatLifecycle(combatState, command, static e => e.OnAfterAttack != null, static (e, cmd, c, m) => e.RunOnAfterAttack(c, m, cmd));
 
     // === Phase 3c — pile / guard / block bridges ===========================================
 
@@ -715,7 +722,8 @@ internal static class MultiEnchantmentScopeSupport
         {
             if (!IsActive(card, enchantment)) continue;
             InvokeLifecycleWithContext(card, enchantment, (oldPile, source),
-                static (provider, ctx, owner, model) => provider.OnCardChangedPiles(owner, model, ctx.oldPile, ctx.source));
+                static entry => entry.OnCardChangedPiles != null,
+                static (entry, ctx, owner, model) => entry.RunOnCardChangedPiles(owner, model, ctx.oldPile, ctx.source));
         }
 
         // Pile changes can flip active-status predicates (e.g. "active in hand" →
@@ -724,7 +732,7 @@ internal static class MultiEnchantmentScopeSupport
     }
 
     internal static void DispatchOnCardRetainedForCard(CardModel? card) =>
-        DispatchCardLifecycle(card, static (p, c, m) => p.OnCardRetained(c, m));
+        DispatchCardLifecycle(card, static e => e.OnCardRetained != null, static (e, c, m) => e.RunOnCardRetained(c, m));
 
     /// <summary>
     /// Block-gained dispatch (before/after). Fans out across every active enchantment on every
@@ -749,7 +757,8 @@ internal static class MultiEnchantmentScopeSupport
                     continue;
                 }
                 InvokeLifecycleWithContext(card, enchantment, context,
-                    static (provider, ctx, owner, model) => provider.OnBeforeBlockGained(owner, model, ctx));
+                    static entry => entry.OnBeforeBlockGained != null,
+                    static (entry, ctx, owner, model) => entry.RunOnBeforeBlockGained(owner, model, ctx));
             }
             if (anyEnchantments) RefreshAfterUserCallbacks(card);
         }
@@ -773,7 +782,8 @@ internal static class MultiEnchantmentScopeSupport
                     continue;
                 }
                 InvokeLifecycleWithContext(card, enchantment, context,
-                    static (provider, ctx, owner, model) => provider.OnBlockGained(owner, model, ctx));
+                    static entry => entry.OnBlockGained != null,
+                    static (entry, ctx, owner, model) => entry.RunOnBlockGained(owner, model, ctx));
             }
             if (anyEnchantments) RefreshAfterUserCallbacks(card);
         }
@@ -803,25 +813,16 @@ internal static class MultiEnchantmentScopeSupport
                 {
                     continue;
                 }
-                MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration =
-                    MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-                if (registration == null)
+                EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+                if (entry == null)
                 {
                     continue;
                 }
-                try
+
+                if (!entry.RunOnShouldDie(card, enchantment, creature!))
                 {
-                    if (!registration.OnShouldDie(card, enchantment, creature!))
-                    {
-                        shouldDie = false;
-                        // Don't break — let every veto handler observe (and potentially log) the
-                        // event for symmetry with vanilla, which invokes every listener.
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment][Scope] OnShouldDie handler failed for {enchantment.Id} on {card.Id}: {ex}");
+                    shouldDie = false;
+                    // Do not break: let every veto handler observe the event for symmetry with vanilla.
                 }
             }
         }
@@ -839,23 +840,16 @@ internal static class MultiEnchantmentScopeSupport
         CardModel card,
         EnchantmentModel enchantment,
         TContext context,
-        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, TContext, CardModel, EnchantmentModel> action)
+        Func<EnchantmentEntry, bool> hasHandler,
+        Action<EnchantmentEntry, TContext, CardModel, EnchantmentModel> action)
     {
-        MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration = MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-        if (registration == null)
+        EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(enchantment.GetType(), hasHandler);
+        if (entry == null)
         {
             return;
         }
 
-        try
-        {
-            action(registration, context, card, enchantment);
-        }
-        catch (Exception ex)
-        {
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Lifecycle handler with context failed for {enchantment.Id} on {card.Id}: {ex}");
-        }
+        action(entry, context, card, enchantment);
     }
 
     internal static bool IsActive(CardModel card, EnchantmentModel enchantment)
@@ -865,11 +859,10 @@ internal static class MultiEnchantmentScopeSupport
             // WhenActiveStatus predicate gates dispatch AND controls Status.
             // Manual Status = Disabled (without WhenActiveStatus) does NOT block dispatch —
             // it only affects visuals / ActiveInstanceCount.
-            MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration =
-                MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-            if (registration is { HasActiveStatusPredicate: true })
+            EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+            if (entry is { HasActiveStatusPredicate: true })
             {
-                return registration.ShouldBeActive(card, enchantment);
+                return entry.ShouldBeActive(card, enchantment);
             }
 
             // Legacy ConditionalActiveScope path.
@@ -906,24 +899,13 @@ internal static class MultiEnchantmentScopeSupport
 
         try
         {
-            MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration =
-                MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-            if (registration is not { HasActiveStatusPredicate: true })
+            EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+            if (entry is not { HasActiveStatusPredicate: true })
             {
                 return false;
             }
 
-            bool active;
-            try
-            {
-                active = registration.ShouldBeActive(card, enchantment);
-            }
-            catch (Exception ex)
-            {
-                MultiEnchantmentMod.Logger.Warn(
-                    $"[MultiEnchantment][Scope] Active-status predicate failed for {enchantment.Id} on {card.Id}: {ex.GetBaseException().Message}");
-                active = true;
-            }
+            bool active = entry.ShouldBeActive(card, enchantment);
 
             EnchantmentStatus target = active ? EnchantmentStatus.Normal : EnchantmentStatus.Disabled;
             if (enchantment.Status == target)
@@ -972,7 +954,7 @@ internal static class MultiEnchantmentScopeSupport
     {
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetOrderedEnchantmentsForRemoval(card))
         {
-            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnCombatEnd(owner, model));
+            InvokeLifecycle(card, enchantment, static entry => entry.OnCombatEnd != null, static (entry, owner, model) => entry.RunOnCombatEnd(owner, model));
         }
     }
 
@@ -981,7 +963,7 @@ internal static class MultiEnchantmentScopeSupport
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetOrderedEnchantmentsForRemoval(card))
         {
             ScopeRuntimeState state = EnsureScopeState(card, enchantment);
-            InvokeLifecycle(card, enchantment, static (provider, owner, model) => provider.OnTurnEnd(owner, model));
+            InvokeLifecycle(card, enchantment, static entry => entry.OnTurnEnd != null, static (entry, owner, model) => entry.RunOnTurnEnd(owner, model));
             if (state.Scope is EnchantmentScope.UntilTurnEndsScope)
             {
                 MultiEnchantmentSupport.QueuePendingRemoval(card, enchantment, removalReason);
@@ -1015,30 +997,22 @@ internal static class MultiEnchantmentScopeSupport
 
     private static EnchantmentScope ResolveScope(CardModel card, EnchantmentModel enchantment)
     {
-        MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration = MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-        return registration?.GetScope() ?? EnchantmentScope.Permanent;
+        return EnchantmentRegistry.GetLastEntry(enchantment.GetType(), static entry => entry.GetScope != null)?.GetSafeScope() ?? EnchantmentScope.Permanent;
     }
 
     private static void InvokeLifecycle(
         CardModel card,
         EnchantmentModel enchantment,
-        Action<MultiEnchantmentStackApi.ILifecycleProviderRegistration, CardModel, EnchantmentModel> action)
+        Func<EnchantmentEntry, bool> hasHandler,
+        Action<EnchantmentEntry, CardModel, EnchantmentModel> action)
     {
-        MultiEnchantmentStackApi.ILifecycleProviderRegistration? registration = MultiEnchantmentStackApi.ResolveLifecycleProvider(enchantment.GetType());
-        if (registration == null)
+        EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(enchantment.GetType(), hasHandler);
+        if (entry == null)
         {
             return;
         }
 
-        try
-        {
-            action(registration, card, enchantment);
-        }
-        catch (Exception ex)
-        {
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Lifecycle handler failed for {enchantment.Id} on {card.Id}: {ex}");
-        }
+        action(entry, card, enchantment);
     }
 
     private static IEnumerable<CardModel> EnumerateCombatCards(ICombatState? combatState, bool includeDeckVersions)

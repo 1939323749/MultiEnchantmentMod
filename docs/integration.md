@@ -104,7 +104,7 @@ proceed with registration in that case.
 ## Analyzer wiring
 
 If you reference `MultiEnchantmentMod.dll` via Option A or B, the analyzer (`MEM001` through
-`MEM012`) is **not** automatically activated — the analyzer ships as a separate
+`MEM013`) is **not** automatically activated — the analyzer ships as a separate
 `MultiEnchantmentMod.Analyzers` assembly. To enable it during your build, add:
 
 ```xml
@@ -114,8 +114,8 @@ If you reference `MultiEnchantmentMod.dll` via Option A or B, the analyzer (`MEM
 ```
 
 (Adjust the path to where `MultiEnchantmentMod.Analyzers.dll` actually lives.) This is opt-in;
-the framework works without it, but you lose compile-time validation of `[ModifyDynamicVar]`
-method signatures and similar gotchas.
+the framework works without it, but you lose compile-time validation of `[ModifyDynamicVar]`,
+`[ModifyEnergyCost]`, `[ModifyCardPlayCount]` method signatures and similar gotchas.
 
 ### Auto-fix support (IDE quick fixes)
 
@@ -128,7 +128,8 @@ Visual Studio / VS Code will offer a one-click fix when these warnings appear:
 | **MEM009** *[ModifyDynamicVar] method has wrong signature* | Rewrites the offending method's signature to `decimal MethodName(EnchantmentStackSnapshot snapshot, decimal currentValue)`. |
 
 The other diagnostics (MEM001–MEM006, MEM008, MEM011, MEM012) report only — they describe
-semantic mismatches a code-fix cannot safely automate.
+semantic mismatches a code-fix cannot safely automate. MEM013 also reports only; it catches
+bad `[ModifyEnergyCost]` / `[ModifyCardPlayCount]` signatures.
 
 ## Deploying your mod's .dll (in-repo development)
 

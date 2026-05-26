@@ -132,11 +132,11 @@ internal static class ModifyDynamicVarScanner
         // when invoked. The placeholder is the type's default-constructed instance when possible;
         // otherwise (no default ctor), an uninitialized object via FormatterServices. Authors are
         // documented to treat the method as receiver-less.
-        object? receiver = TryCreateReceiver(method.DeclaringType!);
+        object? receiver = TryCreateReceiverForScanner(method.DeclaringType!);
         return (snapshot, current) => (decimal)method.Invoke(receiver, new object[] { snapshot, current })!;
     }
 
-    private static object? TryCreateReceiver(Type type)
+    internal static object? TryCreateReceiverForScanner(Type type)
     {
         try
         {

@@ -83,7 +83,7 @@ public static class SampleBerserkRegistration
                 // application-path event (OnApplied, OnCombatStart, etc.).
                 //
                 // NotifyPropsChanged refreshes:
-                //   • Visual slice amounts (for ShowAmount-bearing enchantments).
+                //   • Visual slice amounts/statuses (ShowAmount only controls numeric labels).
                 //   • Extra card text (FormatExtraText).
                 //   • Dynamic var contributions (ModifyDynamicVar) — though these are read
                 //     on demand and don't strictly need the notification, the framework

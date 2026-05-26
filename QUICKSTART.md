@@ -134,15 +134,25 @@ Launch the game and search `godot.log` for one of these markers:
 - **Runtime / conditional registration**: build everything via the fluent
   `MultiEnchantmentApi.Register<T>().Stack(...).OnApplied(...).Commit()` chain (Tier C). See
   [Samples/07_DynamicRuntimeRegistration.cs](MultiEnchantmentMod.Samples/Samples/07_DynamicRuntimeRegistration.cs).
+- **Hook execution policy**: if your enchantment overrides old-style `EnchantmentModel` hooks
+  like `OnPlay`, configure `.Execution(p => ...)` or `[EnchantmentExecution]` when stack count
+  should not equal call count. See
+  [docs/v2-api-wiki.md](docs/v2-api-wiki.md#hook-执行策略).
 - **Broadcast card events** (any card played / drawn / exhausted / discarded): override
   `OnAnyCardPlayed` etc., or use the fluent equivalent. Opt-in only. See
   [Samples/19_OnAnyCardPlayedBroadcast.cs](MultiEnchantmentMod.Samples/Samples/19_OnAnyCardPlayedBroadcast.cs).
 - **Same-card neighbor combos**: `OnSiblingApplied` / `OnSiblingRemoved` fire when other
   enchantments land on / leave the same card. See
   [Samples/20_SiblingAwareCombo.cs](MultiEnchantmentMod.Samples/Samples/20_SiblingAwareCombo.cs).
+- **Dim the badge when inactive**: use `.WhenActiveStatus(...)` or override
+  `EnchantmentDefinition<T>.ShouldBeActive(...)`. Use plain `.WhenActive(...)` when you only
+  need gameplay gating without changing the visual status.
 - **Show scope state in tooltips**: snapshots now expose `ScopeStates`; pull
   `ActivationCount` / `TurnsRemaining` from the view in `FormatExtraText`. See
   [Samples/21_ScopeStateInPresentation.cs](MultiEnchantmentMod.Samples/Samples/21_ScopeStateInPresentation.cs).
+- **Understand visual slices**: `VisualSlices` controls how stack badges are displayed; it is
+  not a second damage/amount system. See the snapshot section in
+  [docs/v2-api-wiki.md](docs/v2-api-wiki.md#snapshot-只读-api).
 - **Refresh derived UI state after a non-application callback**: call
   `MultiEnchantmentApi.NotifyPropsChanged(self)`. See
   [Samples/22_PropsChangeRefresh.cs](MultiEnchantmentMod.Samples/Samples/22_PropsChangeRefresh.cs).
@@ -160,5 +170,7 @@ Launch the game and search `godot.log` for one of these markers:
 | Enchantment never appears in-game | `EnchantmentModel` not registered with vanilla `ModelDb` — that's a separate step from MultiEnchantmentMod |
 | `MEM004` / `MEM009` / `MEM011` analyzer errors | See [docs/v2-api-wiki.md](docs/v2-api-wiki.md) §Analyzer Rules; each ID has a fix recipe |
 | `[ModifyDynamicVar]` silently does nothing | Wrong method signature; MEM009 catches at compile time |
+| `MergeAmount` `OnPlay` effect is much too large | Your `OnPlay` probably reads `Amount` and also runs `MergedTotal` times; set `OnPlay = HookExecutionMode.PerLiveInstance` |
+| Inactive enchantment still looks visually active | `.WhenActive(...)` gates gameplay only; use `.WhenActiveStatus(...)` / `ShouldBeActive(...)` to sync `Disabled` status |
 | `MaxActivations` counter resets on save/load | Fixed in current version; see release notes if running an older build |
 | Cap on duplicates needed | Set `StackDefinition.MaxInstances` via fluent registration — only applies to `DuplicateInstance`/`ExistenceStack` |

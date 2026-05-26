@@ -100,5 +100,39 @@
 
   "SAMPLE_FLEXIBLE_SCOPE.title": "灵活作用域",
   "SAMPLE_FLEXIBLE_SCOPE.description": "参考示例（C 级，单实例 scope 覆盖）。注册默认是永久，但单次应用可给 MultiEnchantmentApi.Enchant 传入更短的 scope，也可用 SetScopeOverride 追溯修改。",
-  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "每次应用都可以单独覆盖作用域。"
+  "SAMPLE_FLEXIBLE_SCOPE.extraCardText": "每次应用都可以单独覆盖作用域。",
+
+  "SAMPLE_SCALED_ON_PLAY_ONCE.title": "一次结算",
+  "SAMPLE_SCALED_ON_PLAY_ONCE.description": "参考示例（A 级，HookExecutionMode.PerLiveInstance）。旧式 OnPlay 已经按 Amount 结算时，只让合并锚点执行一次，避免叠层平方级放大。",
+  "SAMPLE_SCALED_ON_PLAY_ONCE.extraCardText": "旧式 OnPlay：按总层数结算一次。",
+
+  "SAMPLE_PER_STACK_ON_PLAY.title": "逐层结算",
+  "SAMPLE_PER_STACK_ON_PLAY.description": "参考示例（B 级，HookExecutionMode.MergedTotal）。旧式 OnPlay 每次调用只代表一层效果时，按活跃总层数执行。",
+  "SAMPLE_PER_STACK_ON_PLAY.extraCardText": "旧式 OnPlay：每层结算一次。",
+
+  "SAMPLE_HEAVY_PLATING.title": "厚重镀层",
+  "SAMPLE_HEAVY_PLATING.description": "参考示例（A 级，[ModifyEnergyCost]）。通过费用贡献 fold 让每层战斗费用 +1，多个附魔不会互相覆盖。",
+  "SAMPLE_HEAVY_PLATING.extraCardText": "战斗费用 +{Amount}。",
+
+  "SAMPLE_EXTRA_SWING.title": "追加挥击",
+  "SAMPLE_EXTRA_SWING.description": "参考示例（A 级，[ModifyCardPlayCount]）。通过打出次数贡献 fold 让每层额外打出一次，适合 ExtraHit 一类段数附魔。",
+  "SAMPLE_EXTRA_SWING.extraCardText": "打出次数 +{Amount}。",
+
+  "SAMPLE_NUMERIC_CONTRIBUTION_REGISTRATION_ONLY.title": "数值折叠注册",
+  "SAMPLE_NUMERIC_CONTRIBUTION_REGISTRATION_ONLY.description": "参考示例（C 级，fluent 数值贡献）。不用特性，直接在 Register 链上声明战斗费用和打出次数贡献。",
+
+  "SAMPLE_STACKED_TACTICS.title": "堆叠战术",
+  "SAMPLE_STACKED_TACTICS.description": "参考示例（B 级，stack-aware async hooks）。演示 OnPlayStacked、Before/AfterCardPlayedStacked、AfterAnyCardDrawnStacked、BeforeFlushStacked 和 AfterDamageGivenStacked 的聚合语义。",
+  "SAMPLE_STACKED_TACTICS.extraCardText": "按类型聚合结算，而不是每层重复弹窗或重复随机。",
+
+  "SAMPLE_HAND_STATUS_SHARPEN.title": "手牌状态锐化",
+  "SAMPLE_HAND_STATUS_SHARPEN.description": "参考示例（C 级，WhenActiveStatus）。附魔持续两回合，但只有在手牌中时活跃；离开手牌时徽章变暗且不贡献数值。",
+
+  "SAMPLE_FRAMEWORK_EVENTS.title": "框架事件记录器",
+  "SAMPLE_FRAMEWORK_EVENTS.description": "参考示例（B 级，HistoryDisplay + OnRestored + 广播事件）。演示战斗记录分组、读档/同步恢复、任意抽牌/消耗/弃牌广播和格挡事件。",
+  "SAMPLE_FRAMEWORK_EVENTS.extraCardText": "记录框架事件计数。",
+
+  "SAMPLE_ALTERNATING_BADGES.title": "甜圈与八体",
+  "SAMPLE_ALTERNATING_BADGES.description": "在你的奇数回合打出时获得1点能量，在偶数回合打出时抽一张牌。",
+  "SAMPLE_ALTERNATING_BADGES.extraCardText": "在两个徽章状态和图标之间交替。"
 }

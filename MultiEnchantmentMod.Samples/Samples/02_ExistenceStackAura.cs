@@ -18,7 +18,7 @@ public sealed class SampleRetainAura : EnchantmentModel
     protected override void OnEnchant()
     {
         // This mutation runs exactly once even if the player re-enchants the card with the
-        // same type later. The mod's stacking adapter handles the "second copy is a no-op"
+        // same type later. The mod's stacking registry handles the "second copy is a no-op"
         // accounting in the background.
         Card.AddKeyword(CardKeyword.Retain);
     }

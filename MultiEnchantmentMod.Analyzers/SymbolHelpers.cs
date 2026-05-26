@@ -95,6 +95,7 @@ internal static class SymbolHelpers
             {
                 case "TryFormatExtraText":
                 case "GetVisualSliceAmounts":
+                case "GetVisualSlices":
                     return true;
             }
         }

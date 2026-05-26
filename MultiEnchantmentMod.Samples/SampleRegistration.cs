@@ -10,8 +10,7 @@ namespace MultiEnchantmentMod.Samples;
 /// <list type="bullet">
 ///   <item>Tier A / B — assembly scan picks up every <see cref="EnchantmentAttribute"/>-tagged
 ///         <see cref="MegaCrit.Sts2.Core.Models.EnchantmentModel"/> subclass and its companion
-///         <see cref="EnchantmentDefinition{T}"/>, including the new lifetime / scope variants
-///         in samples 08–13.</item>
+///         <see cref="EnchantmentDefinition{T}"/>.</item>
 ///   <item>Tier C — explicit <c>Install()</c> calls for the fluent-builder samples that cannot
 ///         live on attributes alone (Tier C registrations need runtime predicates / handlers).</item>
 /// </list>
@@ -24,7 +23,7 @@ namespace MultiEnchantmentMod.Samples;
 /// The sample <see cref="MegaCrit.Sts2.Core.Models.EnchantmentModel"/> subclasses themselves are
 /// auto-discovered by <c>ModelDb</c> via reflection (it scans all assemblies under the mods
 /// folder). What's missing without this initializer is the v2 API plumbing — stack behavior,
-/// status aggregation, lifecycle providers — all of which live in
+/// status aggregation, lifecycle callbacks — all of which live in
 /// <see cref="MultiEnchantmentApi"/>'s registry.
 /// </para>
 /// </remarks>
@@ -60,6 +59,8 @@ public partial class SampleRegistration : Node
         SampleBerserkRegistration.Install();
         SampleBoundedQueueRegistration.Install();
         SampleFlexibleScopeRegistration.Install();
-        Logger.Info($"[{ModId}] Installed 10 fluent (Tier C) sample registration(s).");
+        SampleNumericContributionRegistration.Install();
+        SampleHandStatusSharpenRegistration.Install();
+        Logger.Info($"[{ModId}] Installed 12 fluent (Tier C) sample registration(s).");
     }
 }

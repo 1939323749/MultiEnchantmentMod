@@ -7,7 +7,7 @@ namespace MultiEnchantmentMod.Api;
 /// Declares that an enchantment contributes (or removes) a card keyword while it is active.
 /// Multiple attributes can be stacked on one class to track multiple keywords. The total
 /// contribution for any given keyword is the sum across all matching attributes and registered
-/// providers; positive sums add the keyword, zero or negative sums leave it absent.
+/// keyword contributions; positive sums add the keyword, zero or negative sums leave it absent.
 /// </summary>
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = false)]
 public sealed class EnchantmentKeywordAttribute : Attribute

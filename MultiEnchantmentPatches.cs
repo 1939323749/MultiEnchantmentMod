@@ -140,9 +140,24 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
     [HarmonyPrefix]
-    private static void ClearEnchantmentPrefix(CardModel card)
+    private static bool ClearEnchantmentPrefix(CardModel card)
     {
-        MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: card.Enchantment == null);
+        EnchantmentModel? primary = card.Enchantment;
+        if (primary == null)
+        {
+            MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: true);
+            return false;
+        }
+
+        MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: false);
+        MultiEnchantmentSupport.RemoveEnchantmentInternal(
+            card,
+            primary,
+            RemovalReason.CardCleared,
+            bypassVeto: true,
+            refreshCard: true,
+            triggerChanged: true);
+        return false;
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeCombatStart))]
@@ -238,6 +253,21 @@ internal static class MultiEnchantmentPatches
 
         // Phase 4: broadcast OnAnyCardDrawn to every enchantment in combat that opted in.
         MultiEnchantmentScopeSupport.DispatchOnAnyCardDrawnBroadcast(card, combatState);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static async Task HookAfterCardDrawnStackedPostfix(
+        Task __result,
+        ICombatState combatState,
+        PlayerChoiceContext choiceContext,
+        CardModel card,
+        bool fromHandDraw)
+    {
+        await __result;
+        await MultiEnchantmentSupport.DispatchAfterCardDrawnStacked(choiceContext, card, fromHandDraw);
+        await MultiEnchantmentSupport.DispatchAfterAnyCardDrawnStacked(choiceContext, combatState, card, fromHandDraw);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardExhausted))]
@@ -404,6 +434,51 @@ internal static class MultiEnchantmentPatches
         // enchantment sees the same payload (target / damage breakdown / dealer / card source).
         DamageReceivedContext context = new(target, result, dealer, cardSource);
         MultiEnchantmentScopeSupport.DispatchOnAfterDamageReceivedForPlayer(target.Player, context);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageGiven))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static async Task HookAfterDamageGivenStackedPostfix(
+        Task __result,
+        PlayerChoiceContext choiceContext,
+        ICombatState combatState,
+        Creature? dealer,
+        DamageResult results,
+        ValueProp props,
+        Creature target,
+        CardModel? cardSource)
+    {
+        await __result;
+        await MultiEnchantmentSupport.DispatchAfterDamageGivenStacked(
+            choiceContext,
+            cardSource,
+            dealer,
+            results,
+            props,
+            target);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void HookModifyEnergyCostInCombatPostfix(ICombatState combatState, CardModel card, ref decimal __result)
+    {
+        __result = MultiEnchantmentSupport.ApplyEnergyCostContributions(card, __result);
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeFlush))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static async Task HookBeforeFlushStackedPostfix(Task __result, ICombatState combatState, Player player)
+    {
+        await __result;
+        if (player.Creature?.CombatState == null)
+        {
+            return;
+        }
+
+        await MultiEnchantmentSupport.DispatchBeforeFlushStacked(null, player);
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]

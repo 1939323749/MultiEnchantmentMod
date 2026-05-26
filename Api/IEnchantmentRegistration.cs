@@ -1,17 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands.Builders;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
+using EnchantmentVisualSlice = MultiEnchantmentMod.EnchantmentVisualSlice;
 
 namespace MultiEnchantmentMod.Api;
 
 /// <summary>
-/// Delegate signature for <see cref="IEnchantmentRegistration.FormatExtraText"/>. Same try-pattern
-/// as the legacy <c>IEnchantmentPresentationProvider.TryFormatExtraCardText</c>.
+/// Delegate signature for <see cref="IEnchantmentRegistration.FormatExtraText"/>. Return
+/// <c>true</c> when the formatted text should replace the default text.
 /// </summary>
 public delegate bool PresentationTextFormatter(
     EnchantmentStackSnapshot snapshot,
@@ -56,7 +58,7 @@ public interface IEnchantmentRegistration
     /// <see cref="StackDefinition.OnOverflow"/> alongside the basic
     /// <see cref="StackBehavior"/> / <see cref="StatusAggregation"/> pair. Default
     /// implementation falls back to <see cref="Stack(StackBehavior, StatusAggregation)"/> for
-    /// adapters that pre-date the overload (cap / overflow are silently dropped on those).
+    /// implementations that pre-date the overload (cap / overflow are silently dropped on those).
     /// </summary>
     IEnchantmentRegistration Stack(StackDefinition definition)
     {
@@ -306,8 +308,21 @@ public interface IEnchantmentRegistration
     /// <summary>
     /// Supplies custom visual slice amounts (per badge). Return <c>null</c> from
     /// <paramref name="compute"/> to fall back to the default slice computation.
+    /// The resulting badges are available whether or not the enchantment's
+    /// <c>ShowAmount</c> is true; <c>ShowAmount</c> only controls whether each badge draws a
+    /// numeric label. When <c>ShowAmount</c> is true, amounts must sum to the snapshot total;
+    /// when false, amounts only act as positive placeholders for badge count/layout.
     /// </summary>
     IEnchantmentRegistration VisualSlices(Func<EnchantmentStackSnapshot, IReadOnlyList<int>?> compute);
+
+    /// <summary>
+    /// Supplies custom visual slices with per-badge status. Use this when the UI badge itself has
+    /// independent active/disabled state, such as alternating odd/even turn badges. Return
+    /// <c>null</c> to fall back to <see cref="VisualSlices"/> / default slices. The same
+    /// <c>ShowAmount</c> amount-validation rules as <see cref="VisualSlices"/> apply.
+    /// </summary>
+    IEnchantmentRegistration VisualSlicesWithStatus(
+        Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?> compute);
 
     /// <summary>
     /// Declares that this enchantment contributes to a named dynamic variable on the card. Multiple
@@ -348,6 +363,38 @@ public interface IEnchantmentRegistration
     IEnchantmentRegistration ModifyDynamicVar(
         string varKey,
         Func<EnchantmentStackSnapshot, decimal, decimal> contribution);
+
+    /// <summary>
+    /// Declares a combat energy-cost contribution. The callback folds over the running cost from
+    /// <c>Hook.ModifyEnergyCostInCombat</c>; use <c>snapshot.ActiveTotalAmount</c> for merged
+    /// stack scaling.
+    /// </summary>
+    IEnchantmentRegistration ModifyEnergyCostInCombat(EnergyCostContribution contribution);
+
+    /// <summary>
+    /// Declares a card play-count contribution. Prefer this for hit/replay-count style effects
+    /// that should compose with the game's <c>ModifyCardPlayCount</c> hook.
+    /// </summary>
+    IEnchantmentRegistration ModifyCardPlayCount(CardPlayCountContribution contribution);
+
+    /// <summary>
+    /// Stack-aware async hook invoked once per enchantment type during the card's OnPlay phase.
+    /// This is the preferred surface for side effects that need to aggregate prompts, animations,
+    /// random rolls, or command amounts across multiple stacks.
+    /// </summary>
+    IEnchantmentRegistration OnPlayStacked(StackedOnPlayHandler handler);
+
+    IEnchantmentRegistration BeforeCardPlayedStacked(StackedBeforeCardPlayedHandler handler);
+    IEnchantmentRegistration AfterCardPlayedStacked(StackedAfterCardPlayedHandler handler);
+    IEnchantmentRegistration AfterCardDrawnStacked(StackedAfterCardDrawnHandler handler);
+    IEnchantmentRegistration AfterAnyCardDrawnStacked(StackedAfterAnyCardDrawnHandler handler);
+    /// <summary>
+    /// Stack-aware cleanup hook invoked after the current card / combat flush step has
+    /// completed. The current bridge does not provide a usable <c>PlayerChoiceContext</c> here;
+    /// treat this as a synchronous state-reset callback, not an interaction entry point.
+    /// </summary>
+    IEnchantmentRegistration BeforeFlushStacked(StackedBeforeFlushHandler handler);
+    IEnchantmentRegistration AfterDamageGivenStacked(StackedAfterDamageGivenHandler handler);
 
     /// <summary>
     /// Sets how this enchantment appears in the per-floor battle history tooltip. Defaults to
@@ -655,6 +702,16 @@ public static class EnchantmentRegistrationExtensions
         return registration.OnShouldDie((card, enchantment, creature) => handler(card, (TEnchantment)enchantment, creature));
     }
 
+    public static IEnchantmentRegistration VisualSlicesWithStatus<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<EnchantmentStackSnapshot, TEnchantment, IReadOnlyList<EnchantmentVisualSlice>?> compute)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(compute);
+        return registration.VisualSlicesWithStatus(
+            snapshot => compute(snapshot, (TEnchantment)snapshot.AnchorInstance));
+    }
+
     /// <summary>
     /// Strongly-typed flavor of <see cref="IEnchantmentRegistration.ModifyDynamicVar"/>. The
     /// snapshot / current-value pair maps directly to the non-generic overload; the
@@ -672,5 +729,88 @@ public static class EnchantmentRegistrationExtensions
         return registration.ModifyDynamicVar(
             varKey,
             (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
+    }
+
+    public static IEnchantmentRegistration ModifyEnergyCostInCombat<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<EnchantmentStackSnapshot, TEnchantment, decimal, decimal> contribution)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        return registration.ModifyEnergyCostInCombat(
+            (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
+    }
+
+    public static IEnchantmentRegistration ModifyCardPlayCount<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<EnchantmentStackSnapshot, TEnchantment, int, int> contribution)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        return registration.ModifyCardPlayCount(
+            (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
+    }
+
+    public static IEnchantmentRegistration OnPlayStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedOnPlayContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.OnPlayStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration BeforeCardPlayedStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedBeforeCardPlayedContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.BeforeCardPlayedStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration AfterCardPlayedStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedAfterCardPlayedContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.AfterCardPlayedStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration AfterCardDrawnStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedAfterCardDrawnContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.AfterCardDrawnStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration AfterAnyCardDrawnStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedAfterCardDrawnContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.AfterAnyCardDrawnStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration BeforeFlushStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedBeforeFlushContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.BeforeFlushStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
+    public static IEnchantmentRegistration AfterDamageGivenStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedAfterDamageGivenContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.AfterDamageGivenStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
     }
 }

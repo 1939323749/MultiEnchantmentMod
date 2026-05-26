@@ -62,6 +62,66 @@ MultiEnchantmentApi.ScanAssembly(typeof(MyModRegistration).Assembly);
 | `ExistenceStack` | `AnyInstanceCountsAsOne` |
 | `DisallowDuplicate` | `NotApplicable` 或任意值 |
 
+### 从简单到进阶：功能地图
+
+如果你第一次接入，可以按下面路线读，不必一口气啃完整篇：
+
+| 你想做什么 | 先看哪里 | 典型 API |
+| --- | --- | --- |
+| 让同种附魔可以叠层 | Tier A / Tier B | `[Enchantment(Stack = StackBehavior.MergeAmount)]`、`OnMergedDelta` |
+| 让同一张卡上多个实例各自有状态 | StackBehavior / StatusAggregation | `DuplicateInstance`、`PerInstanceOwned` |
+| 控制旧式 hook 在多层时跑几次 | Hook 执行策略 | `[EnchantmentExecution]`、`.Execution(p => ...)` |
+| 改伤害、格挡、Times 等动态变量 | 动态变量 | `[ModifyDynamicVar]`、`.ModifyDynamicVar(...)` |
+| 改战斗费用或打出次数/段数 | 数值贡献通道 | `[ModifyEnergyCost]`、`[ModifyCardPlayCount]` |
+| 合并选择、随机、动画、命令效果 | Stack-aware async hook | `OnPlayStacked`、`AfterAnyCardDrawnStacked` |
+| 临时附魔、持续 N 回合、触发 N 次后移除 | 生命周期与临时附魔 | `WithScope`、`LingerForTurns`、`MaxActivations` |
+| 条件满足时才生效或让徽章变暗 | IsActive / WhenActiveStatus | `.WhenActive(...)`、`.WhenActiveStatus(...)` |
+| 监听任意卡打出或同卡附魔联动 | Vanilla Hook 桥接 / 增量钩子 | `OnAnyCardPlayed`、`OnSiblingApplied` |
+| 防止无限重复叠实例 | 实例上限 | `StackDefinition.MaxInstances`、`StackOverflowPolicy` |
+| 看懂层数、真实实例、视觉切片的区别 | Snapshot 只读 API | `GameplaySlices`、`VisualSlices`、`LiveInstances` |
+| 让 UI tooltip 显示剩余次数等状态 | Snapshot 增强 | `snapshot.StateOf(...)`、`ScopeRuntimeStateView` |
+
+推荐实践：简单数值叠加先用 `MergeAmount`；需要每个附魔各自记状态时再用 `DuplicateInstance`；只是“至少存在一个就生效”的光环效果用 `ExistenceStack`。
+
+### 实例上限与溢出策略
+
+`DuplicateInstance` 和 `ExistenceStack` 会随着重复应用创建更多真实实例。如果某个遗物、hook 或联动效果反复给同一张卡附同一种附魔，可能会意外堆出很多实例。`StackDefinition.MaxInstances` 用来给这类附魔加上限。
+
+最保守的写法是达到上限后拒绝新实例：
+
+```csharp
+MultiEnchantmentApi.Register<ShieldCharge>()
+    .Stack(new StackDefinition(StackBehavior.DuplicateInstance, StatusAggregation.PerInstanceOwned)
+    {
+        MaxInstances = 3,
+        OnOverflow = StackOverflowPolicy.Reject,
+    })
+    .Commit();
+```
+
+也可以把旧实例替换掉。下面例子表示“最多保留 3 个，新的来了就挤掉最旧的”：
+
+```csharp
+MultiEnchantmentApi.Register<ShieldCharge>()
+    .Stack(new StackDefinition(StackBehavior.DuplicateInstance, StatusAggregation.PerInstanceOwned)
+    {
+        MaxInstances = 3,
+        OnOverflow = StackOverflowPolicy.ReplaceOldest,
+    })
+    .OnRemoved<ShieldCharge>((card, enchantment, reason) =>
+    {
+        if (reason == RemovalReason.OverflowEvicted)
+        {
+            // 被上限策略挤掉时的收尾逻辑。
+        }
+
+        return true;
+    })
+    .Commit();
+```
+
+`ReplaceNewest` 则会移除最近加入的旧实例，再挂上新实例。`MaxInstances` 只对 `DuplicateInstance` / `ExistenceStack` 有意义；`MergeAmount` 只有一个锚点实例，层数靠 `Amount` 和 slice 表示。
+
 ## 注册方式
 
 v2 提供三种注册层级。简单附魔用 Tier A，需要自定义逻辑时用 Tier B，需要运行时 lambda/predicate 时用 Tier C。
@@ -150,11 +210,13 @@ MultiEnchantmentApi.Register<MyEnchantment>()
 **堆叠与展示：**
 
 - `.Stack(behavior, status)` — 声明堆叠和状态聚合。
+- `.Stack(new StackDefinition(...))` — 声明完整堆叠规则，包含实例上限 `MaxInstances` 和溢出策略 `OnOverflow`。
 - `.Execution(p => ...)` — 覆盖 hook 执行次数。
 - `.OnMergedDelta(...)` / `.OnMergedRefresh(...)` — 处理 `MergeAmount` 的合并和刷新。
 - `.TrackKeyword(keyword, snapshot => amount)` — 动态添加或移除关键词。
 - `.ModifyDynamicVar(key, (snapshot, current) => next)` — 修改卡牌动态变量。
 - `.FormatExtraText(...)` / `.VisualSlices(...)` — 控制额外文本和 UI 切片。
+- `.HistoryDisplay(...)` / `.HistoryText(...)` — 控制战斗记录里怎么显示这条附魔。
 
 **作用域与激活条件：**
 
@@ -162,6 +224,7 @@ MultiEnchantmentApi.Register<MyEnchantment>()
 - `.LingerForTurns(n)` — 持续 n 回合后移除。
 - `.MaxActivations(n, trigger)` — 触发 n 次后移除。
 - `.WhenActive(predicate)` — 条件满足时才活跃（不控制移除）。
+- `.WhenActiveStatus(predicate)` — 条件满足时才活跃，并同步 `Status.Normal` / `Status.Disabled`，适合需要让 UI 徽章变暗的附魔。
 - `.RemoveWhen(predicate, triggers...)` — 指定 trigger 上 predicate 为 true 时移除。
 
 **生命周期阶段回调：**
@@ -181,6 +244,8 @@ MultiEnchantmentApi.Register<MyEnchantment>()
 - `.OnAfterDamageReceived(...)` — 拥有方受伤后。
 - `.OnBeforeBlockGained(...)` / `.OnBlockGained(...)` — 拥有方获挡前/后。
 - `.OnShouldDie(...)` — 阻止死亡（返回 `false` 阻止）。
+- `.OnAnyCardPlayed(...)` / `.OnAnyCardDrawn(...)` / `.OnAnyCardExhausted(...)` / `.OnAnyCardDiscarded(...)` — 广播版卡牌事件，任意卡触发时都会通知。
+- `.OnSiblingApplied(...)` / `.OnSiblingRemoved(...)` — 同一张卡上的其他附魔进入或离开时通知。
 
 所有 fluent 方法都有 `<TEnchantment>` 泛型扩展版本，避免手动 cast：
 
@@ -224,7 +289,34 @@ public sealed class MyEnchantment : EnchantmentModel
 
 ## Snapshot 只读 API
 
-对于调试工具、复杂 UI 或需要读取堆叠细节的 mod，可以使用高级 snapshot API：
+对于调试工具、复杂 UI 或需要读取堆叠细节的 mod，可以使用高级 snapshot API。先把几个词拆开看，会容易很多：
+
+| 名称 | 它回答的问题 | 例子 |
+| --- | --- | --- |
+| `TotalAmount` / `ActiveTotalAmount` | 总共有多少层 | 先附 2 层、再附 3 层，总层数是 5 |
+| `LiveInstances` / `ActiveInstanceCount` | 真实存在几个 `EnchantmentModel` 对象 | `MergeAmount` 通常是 1 个；`DuplicateInstance` 每次应用都会多一个 |
+| `GameplaySlices` | 游戏逻辑记住了几次应用、每次多少层 | 先附 2 层、再附 3 层，就是 `[2, 3]` |
+| `VisualSlices` | UI 准备显示成几个切片/徽章 | 默认跟 `GameplaySlices` 一样，也可以用 `.VisualSlices(...)` 改 |
+
+一个具体例子：
+
+```text
+同一附魔先应用 amount=2，后应用 amount=3
+
+MergeAmount:
+  LiveInstances      = 1        // 一个锚点实例
+  ActiveTotalAmount  = 5        // 总共 5 层
+  GameplaySlices     = [2, 3]   // 逻辑记住两次应用
+  VisualSlices       = [2, 3]   // 默认 UI 也显示两片
+
+DuplicateInstance:
+  LiveInstances      = 2        // 两个真实实例
+  ActiveTotalAmount  = 5
+  GameplaySlices     = [2, 3]
+  VisualSlices       = [2, 3]
+```
+
+**视觉切片不是另一套伤害/层数计算。** 它主要是展示层：比如你可以把 `[1, 1, 1, 1, 1]` 显示成一个 `5` 的徽章，或者把 `[5]` 拆成 `[2, 3]` 两个徽章。它不会改变 `TotalAmount`，也不会改变 `MergeAmount` 的合并事实。
 
 ```csharp
 IReadOnlyList<EnchantmentStackSnapshot> snapshots =
@@ -250,6 +342,84 @@ foreach (EnchantmentStackSnapshot snapshot in snapshots)
 - `LiveInstances`：当前真实存在的附魔实例。
 - `ActiveInstanceCount`：未禁用实例数。
 - `ActiveTotalAmount`：未禁用切片的总层数。
+
+### 什么时候需要自定义 VisualSlices
+
+大多数附魔不需要自定义 `VisualSlices`。只有当默认 UI 切片不符合你想表达的视觉语义时才需要。
+
+`VisualSlices` 是通用的徽章切片能力，不只服务于 `ShowAmount = true` 的附魔。`ShowAmount` 只决定徽章里要不要画数字：为 `true` 时每片显示自己的数值，为 `false` 时仍然可以显示多个徽章，只是不显示数字。
+
+例子：一个 `MergeAmount` 附魔被应用了很多次，默认会显示很多小切片。如果你只想显示一个总层数徽章：
+
+```csharp
+MultiEnchantmentApi.Register<CompactBlessing>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .VisualSlices(snapshot => new[] { snapshot.ActiveTotalAmount })
+    .Commit();
+```
+
+注意：自定义 visual slices 必须满足三个条件，否则框架会回退默认值：
+
+- 不能返回空列表。
+- 每个切片数量必须大于 0。
+- `ShowAmount = true` 时，所有切片数量相加必须等于 `snapshot.TotalAmount`，因为这些数字会直接显示给玩家。
+- `ShowAmount = false` 时，切片数量只用来占位和计算切片数，不会显示数字，因此不要求总和等于 `snapshot.TotalAmount`。
+
+`PerVisualSlice` 执行模式会读取 `VisualSlices` 的数量，所以如果你自定义了视觉切片，又给旧式 hook 使用 `PerVisualSlice`，hook 调用次数也会跟着 UI 切片数变化。这是高级用法；普通效果优先用 `MergedTotal`、`PerLiveInstance` 或 `FirstActiveInstanceOnly`。
+
+### 典型附魔示例：视觉切片
+
+假设 `ChargeUpEnchantment` 是 `MergeAmount`，每次附魔代表“下回合获得 1 能量”。同一张卡先获得 1 层、再获得 1 层：
+
+```text
+GameplaySlices = [1, 1]
+VisualSlices   = [1, 1]   // 默认：UI 显示两次来源
+ActiveTotalAmount = 2
+```
+
+若希望避免 UI 上出现多个细碎徽章，可以把它合成一个总层数徽章：
+
+```csharp
+MultiEnchantmentApi.Register<ChargeUpEnchantment>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .VisualSlices(snapshot => new[] { snapshot.ActiveTotalAmount })
+    .Commit();
+```
+
+这样只是显示从 `[1, 1]` 变成 `[2]`，不代表“执行两次变一次”或“能量少给了”。真正的效果应该读 `snapshot.ActiveTotalAmount`，或者交给数值贡献/stacked hook 处理。
+
+如果每个视觉徽章还需要自己的亮/暗状态或图标，用 `VisualSlicesWithStatus`（Definition 写法中覆写 `GetVisualSlices`）。例如一个附魔永远显示两个徽章，奇数回合第一个亮，偶数回合第二个亮；第一个徽章还借用另一个附魔类型的图标：
+
+```csharp
+MultiEnchantmentApi.Register<AlternatingBadges>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .VisualSlicesWithStatus(snapshot =>
+    {
+        bool oddRound = (snapshot.Card?.CombatState?.RoundNumber ?? 1) % 2 == 1;
+        return new[]
+        {
+            oddRound
+                ? EnchantmentVisualSlice.Active(1).WithIcon<SampleNonlinearEnchantment>()
+                : EnchantmentVisualSlice.Disabled(1).WithIcon<SampleNonlinearEnchantment>(),
+            oddRound
+                ? EnchantmentVisualSlice.Disabled(1)
+                : EnchantmentVisualSlice.Active(1),
+        };
+    })
+    .Commit();
+```
+
+`VisualSlicesWithStatus` 的校验规则和旧的 `.VisualSlices(snapshot => int[])` 一样：不能返回空列表，每片 `Amount` 必须大于 0；如果 `ShowAmount = true`，所有 `Amount` 相加还必须等于 `snapshot.TotalAmount`。不满足时框架会回退到默认视觉切片，避免 UI 显示的总层数和堆叠快照互相矛盾。`ShowAmount = false` 时，`Amount` 只提供切片占位，不会显示数字。
+
+每片徽章默认使用当前附魔图标。只有 `VisualSlicesWithStatus` / `GetVisualSlices` 返回的 `EnchantmentVisualSlice` 支持逐徽章图标覆盖：
+
+- `EnchantmentVisualSlice.Active(1).WithIcon<SomeEnchantment>()`：使用同卡上该附魔类型的实例图标；如果没有实例，则尝试读取该类型的默认附魔图标；失败时安全回退当前附魔图标。
+- `EnchantmentVisualSlice.Active(1).WithIcon(typeof(SomeEnchantment))`：非泛型版本。
+- `EnchantmentVisualSlice.Active(1).WithIcon(texture)`：直接指定 `Texture2D`，优先级高于类型覆盖。
+
+`.VisualSlices(snapshot => int[])` 只控制数量和切片数，始终使用当前附魔图标。
+
+再看 `SlipperyFirstPlayEnchantment`、`GainBufferPowerEnchantment` 这种“每场战斗第一次打出才触发”的附魔。它们通常不应该用 `PerVisualSlice`，因为 UI 切成几片不是游戏设计的一部分；玩家只关心“这个效果存在，并且第一次打出时结算一次”。这类效果更适合 `FirstActiveInstanceOnly` 或下面的 `OnPlayStacked`。
 
 ## 动态变量：ModifyDynamicVar
 
@@ -308,6 +478,98 @@ MultiEnchantmentApi.Register<PlusFiveDamage>()
 - 多个附魔修改同一个 key 时，按“卡牌应用顺序 × 同一附魔内注册顺序”组合。
 - `MergeAmount` 下按 active gameplay slice 调用。通常写“单层效果”即可，例如 `current + 5m`，不要再手动乘总层数。
 - 不要在同一个附魔里同时使用 `ModifyDynamicVar("damage", ...)` 和 `EnchantDamageAdditive` / `EnchantDamageMultiplicative`；两条通道会叠加，造成重复计算。
+
+### 调用次数怎么理解
+
+`ModifyDynamicVar` 不走上面的 `HookExecutionMode`。它有自己的组合规则：
+
+| StackBehavior | 调用方式 | 例子 |
+| --- | --- | --- |
+| `MergeAmount` | 每个 active gameplay slice 调一次 | 3 次 `+5` 会依次变成 `+15` |
+| `DuplicateInstance` | 每种附魔类型调一次 | 想按实例数放大时，用 `snapshot.ActiveInstanceCount` |
+| `ExistenceStack` | 每种附魔类型调一次 | 只要存在就贡献一次 |
+| `DisallowDuplicate` | 最多一次 | 普通单实例附魔 |
+
+入门写法通常是“只写一层效果”：
+
+```csharp
+// 三层时：10 -> 15 -> 20 -> 25
+.ModifyDynamicVar("damage", (snapshot, current) => current + 5m)
+```
+
+如果你希望 `DuplicateInstance` 每个实例都加 2，因为它默认只调用一次，需要自己读实例数：
+
+```csharp
+MultiEnchantmentApi.Register<PerInstanceDamage>()
+    .Stack(StackBehavior.DuplicateInstance, StatusAggregation.PerInstanceOwned)
+    .ModifyDynamicVar("damage", (snapshot, current) =>
+        current + snapshot.ActiveInstanceCount * 2m)
+    .Commit();
+```
+
+组合顺序是有意义的：`+5` 再 `x2` 与 `x2` 再 `+5` 结果不同。框架按附魔在卡上的应用顺序、以及同一个附魔内部的注册顺序依次折叠。
+
+## 战斗费用和打出次数贡献
+
+有些效果不是 `damage` / `block` 这样的动态变量，也不适合放进 `OnPlay()` 里反复执行。典型场景包括：
+
+注意：
+
+- 不要在同一个附魔里同时使用 `ModifyEnergyCostInCombat` / `ModifyCardPlayCount` 和旧的 `Hook.ModifyEnergyCostInCombat` / `Hook.ModifyCardPlayCount` 覆写；两条通道会叠加，容易重复计算。
+- 这两个新通道都是折叠式贡献，不是“替换整个结果”。写法上优先返回“当前值的下一步”，而不是自己从零重算一遍。
+
+| 附魔 | 设计语义 | 推荐通道 |
+| --- | --- | --- |
+| `ShieldPlatingEnchantment` / `SwordArtEnchantment` | 耗能 +1 | `[ModifyEnergyCost]` 或 `.ModifyEnergyCostInCombat(...)` |
+| `EagerPerAttackEnergyEnchantment` | 耗能 +1，打出前按手牌攻击数回能 | 费用用 `[ModifyEnergyCost]`；回能用 `BeforeCardPlayedStacked` |
+| `ExtraHitEnchantment` | 力量攻击的伤害段数 +1 | `[ModifyCardPlayCount]` 或 `.ModifyCardPlayCount(...)` |
+
+### 修改战斗费用
+
+`RecalculateValues()` 适合修改卡牌的基础展示值，但战斗中还有腐化、遗物、能力等其他来源会一起修改费用。想让多附魔稳定组合，优先使用费用贡献：
+
+```csharp
+using MegaCrit.Sts2.Core.Models;
+using MultiEnchantmentMod;
+using MultiEnchantmentMod.Api;
+
+[Enchantment(Stack = StackBehavior.MergeAmount, Status = StatusAggregation.SharedAcrossStack)]
+public sealed class ShieldPlatingEnchantment : EnchantmentModel
+{
+    [ModifyEnergyCost]
+    public decimal IncreaseCost(EnchantmentStackSnapshot snapshot, decimal currentCost)
+    {
+        return currentCost + snapshot.ActiveTotalAmount;
+    }
+}
+```
+
+如果 `盾化` 叠了 2 层，费用贡献会把当前战斗费用 `+2`。它收到的是“到目前为止的运行中费用”，所以能和其他费用修改按顺序折叠。
+
+### 修改打出次数/段数
+
+`ExtraHitEnchantment` 这类“多打一段”不要靠在 `OnPlay()` 里手动重放整张牌；那会把抽牌、选择、消耗、随机目标等副作用也一起重放。更安全的是只修改打出次数：
+
+```csharp
+[Enchantment(Stack = StackBehavior.MergeAmount, Status = StatusAggregation.SharedAcrossStack)]
+public sealed class ExtraHitEnchantment : EnchantmentModel
+{
+    [ModifyCardPlayCount]
+    public int AddHits(EnchantmentStackSnapshot snapshot, int currentPlayCount)
+    {
+        return currentPlayCount + snapshot.ActiveTotalAmount;
+    }
+}
+```
+
+签名必须分别是：
+
+```csharp
+decimal Method(EnchantmentStackSnapshot snapshot, decimal currentCost)
+int Method(EnchantmentStackSnapshot snapshot, int currentPlayCount)
+```
+
+写错时 analyzer 会报 `MEM013`。
 
 ## 关键词贡献
 
@@ -448,6 +710,38 @@ Custom trigger 会被缓存 — 同一个 `identifier` 每次返回同一个实�
 
 这意味着 `.WhenActive((card, e) => card.Type == CardType.Attack)` 会完整地抑制附魔的所有可见效果 — 作者无需在每个逻辑分支里手动检查。
 
+### WhenActive 与 WhenActiveStatus
+
+这两个 API 都是“条件满足才生效”，但它们对 UI 状态的处理不同：
+
+| API | 控制 gameplay 是否生效 | 是否同步 `EnchantmentStatus.Disabled` | 适合场景 |
+| --- | --- | --- | --- |
+| `WhenActive(predicate)` | 是 | 否 | 只想让逻辑休眠，不想改变徽章状态 |
+| `WhenActiveStatus(predicate)` / `ShouldBeActive(...)` | 是 | 是 | 条件不满足时希望附魔徽章变暗、tooltip/切片状态也跟着变 |
+
+fluent 写法：
+
+```csharp
+MultiEnchantmentApi.Register<HandOnlySharpen>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .WhenActiveStatus((card, enchantment) => card.Pile?.Type == PileType.Hand)
+    .Commit();
+```
+
+Definition 写法：
+
+```csharp
+public sealed class HandOnlySharpenDefinition : EnchantmentDefinition<HandOnlySharpen>
+{
+    protected override bool ShouldBeActive(CardModel card, HandOnlySharpen enchantment)
+    {
+        return card.Pile?.Type == PileType.Hand;
+    }
+}
+```
+
+`WhenActiveStatus` 不会移除附魔；它只是在条件为 false 时把状态同步成 `Disabled`。如果你要的是“条件满足后消失”，继续使用 `RemoveWhen`。
+
 ## 战斗记录自定义显示
 
 v2 允许附魔作者控制"战斗结束后，这条附魔的应用记录出现在哪里（或是否显示）"。默认（`Auto` 模式）根据作用域自动判断：永久性附魔记录到奖励区，临时性附魔隐藏不显示。
@@ -555,41 +849,391 @@ MultiEnchantmentApi.Register<SpecialEnchant>()
 
 ## Hook 执行策略
 
-当一个附魔有多层或多个实例时，hook 调用次数由 `HookExecutionMode` 控制。
+当同一种附魔在一张卡上有多层或多个实例时，有两件事很容易混在一起：
 
-常见模式：
+1. **堆叠行为**决定“第二次附魔时怎么存”：合并 `Amount`、创建新实例，还是拒绝。
+2. **执行策略**决定“旧式 `EnchantmentModel` hook 要跑几次”：例如 `OnPlay()`、`AfterCardDrawn()`、`BeforeFlush()`。
 
-- `Default`：使用行为默认值。
-- `MergedTotal`：按 active 总层数调用。
-- `PerVisualSlice`：按 UI 切片调用。
-- `PerLiveInstance`：按真实实例调用。
-- `FirstActiveInstanceOnly`：只要有激活实例就调用一次。
+可以把执行策略理解成一个很朴素的问题：
 
-默认策略：
+```text
+这张卡上“看起来/逻辑上有好几份同类附魔”时，
+旧式 hook 是只跑一次，还是按层数跑多次，还是按真实实例跑多次？
+```
 
-- `MergeAmount`：大多数 hook 按 `MergedTotal`；`OnPlay` 默认按 `PerLiveInstance`，避免既按 `Amount` 放大又重复执行。
-- `DuplicateInstance`：默认 `PerLiveInstance`。
-- `ExistenceStack`：默认 `FirstActiveInstanceOnly`。
-- `DisallowDuplicate`：默认 `FirstActiveInstanceOnly`。
+如果你只使用 v2 的 lifecycle 回调（例如 `OnCardPlayed`、`OnTurnStart`、`OnAnyCardPlayed`），通常不需要配置执行策略。执行策略主要服务于 vanilla / 旧式附魔方法，尤其是你覆写了 `EnchantmentModel.OnPlay()`、`AfterCardDrawn()` 这类方法时。
 
-Attribute 写法：
+`HookExecutionMode` 类型在旧命名空间 `MultiEnchantmentMod` 里；需要同时引用两个 namespace：
 
 ```csharp
-[EnchantmentExecution(OnPlay = HookExecutionMode.MergedTotal)]
+using MultiEnchantmentMod;
+using MultiEnchantmentMod.Api;
+```
+
+### 一句话选择表
+
+先不用记枚举名，先按效果语义选：
+
+| 你想表达的语义 | 选这个 |
+| --- | --- |
+| 默认就好，不想特殊处理 | `Default` |
+| 每一层都独立触发一次 | `MergedTotal` |
+| 每个真实实例都独立触发一次 | `PerLiveInstance` |
+| 只要有这个附魔就触发一次 | `FirstActiveInstanceOnly` |
+| UI 显示几个切片就触发几次 | `PerVisualSlice` |
+
+### 五种执行模式
+
+| 模式 | 它数的是什么 | 什么时候用 |
+| --- | --- | --- |
+| `Default` | 不自己数，交给 `StackBehavior` 默认值 | 大多数情况 |
+| `MergedTotal` | `snapshot.ActiveTotalAmount` | “3 层 = 跑 3 次” |
+| `PerLiveInstance` | `snapshot.ActiveInstanceCount` | `DuplicateInstance`，或 `MergeAmount` 里 hook 已经按 `Amount` 算总量 |
+| `FirstActiveInstanceOnly` | 是否至少有 1 个 active 实例 | 光环、存在型效果、防止重复副作用 |
+| `PerVisualSlice` | `snapshot.ActiveVisualSliceCount` | UI 切片本身代表触发单位的高级用法 |
+
+默认策略来自 `StackBehavior`，你可以先把它们当作“框架猜你最可能想要的次数”：
+
+| StackBehavior | 默认执行策略 | 适合语义 |
+| --- | --- | --- |
+| `MergeAmount` | `MergedTotal` | 每层都要触发一次的旧式 hook |
+| `DuplicateInstance` | `PerLiveInstance` | 每个实例各自触发 |
+| `ExistenceStack` | `FirstActiveInstanceOnly` | 只要存在就触发一次 |
+| `DisallowDuplicate` | `FirstActiveInstanceOnly` | 反正最多一个 |
+
+`MergedTotal` 是 `MergeAmount` 的全局默认值。少数内置附魔会单独覆盖 `OnPlay` 为 `PerLiveInstance`，因为它们的 `OnPlay()` 本身已经按 `Amount` 放大；如果再按总层数重复调用，就会变成平方级效果。你写自己的附魔时也按这个原则判断。
+
+### 三个数值例子
+
+假设一张卡上同一种附魔最终是 5 层：
+
+```text
+情况 A：MergeAmount，先应用 2 层、再应用 3 层
+  ActiveTotalAmount       = 5
+  ActiveInstanceCount     = 1
+  ActiveVisualSliceCount  = 2   // 默认显示 [2, 3] 两片
+
+情况 B：DuplicateInstance，先应用 2 层、再应用 3 层
+  ActiveTotalAmount       = 5
+  ActiveInstanceCount     = 2
+  ActiveVisualSliceCount  = 2
+
+情况 C：ExistenceStack，应用很多次，但只想表达“存在”
+  ActiveTotalAmount       = 5   // 数值仍可读
+  ActiveInstanceCount     = 2   // 真实实例仍存在
+  FirstActiveInstanceOnly = 1   // 旧式 hook 只跑一次
+```
+
+所以同样是“5 层”，不同执行模式会得到不同调用次数：
+
+| 执行模式 | 情况 A | 情况 B | 情况 C 常用 |
+| --- | ---: | ---: | ---: |
+| `MergedTotal` | 5 | 5 | 5 |
+| `PerLiveInstance` | 1 | 2 | 2 |
+| `PerVisualSlice` | 2 | 2 | 2 |
+| `FirstActiveInstanceOnly` | 1 | 1 | 1 |
+
+### 判断该选哪种模式
+
+先问自己一句话：我的 hook 代码内部有没有自己读取 `Amount` 或 `snapshot.ActiveTotalAmount`？
+
+| 你的代码形态 | 推荐 |
+| --- | --- |
+| “每跑一次只做一层效果”，不读 `Amount` | `MergedTotal` |
+| “一次性按 `Amount` 结算总效果” | `PerLiveInstance` 或 `FirstActiveInstanceOnly` |
+| 每个实例有独立冷却、独立状态 | `PerLiveInstance` |
+| 只要有这个附魔就给一次光环效果 | `FirstActiveInstanceOnly` |
+| UI 切片代表独立触发单位 | `PerVisualSlice` |
+
+### 例子 1：每层都触发一次
+
+假设你希望一张卡有 3 层 `SparkOnPlay` 时，打出后触发 3 次小效果。`OnPlay()` 里不读 `Amount`，那么默认 `MergedTotal` 正好符合预期。
+
+```csharp
+using MultiEnchantmentMod.Api;
+
 [Enchantment(Stack = StackBehavior.MergeAmount, Status = StatusAggregation.SharedAcrossStack)]
-public sealed class MyEnchant : EnchantmentModel
+public sealed class SparkOnPlay : EnchantmentModel
 {
+    public override bool ShowAmount => true;
+
+    public override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    {
+        // 这里替换成你的“一层”效果；3 层时框架会调用 3 次。
+        await DealOneSparkDamage(choiceContext, cardPlay);
+    }
 }
 ```
 
-fluent 写法：
+### 例子 2：一次性按总层数结算
+
+如果你的 `OnPlay()` 已经用 `Amount` 计算总量，就应该让它只跑一次。否则 3 层会变成“跑 3 次，每次又按 3 层算”。
+
+```csharp
+using MultiEnchantmentMod;
+using MultiEnchantmentMod.Api;
+
+[EnchantmentExecution(OnPlay = HookExecutionMode.PerLiveInstance)]
+[Enchantment(Stack = StackBehavior.MergeAmount, Status = StatusAggregation.SharedAcrossStack)]
+public sealed class ScaledOnPlay : EnchantmentModel
+{
+    public override bool ShowAmount => true;
+
+    public override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    {
+        // 这里替换成你的总量效果；3 层时只调用 1 次，效果量是 3。
+        await DealDamage(choiceContext, cardPlay, Amount);
+    }
+}
+```
+
+同样的配置也可以用 fluent 写：
+
+```csharp
+using MultiEnchantmentMod;
+using MultiEnchantmentMod.Api;
+
+MultiEnchantmentApi.Register<ScaledOnPlay>()
+    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+    .Execution(p => p.OnPlay(HookExecutionMode.PerLiveInstance))
+    .Commit();
+```
+
+### 例子 3：同一附魔不同 hook 使用不同策略
+
+有时一个附魔打出时按总量结算，但抽到时每层随机一次。这时只覆盖需要变化的 hook：
+
+```csharp
+using MultiEnchantmentMod;
+using MultiEnchantmentMod.Api;
+
+[EnchantmentExecution(
+    OnPlay = HookExecutionMode.PerLiveInstance,
+    AfterCardDrawn = HookExecutionMode.MergedTotal)]
+[Enchantment(Stack = StackBehavior.MergeAmount, Status = StatusAggregation.SharedAcrossStack)]
+public sealed class DrawAndPlayEnchant : EnchantmentModel
+{
+    public override bool ShowAmount => true;
+}
+```
+
+`All = HookExecutionMode.X` 可以给所有未单独指定的 hook 设置默认策略：
 
 ```csharp
 MultiEnchantmentApi.Register<MyEnchant>()
-    .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
-    .Execution(p => p.OnPlay(HookExecutionMode.MergedTotal))
+    .Stack(StackBehavior.DuplicateInstance, StatusAggregation.PerInstanceOwned)
+    .Execution(p => p
+        .All(HookExecutionMode.PerLiveInstance)
+        .OnPlay(HookExecutionMode.FirstActiveInstanceOnly))
     .Commit();
 ```
+
+### 哪些 hook 能配置
+
+目前执行策略覆盖这些旧式 hook：
+
+| 策略字段 | 对应语义 |
+| --- | --- |
+| `OnEnchant` | 附魔应用时的旧式附魔逻辑 |
+| `OnPlay` | 卡打出时 `EnchantmentModel.OnPlay()` |
+| `AfterCardPlayed` | 卡打出后 |
+| `AfterCardDrawn` | 卡抽到后 |
+| `AfterPlayerTurnStart` | 玩家回合开始后 |
+| `BeforePlayPhaseStart` | 出牌阶段开始前 |
+| `BeforeFlush` | 手牌 flush 前 |
+
+如果你正在写新代码，优先使用下面的 v2 lifecycle 回调：`OnCardPlayed`、`OnCardDrawn`、`OnTurnStart`、`OnAnyCardPlayed` 等。它们已经走 `IsActive` 守门、异常保护和快照遍历，更不容易和堆叠次数搅在一起。
+
+### 常见坑
+
+- `MergeAmount + MergedTotal` 下，hook 内不要再手动循环 `Amount`，除非你真的想要平方级效果。
+- `DuplicateInstance + MergedTotal` 通常是错的：多个实例的总 `Amount` 会把独立实例语义弄乱，可按 `MEM005` 的思路自查。
+- `ExistenceStack + PerLiveInstance` 通常也是错的：存在型附魔一般只要“至少一个”生效，可按 `MEM005` 的思路自查。
+- `PerVisualSlice` 会受 `.VisualSlices(...)` 影响；除非你明确把“UI 上的一片”设计成一个触发单位，否则不要优先选它。
+- `Default` 不是“跑一次”，而是“回到堆叠行为默认值”。
+- `ModifyDynamicVar` 不使用这里的 `HookExecutionMode`；它有自己的组合规则，见“动态变量”一节。
+
+## Stack-aware async hook：合并后执行一次
+
+执行策略解决的是旧式 `EnchantmentModel` hook “跑几次”。但有些附魔不能简单地跑 N 次：
+
+| 典型附魔 | 如果直接跑 N 次的问题 | 推荐写法 |
+| --- | --- | --- |
+| `SurvivorDiscardEnchantment` / `SteadfastExhaustEnchantment` | 叠 3 层会弹 3 次选牌，体验很差 | `OnPlayStacked` 里一次选择，按层数决定数量 |
+| `MeltDoubleVulnerableEnchantment` | 叠 2 层若顺序翻倍，会从 2 层易伤变 8，不一定是设计意图 | `OnPlayStacked` 里明确按总层数计算 |
+| `SwordArtEnchantment` | 每层随机目标一次，还是一次随机后多段伤害，要由作者声明 | `OnPlayStacked` 里自己控制随机次数 |
+| `SlipperyFirstPlayEnchantment` / `GainBufferPowerEnchantment` | 每个实例各有 `_pendingFirstPlayInCombat`，合并后语义不清 | `BeforeCombatStart` 初始化状态，`OnPlayStacked` 只结算一次 |
+| `CorrosiveWaveEnchantment` / `ForgeWaveEnchantment` | 监听的是“打出此牌后，本回合每当抽到另一张牌”，不是“此牌被抽到” | `AfterCardPlayedStacked` 打开监听，`AfterAnyCardDrawnStacked` 响应任意抽牌 |
+| `ReaperDoomOnDamageEnchantment` / `FeedEnchantment` | 需要读取真实伤害/击杀结果，不能提前算 | `AfterDamageGivenStacked` |
+
+stacked hook 的共同规则：
+
+- 每种附魔类型在一张卡上只调用一次。
+- 通过 `context.Snapshot.ActiveTotalAmount`、`ActiveInstanceCount`、`LiveInstances` 自己决定效果量。
+- 只分发给 active 附魔。
+- 适合 `await` 命令、选牌、动画、随机目标、读 `DamageResult` 这类不能用纯数值公式表达的行为。
+
+### 例子：`SurvivorDiscardEnchantment`
+
+旧式写法如果设成 `MergedTotal`，3 层会调用 3 次 `CardSelectCmd.FromHandForDiscard`。更自然的设计通常是“一次弹窗，选择最多层数张牌”：
+
+```csharp
+public sealed class SurvivorDiscardDefinition
+    : EnchantmentDefinition<SurvivorDiscardEnchantment>
+{
+    protected override async Task OnPlayStacked(StackedOnPlayContext context)
+    {
+        var card = context.Snapshot.Card;
+        var player = card?.Owner;
+        if (player?.PlayerCombatState == null)
+        {
+            return;
+        }
+
+        int count = Math.Min(
+            context.Snapshot.ActiveTotalAmount,
+            player.PlayerCombatState.Hand.Cards.Count(c => c != card));
+        if (count <= 0)
+        {
+            return;
+        }
+
+        var prefs = new CardSelectorPrefs(
+            new LocString("enchantments", "SURVIVOR_DISCARD_ENCHANTMENT.selectPrompt"),
+            count);
+        var picked = await CardSelectCmd.FromHandForDiscard(
+            context.ChoiceContext,
+            player,
+            prefs,
+            c => c != card,
+            context.Snapshot.AnchorInstance);
+
+        foreach (var toDiscard in picked)
+        {
+            await CardCmd.Discard(context.ChoiceContext, toDiscard);
+        }
+    }
+}
+```
+
+这里“叠层”影响选择张数，而不是弹窗次数。这个区别就是 stacked hook 要解决的问题。
+
+### 例子：抽牌波类附魔
+
+`CorrosiveWaveEnchantment`、`CalamityWaveDoomEnchantment`、`ForgeWaveEnchantment` 的语义是：
+
+1. 打出宿主牌后，开启本回合监听。
+2. 本回合你每抽到另一张牌，触发一次效果。
+3. 回合 flush 时做收尾，关闭监听。
+
+这类效果需要响应“任意牌被抽到”，所以使用 `AfterAnyCardDrawnStacked`，不是 `AfterCardDrawnStacked`。
+
+```csharp
+public sealed class CorrosiveWaveEnchantment : EnchantmentModel
+{
+    internal bool ListenDrawsThisTurn { get; set; }
+}
+
+public sealed class CorrosiveWaveDefinition
+    : EnchantmentDefinition<CorrosiveWaveEnchantment>
+{
+    protected override Task AfterCardPlayedStacked(StackedAfterCardPlayedContext context)
+    {
+        var enchantment = (CorrosiveWaveEnchantment)context.Snapshot.AnchorInstance;
+        if (context.CardPlay.Card == context.Snapshot.Card)
+        {
+            enchantment.ListenDrawsThisTurn = true;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    protected override Task BeforeFlushStacked(StackedBeforeFlushContext context)
+    {
+        var enchantment = (CorrosiveWaveEnchantment)context.Snapshot.AnchorInstance;
+        enchantment.ListenDrawsThisTurn = false;
+        return Task.CompletedTask;
+    }
+
+    protected override async Task AfterAnyCardDrawnStacked(StackedAfterCardDrawnContext context)
+    {
+        var enchantment = (CorrosiveWaveEnchantment)context.Snapshot.AnchorInstance;
+        if (!enchantment.ListenDrawsThisTurn || context.DrawnCard == context.Snapshot.Card)
+        {
+            return;
+        }
+
+        var card = context.Snapshot.Card;
+        var applier = card?.Owner?.Creature;
+        if (card?.CombatState == null || applier == null)
+        {
+            return;
+        }
+
+        decimal poison = 2m * context.Snapshot.ActiveTotalAmount;
+        foreach (var enemy in card.CombatState.HittableEnemies)
+        {
+            await PowerCmdCompat.Apply<PoisonPower>(
+                enemy,
+                poison,
+                applier,
+                card,
+                context.ChoiceContext);
+        }
+    }
+}
+```
+
+这个例子把监听状态放在 `CorrosiveWaveEnchantment` 实例上，而不是放在 definition 的私有字段里。definition 通常是注册对象，可能服务很多张卡；实例字段才表示“这张卡上的这个附魔当前是否正在监听”。
+
+`BeforeFlushStacked` 更适合做状态收尾，不适合弹 UI 或执行依赖选择上下文的命令，因为当前桥接里的 `ChoiceContext` 为空。
+
+如果这个监听状态需要跨存档/联机同步，不要只放在普通字段里；把它写进 `enchantment.Props.strings`，并在写入后调用 `MultiEnchantmentApi.NotifyPropsChanged(enchantment)`，或用框架提供的 scope 状态表达。
+
+### 例子：伤害后附加效果
+
+`ReaperDoomOnDamageEnchantment` 要读取 `DamageResult.TotalDamage`，`FeedEnchantment` 要读取 `WasTargetKilled`。这类逻辑放在 `AfterDamageGivenStacked`：
+
+```csharp
+protected override async Task AfterDamageGivenStacked(StackedAfterDamageGivenContext context)
+{
+    if (context.CardSource != context.Snapshot.Card)
+    {
+        return;
+    }
+
+    if (context.Result.TotalDamage <= 0)
+    {
+        return;
+    }
+
+    decimal doom = context.Result.TotalDamage
+        * context.Snapshot.ActiveTotalAmount
+        / 2m;
+    await PowerCmdCompat.Apply<DoomPower>(
+        context.Target,
+        doom,
+        context.Dealer,
+        context.CardSource,
+        context.ChoiceContext);
+}
+```
+
+## 选哪条通道：快速决策
+
+| 需求 | 首选 |
+| --- | --- |
+| 改牌面或结算中的伤害/格挡/Times | `[ModifyDynamicVar]` |
+| 改战斗费用 | `[ModifyEnergyCost]` |
+| 改打出次数/段数 | `[ModifyCardPlayCount]` |
+| 添加关键词，比如消耗、虚无、奇巧 | `[EnchantmentKeyword]` 或 `.TrackKeyword(...)` |
+| 打出时抽牌、生成刀、生成碎屑、获得格挡/能量 | `OnPlayStacked` |
+| 打出前按当前手牌计算，比如 `EagerPerAttackEnergyEnchantment` | `BeforeCardPlayedStacked` |
+| 打出后开启一个本回合监听 | `AfterCardPlayedStacked`；收尾关闭放在 `BeforeFlushStacked` |
+| 监听任意抽牌 | `AfterAnyCardDrawnStacked` |
+| 根据实际伤害/击杀结算 | `AfterDamageGivenStacked` |
+| 只做同步状态更新，不需要 await | lifecycle 回调，比如 `OnCardPlayed` / `OnTurnStart` |
+| 兼容旧附魔覆写，暂时不改代码 | `HookExecutionMode` |
 
 ## Vanilla Hook 桥接回调
 
@@ -748,8 +1392,8 @@ v2 的生命周期计数器（`ActivationCount`、`TurnsRemaining`）自动序�
 
 11. 响应卡牌事件（打出、抽牌、消耗等）时**优先使用 lifecycle 回调**（`OnCardPlayed`、`OnCardExhausted` 等），而非重写 `EnchantmentModel` 虚方法。lifecycle 回调自动受 `IsActive` 守门保护。
 12. 需要跨存档/多人同步的运行时状态，写进 `enchantment.Props.strings`。读档后用 `OnRestored` 重建内存缓存。
-13. `WhenActive` 和 `RemoveWhen` 的 predicate 必须是纯函数 — 不序列化、读档后从 registry 重新回填。
-14. 想做"满足条件就移除"用 `RemoveWhen`；想做"满足条件才生效、不满足就休眠"用 `WhenActive`。二者不是替代关系。
+13. `WhenActive`、`WhenActiveStatus` 和 `RemoveWhen` 的 predicate 必须是纯函数 — 不序列化、读档后从 registry 重新回填。
+14. 想做"满足条件就移除"用 `RemoveWhen`；想做"满足条件才生效、不满足就休眠"用 `WhenActive` 或 `WhenActiveStatus`。如果还要同时设置 `LingerForTurns` / `RemoveWhen` 等 lifetime scope，优先用 `WhenActiveStatus` / `ShouldBeActive` 叠加条件状态。
 15. `OnSideTurnStart(side)` 会给**所有卡上所有附魔**广播，在 handler 里用 `side` 参数过滤。只关心玩家回合时用 `OnTurnStart` 更简洁。
 
 ## 常见问题
@@ -785,14 +1429,14 @@ public sealed class MyEnchant : EnchantmentModel
 
 ### `ModifyDynamicVar` 里要不要乘以层数？
 
-多数情况下不要。`MergeAmount` 会按 active gameplay slice 调用你的公式，你通常只需要写单层效果，例如 `current + 5m`。
+多数情况下不要。`MergeAmount` 会按 active gameplay slice 调用贡献公式，作者通常只需要写单层效果，例如 `current + 5m`。
 
 ### `WhenActive` 和 `RemoveWhen` 有什么区别？
 
 - `WhenActive(predicate)` — 条件不满足时附魔"休眠"但保留，满足时"苏醒"继续生效。适合"仅攻击牌生效""仅在手牌中生效"等开关语义。
 - `RemoveWhen(predicate, triggers)` — 条件满足时附魔**永久移除**。适合"HP 低于阈值时消失""被消耗后消失"等一次性语义。
 
-两者可以组合使用：一个附魔同时有 `WhenActive`（控制活跃状态）和 `RemoveWhen`（控制移除时机）。
+如果你想让一个附魔“平时按条件休眠，同时满足另一个条件时永久移除”，不要在同一条 fluent 链里同时调用 `.WhenActive(...)` 和 `.RemoveWhen(...)`，因为它们都会设置 scope，后调用者会覆盖先调用者。推荐写法是：用 `.RemoveWhen(...)` 控制移除，再用 `.WhenActiveStatus(...)` 或 `EnchantmentDefinition<T>.ShouldBeActive(...)` 控制当前是否活跃。
 
 ### 为什么我的附魔在 `.WhenActive(false)` 后仍然触发了 `AfterCardPlayed`？
 
@@ -942,6 +1586,35 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 清除覆盖
 ### 重入守护
 
 `ApplyDynamicVarEnchantments` 现在带 `[ThreadStatic]` 重入栈：同一帧内对同一 `(card, varKey)` 的递归求值会被识别并跳过，写一行 warn `ModifyDynamicVar reentrancy detected for var=<key> on card=<id>`，第二层求值返回当前 `baseValue`。正常代码无感。
+
+## Analyzer Rules
+
+`MultiEnchantmentMod.Analyzers` 是可选但强烈推荐启用的编译期检查。它不会随普通 `.dll` 引用自动启用，需要在你的 `.csproj` 里加：
+
+```xml
+<ItemGroup>
+  <Analyzer Include="$(MultiEnchantmentModPath)/../MultiEnchantmentMod.Analyzers.dll" />
+</ItemGroup>
+```
+
+完整接入方式见 `docs/integration.md`。启用后，很多“运行时才发现附魔没注册 / 动态变量没生效”的问题会在 IDE 里直接标出来。
+
+| ID | 含义 | 怎么修 |
+| --- | --- | --- |
+| `MEM001` | `[Enchantment]` 标在了非 `EnchantmentModel` 类型上 | 把 attribute 移到附魔模型类，或让该类继承 `EnchantmentModel` |
+| `MEM002` | 模型和 definition 的堆叠语义不一致 | 保持 `[Enchantment]` 与 `EnchantmentDefinition<T>` 的声明一致 |
+| `MEM003` | `KeywordEvalMode.PerTotalAmount` 用在非 `MergeAmount` 附魔上 | 改成 `MergeAmount`，或换成 `PerInstance` / `Constant` / 自定义计算 |
+| `MEM004` | `EnchantmentDefinition<T>` 没有可访问的无参构造函数 | 增加 `public MyDefinition() { }` 或删掉带参构造依赖 |
+| `MEM005` | 执行策略和堆叠语义可疑 | 对照“Hook 执行策略”章节；通常是 `DuplicateInstance + MergedTotal` 或 `ExistenceStack + PerLiveInstance` |
+| `MEM006` | `[EnchantmentPresentation]` 没有对应展示覆写 | 覆写 `TryFormatExtraText` / `GetVisualSliceAmounts` / `GetVisualSlices`，或删除 attribute |
+| `MEM007` | 程序集缺少 API 兼容声明 | 添加 `[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]` |
+| `MEM008` | 同一个附魔模型有多个 `EnchantmentDefinition<T>` | 合并成一个 definition |
+| `MEM009` | `[ModifyDynamicVar]` 方法签名错误 | 改成 `decimal Method(EnchantmentStackSnapshot snapshot, decimal currentValue)` |
+| `MEM011` | `MaxActivations` 没写 `Activation`，默认会变成 `OnPlay` | 显式写 `Activation = ActivationTrigger.AfterCardPlayed` 等 |
+| `MEM012` | 非 `MergeAmount` 附魔覆写了 `OnMergedDelta` | 改成 `MergeAmount`，或删除这个覆写 |
+| `MEM013` | `[ModifyEnergyCost]` / `[ModifyCardPlayCount]` 方法签名错误 | 费用用 `decimal Method(EnchantmentStackSnapshot snapshot, decimal currentCost)`；次数用 `int Method(EnchantmentStackSnapshot snapshot, int currentPlayCount)` |
+
+`MEM007` 和 `MEM009` 带 IDE quick fix，可以一键补 compatibility attribute 或改方法签名。其它规则只报告，因为框架无法安全猜出你的设计意图。
 
 ## 延伸阅读
 

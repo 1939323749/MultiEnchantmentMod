@@ -9,7 +9,7 @@ or add/remove one — update this file in the same PR.**
 > `MultiEnchantmentMod` namespace (`EnchantmentStackSnapshot`, `HookExecutionMode`,
 > `EnchantmentStackBehavior`, `EnchantmentStatusAggregation`, `EnchantmentHookKind`,
 > `EnchantmentStackDefinition`, `EnchantmentExecutionPolicy`, `EnchantmentStackSlice`,
-> `MultiEnchantmentStackApi`) are part of the v2 contract but kept where they are for source
+> `EnchantmentVisualSlice`, `MultiEnchantmentStackApi`) are part of the v2 contract but kept where they are for source
 > compatibility; see the header of `MultiEnchantmentStackApi.cs` for the deferral rationale.
 
 ## Conventions
@@ -64,7 +64,7 @@ Tier C fluent builder. Methods chain and return `this`. **Author-supplied** dele
 
 - `Type EnchantmentType { get; }`
 - `Stack(StackBehavior behavior, StatusAggregation status)`
-- `Stack(StackDefinition definition)` — sets the full record (including `MaxInstances` / `OnOverflow`). Default-implemented; pre-existing adapters fall back to the two-arg overload (cap / overflow silently dropped on those).
+- `Stack(StackDefinition definition)` — sets the full record (including `MaxInstances` / `OnOverflow`). Default-implemented; pre-existing implementations fall back to the two-arg overload (cap / overflow silently dropped on those).
 - `Execution(Action<ExecutionPolicyBuilder> configure)`
 - `OnMergedDelta(Action<EnchantmentModel, int> action)`
 - `OnMergedRefresh(Action<EnchantmentModel> action)`
@@ -91,7 +91,11 @@ Tier C fluent builder. Methods chain and return `this`. **Author-supplied** dele
 - `TrackKeyword(CardKeyword keyword, Func<EnchantmentStackSnapshot, int> amountFn)`
 - `FormatExtraText(PresentationTextFormatter formatter)`
 - `VisualSlices(Func<EnchantmentStackSnapshot, IReadOnlyList<int>?> compute)`
+- `VisualSlicesWithStatus(Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?> compute)`
 - `ModifyDynamicVar(string varKey, Func<EnchantmentStackSnapshot, decimal, decimal> contribution)`
+- `ModifyEnergyCostInCombat(EnergyCostContribution contribution)`
+- `ModifyCardPlayCount(CardPlayCountContribution contribution)`
+- `OnPlayStacked(StackedOnPlayHandler)`, `BeforeCardPlayedStacked`, `AfterCardPlayedStacked`, `AfterCardDrawnStacked`, `AfterAnyCardDrawnStacked`, `BeforeFlushStacked`, `AfterDamageGivenStacked` — stack-aware async hooks invoked once per enchantment type with an `EnchantmentStackSnapshot`.
 - `IDisposable Commit()`
 
 ### `static class EnchantmentRegistrationExtensions`
@@ -127,6 +131,18 @@ Sealed-derivative scope shapes:
 ### `enum StackOverflowPolicy`
 `Reject` (default), `ReplaceOldest` (FIFO eviction), `ReplaceNewest` (LIFO eviction). Controls behavior when `StackDefinition.MaxInstances` would be exceeded.
 
+### `sealed record EnchantmentVisualSlice(int Amount, EnchantmentStatus Status)`
+Author-facing visual badge descriptor for `VisualSlicesWithStatus` / `GetVisualSlices`.
+- `Type? IconEnchantmentType { get; init; }` — optional icon source enchantment type. The renderer first reuses a live enchantment of that type on the same card, then tries a fresh default instance of that enchantment type before falling back to the current enchantment icon.
+- `Texture2D? IconTexture { get; init; }` — optional direct icon texture. Wins over `IconEnchantmentType` when both are set.
+- `static EnchantmentVisualSlice Active(int amount)`
+- `static EnchantmentVisualSlice Disabled(int amount)`
+- `EnchantmentVisualSlice WithIcon<TEnchantment>() where TEnchantment : EnchantmentModel`
+- `EnchantmentVisualSlice WithIcon(Type enchantmentType)`
+- `EnchantmentVisualSlice WithIcon(Texture2D texture)`
+
+Icon overrides are additive: slices without an override keep using the current enchantment icon. The integer-only `VisualSlices(...)` path cannot override per-badge icons; use `VisualSlicesWithStatus(...)` or `GetVisualSlices(...)` when a badge needs its own icon.
+
 ### `sealed record StackDefinition(StackBehavior Behavior, StatusAggregation Status)`
 - `static StackDefinition Default { get; }`
 - `int? MaxInstances { get; init; }` — optional cap; only enforced for `DuplicateInstance` / `ExistenceStack`. **Added during stabilization, default `null` preserves prior behavior.**
@@ -155,6 +171,25 @@ Payload to `OnBeforeBlockGained` / `OnBlockGained`.
 ### `sealed record DynamicVarContribution(string VarKey, Func<EnchantmentStackSnapshot, decimal, decimal> Contribution)`
 Returned by the registry; authors build them implicitly via `IEnchantmentRegistration.ModifyDynamicVar` or the `[ModifyDynamicVar]` attribute.
 
+### Stack-aware hook context records
+- `sealed record StackedOnPlayContext(EnchantmentStackSnapshot Snapshot, PlayerChoiceContext ChoiceContext, CardPlay? CardPlay)`
+- `sealed record StackedBeforeCardPlayedContext(EnchantmentStackSnapshot Snapshot, CardPlay CardPlay)`
+- `sealed record StackedAfterCardPlayedContext(EnchantmentStackSnapshot Snapshot, PlayerChoiceContext ChoiceContext, CardPlay CardPlay)`
+- `sealed record StackedAfterCardDrawnContext(EnchantmentStackSnapshot Snapshot, PlayerChoiceContext ChoiceContext, CardModel DrawnCard, bool FromHandDraw)`
+- `sealed record StackedBeforeFlushContext(EnchantmentStackSnapshot Snapshot, PlayerChoiceContext? ChoiceContext, Player Player)` — `ChoiceContext` is currently null in the vanilla bridge; use this hook for synchronous cleanup / state reset only.
+- `sealed record StackedAfterDamageGivenContext(EnchantmentStackSnapshot Snapshot, PlayerChoiceContext ChoiceContext, Creature? Dealer, DamageResult Result, ValueProp Props, Creature Target, CardModel? CardSource)`
+
+### Stack-aware delegates
+- `delegate Task StackedOnPlayHandler(StackedOnPlayContext context)`
+- `delegate Task StackedBeforeCardPlayedHandler(StackedBeforeCardPlayedContext context)`
+- `delegate Task StackedAfterCardPlayedHandler(StackedAfterCardPlayedContext context)`
+- `delegate Task StackedAfterCardDrawnHandler(StackedAfterCardDrawnContext context)`
+- `delegate Task StackedAfterAnyCardDrawnHandler(StackedAfterCardDrawnContext context)`
+- `delegate Task StackedBeforeFlushHandler(StackedBeforeFlushContext context)`
+- `delegate Task StackedAfterDamageGivenHandler(StackedAfterDamageGivenContext context)`
+- `delegate decimal EnergyCostContribution(EnchantmentStackSnapshot snapshot, decimal currentCost)`
+- `delegate int CardPlayCountContribution(EnchantmentStackSnapshot snapshot, int currentPlayCount)`
+
 ### `delegate PresentationTextFormatter`
 Defined in `EnchantmentDefinition.cs`. Signature:
 `bool PresentationTextFormatter(EnchantmentStackSnapshot snapshot, string defaultText, out string formattedText)`
@@ -182,6 +217,10 @@ All under `Api/Attributes/`.
   - `bool HasExtraText { get; init; }`, `bool HasVisualSliceOverride { get; init; }`.
 - `[AttributeUsage(Method, AllowMultiple=true)] sealed class ModifyDynamicVarAttribute : Attribute`
   - `string VarKey` — ctor now non-throwing; empty-string keys are caught at scan time (logged + skipped) and by analyzer rule **MEM009** at compile time.
+- `[AttributeUsage(Method)] sealed class ModifyEnergyCostAttribute : Attribute`
+  - Required signature: `decimal Method(EnchantmentStackSnapshot snapshot, decimal currentCost)`.
+- `[AttributeUsage(Method)] sealed class ModifyCardPlayCountAttribute : Attribute`
+  - Required signature: `int Method(EnchantmentStackSnapshot snapshot, int currentPlayCount)`.
 - `[AttributeUsage(Assembly)] sealed class EnchantmentApiCompatibilityAttribute : Attribute`
   - `int MinVersion`, `int MaxVersion`.
 
@@ -189,8 +228,7 @@ All under `Api/Attributes/`.
 
 ## Non-public, intentionally
 
-Everything under `MultiEnchantmentMod.Api.Internal` is `internal`. Adapter providers
-(`AdapterDefinitionProvider<T>`, `AdapterLifecycleProvider<T>`, etc.), registry types
+Everything under `MultiEnchantmentMod.Api.Internal` is `internal`. Registry types
 (`EnchantmentEntry`, `EnchantmentRegistry`, `EnchantmentRegistration<T>`), scanners
 (`AssemblyScanner`, `ModifyDynamicVarScanner`), runtime helpers (`SafeInvoker`,
 `LegacyEnumMappings`) are **not** part of the public contract and may change between releases
@@ -200,6 +238,7 @@ without notice. Do not reference them by reflection.
 
 ## Change log
 
+- _2026-05-25_: Added stack-aware async hook surface (`OnPlayStacked`, `BeforeCardPlayedStacked`, `AfterCardPlayedStacked`, `AfterCardDrawnStacked`, `AfterAnyCardDrawnStacked`, `BeforeFlushStacked`, `AfterDamageGivenStacked`) for side effects that must aggregate prompts, random targets, animations, command execution, or damage results once per enchantment type. Added `ModifyEnergyCostAttribute`, `ModifyCardPlayCountAttribute`, fluent `ModifyEnergyCostInCombat` / `ModifyCardPlayCount`, and analyzer rule MEM013 for numeric contribution signatures.
 - _2026-05-23_: **No public-API surface change**, but several robustness / tooling improvements ship in this build:
   - **Game v0.106.0 compatibility**: Internal Harmony patches updated to track three vanilla `Hook.*` signatures that gained an `IEnumerable<Creature> participants` / `IReadOnlyList<Creature> participants` parameter (`Hook.AfterTurnEnd`, `Hook.BeforeSideTurnStart`, `Hook.AfterSideTurnStart`). Vanilla also dropped the `ValueProp` parameter from `EnchantmentModel.EnchantBlockAdditive` / `EnchantBlockMultiplicative`; the mod's block pipeline now matches the 1-arg signature. Authors who override these block methods on their own enchantment classes **must** adjust their signatures to match — see `MIGRATION_V3.md` for the migration shim.
   - **Defensive iteration**: Five additional `foreach` sites that iterate live mutable collections (`state.ExtraEnchantments`, `player.PlayerCombatState.AllCards`) and call into user-defined lifecycle handlers were hardened with `.ToList()` snapshots. This fixes a class of `InvalidOperationException: Collection was modified during enumeration` crashes when a handler calls `MultiEnchantmentApi.RemoveEnchantment` or `CardCmd.AddCardToHand` from inside `OnTurnStart` / `OnTurnEnd` / `OnCardChangedPiles` / `RecalculateValues` overrides. **Net effect for authors**: it is now safe to call mutating mod APIs from any lifecycle handler without queuing the call manually.

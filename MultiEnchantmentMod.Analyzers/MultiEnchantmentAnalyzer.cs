@@ -102,8 +102,16 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor Mem013 = new(
+        DiagnosticIds.NumericContributionBadSignature,
+        "Numeric contribution method has wrong signature",
+        "{0}.{1} marked with [{2}] must be '{3}({4}, {5})' but is '{6}({7})'",
+        "Usage",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Mem001, Mem002, Mem003, Mem004, Mem005, Mem006, Mem007, Mem008, Mem009, Mem011, Mem012);
+        ImmutableArray.Create(Mem001, Mem002, Mem003, Mem004, Mem005, Mem006, Mem007, Mem008, Mem009, Mem011, Mem012, Mem013);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -124,38 +132,114 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeMethod(SymbolAnalysisContext context, AnalyzerSymbols symbols)
     {
-        if (symbols.ModifyDynamicVarAttribute == null || symbols.EnchantmentStackSnapshot == null)
+        if (symbols.EnchantmentStackSnapshot == null)
         {
             return;
         }
 
         IMethodSymbol method = (IMethodSymbol)context.Symbol;
-        if (!method.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, symbols.ModifyDynamicVarAttribute)))
+
+        if (HasAttribute(method, symbols.ModifyDynamicVarAttribute))
         {
-            return;
+            AnalyzeNumericContributionSignature(
+                context,
+                symbols,
+                method,
+                Mem009,
+                "ModifyDynamicVar",
+                expectedReturn: SpecialType.System_Decimal,
+                expectedValue: SpecialType.System_Decimal);
         }
 
-        // Required signature: decimal(EnchantmentStackSnapshot, decimal)
-        bool returnOk = method.ReturnType.SpecialType == SpecialType.System_Decimal;
+        if (HasAttribute(method, symbols.ModifyEnergyCostAttribute))
+        {
+            AnalyzeNumericContributionSignature(
+                context,
+                symbols,
+                method,
+                Mem013,
+                "ModifyEnergyCost",
+                expectedReturn: SpecialType.System_Decimal,
+                expectedValue: SpecialType.System_Decimal);
+        }
+
+        if (HasAttribute(method, symbols.ModifyCardPlayCountAttribute))
+        {
+            AnalyzeNumericContributionSignature(
+                context,
+                symbols,
+                method,
+                Mem013,
+                "ModifyCardPlayCount",
+                expectedReturn: SpecialType.System_Int32,
+                expectedValue: SpecialType.System_Int32);
+        }
+    }
+
+    private static bool HasAttribute(IMethodSymbol method, INamedTypeSymbol? attributeSymbol)
+    {
+        return attributeSymbol != null &&
+               method.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attributeSymbol));
+    }
+
+    private static void AnalyzeNumericContributionSignature(
+        SymbolAnalysisContext context,
+        AnalyzerSymbols symbols,
+        IMethodSymbol method,
+        DiagnosticDescriptor descriptor,
+        string attributeName,
+        SpecialType expectedReturn,
+        SpecialType expectedValue)
+    {
+        bool returnOk = method.ReturnType.SpecialType == expectedReturn;
         bool paramsOk =
             method.Parameters.Length == 2 &&
             SymbolEqualityComparer.Default.Equals(method.Parameters[0].Type, symbols.EnchantmentStackSnapshot) &&
-            method.Parameters[1].Type.SpecialType == SpecialType.System_Decimal;
+            method.Parameters[1].Type.SpecialType == expectedValue;
 
         if (returnOk && paramsOk)
         {
             return;
         }
 
+        string expectedReturnName = SpecialTypeDisplayName(expectedReturn);
+        string expectedValueName = SpecialTypeDisplayName(expectedValue);
+
         string actualParams = string.Join(", ", method.Parameters.Select(p => p.Type.Name));
+        if (descriptor == Mem009)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(
+                Mem009,
+                SymbolHelpers.GetBestLocation(method),
+                method.ContainingType?.Name ?? "?",
+                method.Name,
+                symbols.EnchantmentStackSnapshot!.Name,
+                method.ReturnType.Name,
+                actualParams));
+            return;
+        }
+
         context.ReportDiagnostic(Diagnostic.Create(
-            Mem009,
+            descriptor,
             SymbolHelpers.GetBestLocation(method),
             method.ContainingType?.Name ?? "?",
             method.Name,
-            symbols.EnchantmentStackSnapshot.Name,
+            attributeName,
+            expectedReturnName,
+            symbols.EnchantmentStackSnapshot!.Name,
+            expectedValueName,
             method.ReturnType.Name,
             actualParams));
+    }
+
+    private static string SpecialTypeDisplayName(SpecialType specialType)
+    {
+        return specialType switch
+        {
+            SpecialType.System_Decimal => "decimal",
+            SpecialType.System_Int32 => "int",
+            _ => specialType.ToString(),
+        };
     }
 
     private static void AnalyzeNamedType(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionIndex definitionIndex)

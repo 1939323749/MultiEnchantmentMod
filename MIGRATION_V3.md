@@ -107,7 +107,7 @@ v0.106 玩家日志中的 `SavedProperty name MultiEnchantmentMergedStackAmounts
 下游编写的所有附魔回调（`OnApplied` / `OnRemoved` / `OnMergedDelta` / `OnMergedRefresh` / 各类 vanilla hook 桥 / `TrackKeyword`'s `amountFn` / `FormatExtraText` / `VisualSlices` / `GetScope`）现在统一通过 `Api.Internal.SafeInvoker.Run` 进入。如果回调抛异常：
 
 - 异常被吞掉，日志写一行 `[MultiEnchantment] <FullTypeName> (assembly=<modAsm>) threw in <hookName>: <ex>`。
-- 该次回调返回文档化的 fallback：`OnRemoved` / `OnShouldDie` → `true`（不否决），`GetVisualSliceAmounts` → `null`，`FormatExtraText` → 保持默认文本，`AmountFn` → `0`。
+- 该次回调返回文档化的 fallback：`OnRemoved` / `OnShouldDie` → `true`（不否决），`GetVisualSliceAmounts` / `GetVisualSlices` → `null`，`FormatExtraText` → 保持默认文本，`AmountFn` → `0`。
 - 同一 (type, hook) 重复抛异常会按节流策略压缩日志：前 3 次详细栈跟踪，之后只打 message，超过 50 次彻底静默直至 `OnCombatStart` 触发 `ResetThrottle`。
 
 **影响**：旧代码如果依赖"附魔回调抛异常会让 vanilla 行为接管"必须显式处理；现在该附魔的当前回调被跳过，其它附魔继续。
@@ -341,4 +341,3 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 清除覆盖�
 - 想让同一种附魔在不同来源下有不同生命周期时，优先用 `MultiEnchantmentApi.Enchant(..., scopeOverride: ...)`，不用再拆成多个 EnchantmentModel 类型。
 - 已挂上的实例需要临时变更生命周期时，用 `SetScopeOverride(card, enchantment, scope)`；传 `null` 清除覆盖。
 - 不要把带谓词的 `ConditionalActive` / `RemoveWhen` 当作实例覆盖；这类逻辑仍应注册在类型级 scope 上。
-

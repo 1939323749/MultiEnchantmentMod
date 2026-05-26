@@ -5,9 +5,8 @@ using LegacyStackDefinition = MultiEnchantmentMod.EnchantmentStackDefinition;
 namespace MultiEnchantmentMod.Api.Internal;
 
 /// <summary>
-/// Translates between the v2 public enums in <c>MultiEnchantmentMod.Api</c> and the v1 enums in
-/// <c>MultiEnchantmentMod</c>. Adapter shims use these everywhere they need to hand a value to
-/// the existing <c>MultiEnchantmentStackApi</c> / <c>MultiEnchantmentStackSupport</c> machinery.
+/// Translates between the v2 public enums in <c>MultiEnchantmentMod.Api</c> and the compatibility
+/// enums in <c>MultiEnchantmentMod</c> that older callers still reference.
 /// </summary>
 internal static class LegacyEnumMappings
 {

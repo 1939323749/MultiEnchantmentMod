@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using EnchantmentStackSnapshot = MultiEnchantmentMod.EnchantmentStackSnapshot;
+using EnchantmentVisualSlice = MultiEnchantmentMod.EnchantmentVisualSlice;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
@@ -356,6 +357,15 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration VisualSlicesWithStatus(
+        Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?> compute)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(compute);
+        _entry.GetVisualSlices = compute;
+        return this;
+    }
+
     public IEnchantmentRegistration ModifyDynamicVar(
         string varKey,
         Func<EnchantmentStackSnapshot, decimal, decimal> contribution)
@@ -367,6 +377,78 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         }
         ArgumentNullException.ThrowIfNull(contribution);
         _entry.DynamicVarContributions.Add(new DynamicVarContribution(varKey, contribution));
+        return this;
+    }
+
+    public IEnchantmentRegistration ModifyEnergyCostInCombat(EnergyCostContribution contribution)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(contribution);
+        _entry.EnergyCostContributions.Add(contribution);
+        return this;
+    }
+
+    public IEnchantmentRegistration ModifyCardPlayCount(CardPlayCountContribution contribution)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(contribution);
+        _entry.CardPlayCountContributions.Add(contribution);
+        return this;
+    }
+
+    public IEnchantmentRegistration OnPlayStacked(StackedOnPlayHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.OnPlayStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration BeforeCardPlayedStacked(StackedBeforeCardPlayedHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.BeforeCardPlayedStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration AfterCardPlayedStacked(StackedAfterCardPlayedHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.AfterCardPlayedStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration AfterCardDrawnStacked(StackedAfterCardDrawnHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.AfterCardDrawnStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration AfterAnyCardDrawnStacked(StackedAfterAnyCardDrawnHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.AfterAnyCardDrawnStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration BeforeFlushStacked(StackedBeforeFlushHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.BeforeFlushStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration AfterDamageGivenStacked(StackedAfterDamageGivenHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        _entry.AfterDamageGivenStacked = handler;
         return this;
     }
 

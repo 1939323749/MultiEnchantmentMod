@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Enchantments;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Saves.Runs;
+using MultiEnchantmentMod.Api.Internal;
 
 namespace MultiEnchantmentMod;
 
@@ -16,18 +17,18 @@ internal static class MultiEnchantmentStackSupport
 
     public static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
-        if (MultiEnchantmentStackApi.ResolveDefinitionProvider(enchantmentType) is { } provider)
+        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.Definition != null) is { } entry)
         {
-            return provider.GetDefinition();
+            return entry.GetDefinition();
         }
 
-        // No v2 / v1 provider registered for this type. Run auto-detection — if this is a
+        // No v2 registry entry registered for this type. Run auto-detection — if this is a
         // non-vanilla EnchantmentModel that overrides EnchantDamage*/EnchantBlock*, it gets
         // auto-registered as MergeAmount + SharedAcrossStack so subsequent calls hit the registry
         // path above. Idempotent per type.
         Api.Internal.EnchantmentRegistry.EnsureRegistered(enchantmentType);
 
-        if (MultiEnchantmentStackApi.ResolveDefinitionProvider(enchantmentType) is { } resolvedAfterAutoRegister)
+        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.Definition != null) is { } resolvedAfterAutoRegister)
         {
             return resolvedAfterAutoRegister.GetDefinition();
         }
@@ -43,12 +44,12 @@ internal static class MultiEnchantmentStackSupport
     public static EnchantmentExecutionPolicy GetExecutionPolicy(Type enchantmentType)
     {
         EnchantmentExecutionPolicy builtIn = GetBuiltInExecutionPolicy(enchantmentType);
-        if (MultiEnchantmentStackApi.ResolveExecutionPolicyProvider(enchantmentType) is not { } provider)
+        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.ExecutionPolicy != null) is not { } entry)
         {
             return builtIn;
         }
 
-        EnchantmentExecutionPolicy custom = provider.GetExecutionPolicy();
+        EnchantmentExecutionPolicy custom = entry.GetExecutionPolicy();
         return new EnchantmentExecutionPolicy(
             DefaultMode: custom.DefaultMode == HookExecutionMode.Default ? builtIn.DefaultMode : custom.DefaultMode,
             OnEnchant: custom.OnEnchant,
@@ -99,11 +100,8 @@ internal static class MultiEnchantmentStackSupport
             gameplaySlices,
             liveInstances);
 
-        int[] sliceAmounts = ResolveVisualSliceAmounts(defaultSnapshot, defaultSliceAmounts);
         List<EnchantmentStackSlice> visualSlices =
-            ReferenceEquals(sliceAmounts, defaultSliceAmounts)
-                ? gameplaySlices
-                : BuildSlices(anchorInstance, liveInstances, definition, sliceAmounts);
+            ResolveVisualSlices(defaultSnapshot, anchorInstance, liveInstances, definition, defaultSliceAmounts, gameplaySlices);
 
         // Phase 3-7: build ScopeStates view for live instances that have scope state.
         Dictionary<EnchantmentModel, Api.ScopeRuntimeStateView>? scopeStates = null;
@@ -404,9 +402,9 @@ internal static class MultiEnchantmentStackSupport
             return;
         }
 
-        if (MultiEnchantmentStackApi.ResolveMergedStateProvider(enchantment.GetType()) is { } provider)
+        if (EnchantmentRegistry.GetLastEntry(enchantment.GetType(), static entry => entry.OnMergedDelta != null) is { } entry)
         {
-            provider.ApplyMergedAmountDelta(enchantment, addedAmount);
+            entry.ApplyMergedAmountDelta(enchantment, addedAmount);
             return;
         }
 
@@ -418,9 +416,11 @@ internal static class MultiEnchantmentStackSupport
 
     public static void RefreshMergedEnchantmentState(EnchantmentModel enchantment)
     {
-        if (MultiEnchantmentStackApi.ResolveMergedStateProvider(enchantment.GetType()) is { } provider)
+        if (EnchantmentRegistry.GetLastEntry(
+                enchantment.GetType(),
+                static entry => entry.OnMergedRefresh != null || entry.OnMergedDelta != null) is { } entry)
         {
-            provider.RefreshMergedState(enchantment);
+            entry.RefreshMergedState(enchantment);
             return;
         }
 
@@ -434,12 +434,14 @@ internal static class MultiEnchantmentStackSupport
     public static bool TryFormatExtraCardText(EnchantmentModel enchantment, string defaultText, out string formattedText)
     {
         formattedText = defaultText;
-        if (MultiEnchantmentStackApi.ResolvePresentationProvider(enchantment.GetType()) is not { } provider)
+        if (EnchantmentRegistry.GetLastEntry(
+                enchantment.GetType(),
+                static entry => entry.FormatExtraText != null) is not { } entry)
         {
             return false;
         }
 
-        return provider.TryFormatExtraCardText(GetSnapshot(enchantment), defaultText, out formattedText);
+        return entry.TryFormatExtraCardText(GetSnapshot(enchantment), defaultText, out formattedText);
     }
 
     private static readonly ConditionalWeakTable<CardModel, HashSet<CardKeyword>> RememberedTrackedKeywords = new();
@@ -493,10 +495,9 @@ internal static class MultiEnchantmentStackSupport
         foreach (EnchantmentStackSnapshot snapshot in GetSnapshots(card))
         {
             trackedKeywords.UnionWith(GetBuiltInTrackedKeywords(snapshot.EnchantmentType));
-            foreach (MultiEnchantmentStackApi.IKeywordSourceProviderRegistration provider in
-                     MultiEnchantmentStackApi.ResolveKeywordProviders(snapshot.EnchantmentType))
+            foreach (EnchantmentEntry entry in EnchantmentRegistry.GetEntries(snapshot.EnchantmentType))
             {
-                trackedKeywords.UnionWith(provider.GetTrackedKeywords());
+                trackedKeywords.UnionWith(entry.GetTrackedKeywords());
             }
         }
 
@@ -509,10 +510,9 @@ internal static class MultiEnchantmentStackSupport
         foreach (EnchantmentStackSnapshot snapshot in GetSnapshots(card))
         {
             result += GetBuiltInKeywordSourceAmount(snapshot, keyword);
-            foreach (MultiEnchantmentStackApi.IKeywordSourceProviderRegistration provider in
-                     MultiEnchantmentStackApi.ResolveKeywordProviders(snapshot.EnchantmentType))
+            foreach (EnchantmentEntry entry in EnchantmentRegistry.GetEntries(snapshot.EnchantmentType))
             {
-                result += provider.GetKeywordSourceAmount(snapshot, keyword);
+                result += entry.GetKeywordSourceAmount(snapshot, keyword);
             }
         }
 
@@ -533,7 +533,7 @@ internal static class MultiEnchantmentStackSupport
     private static IEnumerable<CardKeyword> GetBuiltInTrackedKeywords(Type enchantmentType)
     {
         // Same shape as GetBuiltInKeywordSourceAmount: every built-in tracked keyword now goes
-        // through v2 BuiltInRegistrations. Returning an empty set lets the v2 provider be the
+        // through v2 BuiltInRegistrations. Returning an empty set lets the v2 registry be the
         // single source of truth (HashSet.UnionWith in GetTrackedKeywords still dedupes
         // gracefully, but eliminating the duplicate prevents double-counting from any v2 source
         // that ports a built-in type with custom semantics).
@@ -584,25 +584,75 @@ internal static class MultiEnchantmentStackSupport
             .ToArray();
     }
 
-    private static int[] ResolveVisualSliceAmounts(
-        EnchantmentStackSnapshot defaultSnapshot,
-        int[] defaultSliceAmounts)
+    public static IReadOnlyList<EnchantmentVisualSlice>? GetValidCustomVisualSlices(
+        EnchantmentStackSnapshot snapshot,
+        EnchantmentModel anchor)
     {
-        if (MultiEnchantmentStackApi.ResolvePresentationProvider(defaultSnapshot.EnchantmentType) is not { } provider)
+        if (EnchantmentRegistry.GetLastEntry(
+                snapshot.EnchantmentType,
+                static entry => entry.GetVisualSlices != null) is not { } entry)
         {
-            return defaultSliceAmounts;
+            return null;
         }
 
-        IReadOnlyList<int>? customSliceAmounts = provider.GetVisualSliceAmounts(defaultSnapshot);
+        IReadOnlyList<EnchantmentVisualSlice>? customSlices = entry.GetSafeVisualSlices(snapshot);
+        return customSlices != null && AreVisualSlicesValid(customSlices, snapshot, anchor.ShowAmount)
+            ? customSlices
+            : null;
+    }
+
+    private static List<EnchantmentStackSlice> ResolveVisualSlices(
+        EnchantmentStackSnapshot defaultSnapshot,
+        EnchantmentModel anchor,
+        IReadOnlyList<EnchantmentModel> liveInstances,
+        EnchantmentStackDefinition definition,
+        int[] defaultSliceAmounts,
+        List<EnchantmentStackSlice> defaultSlices)
+    {
+        if (EnchantmentRegistry.GetLastEntry(
+                defaultSnapshot.EnchantmentType,
+                static entry => entry.GetVisualSlices != null || entry.GetVisualSliceAmounts != null) is not { } entry)
+        {
+            return defaultSlices;
+        }
+
+        IReadOnlyList<EnchantmentVisualSlice>? customSlices = GetValidCustomVisualSlices(defaultSnapshot, anchor);
+        if (customSlices != null)
+        {
+            return customSlices
+                .Select(static (slice, index) => new EnchantmentStackSlice(slice.Amount, slice.Status, index))
+                .ToList();
+        }
+
+        IReadOnlyList<int>? customSliceAmounts = entry.GetSafeVisualSliceAmounts(defaultSnapshot);
         if (customSliceAmounts == null ||
-            customSliceAmounts.Count == 0 ||
-            customSliceAmounts.Any(static amount => amount <= 0) ||
-            customSliceAmounts.Sum() != defaultSnapshot.TotalAmount)
+            !AreVisualSliceAmountsValid(customSliceAmounts, defaultSnapshot, anchor.ShowAmount))
         {
-            return defaultSliceAmounts;
+            return defaultSlices;
         }
 
-        return customSliceAmounts.ToArray();
+        int[] sliceAmounts = customSliceAmounts.ToArray();
+        return BuildSlices(anchor, liveInstances, definition, sliceAmounts);
+    }
+
+    private static bool AreVisualSlicesValid(
+        IReadOnlyList<EnchantmentVisualSlice> slices,
+        EnchantmentStackSnapshot snapshot,
+        bool showAmount)
+    {
+        return slices.Count > 0 &&
+               slices.All(static slice => slice.Amount > 0) &&
+               (!showAmount || slices.Sum(static slice => slice.Amount) == snapshot.TotalAmount);
+    }
+
+    private static bool AreVisualSliceAmountsValid(
+        IReadOnlyList<int> amounts,
+        EnchantmentStackSnapshot snapshot,
+        bool showAmount)
+    {
+        return amounts.Count > 0 &&
+               amounts.All(static amount => amount > 0) &&
+               (!showAmount || amounts.Sum() == snapshot.TotalAmount);
     }
 
     private static List<EnchantmentStackSlice> BuildSlices(

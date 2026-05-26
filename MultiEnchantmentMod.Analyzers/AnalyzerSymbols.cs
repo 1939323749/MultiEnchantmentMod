@@ -13,6 +13,8 @@ internal sealed class AnalyzerSymbols
         INamedTypeSymbol? enchantmentPresentationAttribute,
         INamedTypeSymbol? enchantmentApiCompatibilityAttribute,
         INamedTypeSymbol? modifyDynamicVarAttribute,
+        INamedTypeSymbol? modifyEnergyCostAttribute,
+        INamedTypeSymbol? modifyCardPlayCountAttribute,
         INamedTypeSymbol? enchantmentStackSnapshot,
         INamedTypeSymbol? enchantmentModel)
     {
@@ -24,6 +26,8 @@ internal sealed class AnalyzerSymbols
         EnchantmentPresentationAttribute = enchantmentPresentationAttribute;
         EnchantmentApiCompatibilityAttribute = enchantmentApiCompatibilityAttribute;
         ModifyDynamicVarAttribute = modifyDynamicVarAttribute;
+        ModifyEnergyCostAttribute = modifyEnergyCostAttribute;
+        ModifyCardPlayCountAttribute = modifyCardPlayCountAttribute;
         EnchantmentStackSnapshot = enchantmentStackSnapshot;
         EnchantmentModel = enchantmentModel;
     }
@@ -36,6 +40,8 @@ internal sealed class AnalyzerSymbols
     public INamedTypeSymbol? EnchantmentPresentationAttribute { get; }
     public INamedTypeSymbol? EnchantmentApiCompatibilityAttribute { get; }
     public INamedTypeSymbol? ModifyDynamicVarAttribute { get; }
+    public INamedTypeSymbol? ModifyEnergyCostAttribute { get; }
+    public INamedTypeSymbol? ModifyCardPlayCountAttribute { get; }
     public INamedTypeSymbol? EnchantmentStackSnapshot { get; }
     public INamedTypeSymbol? EnchantmentModel { get; }
 
@@ -50,6 +56,8 @@ internal sealed class AnalyzerSymbols
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentPresentationAttribute),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentApiCompatibilityAttribute),
             compilation.GetTypeByMetadataName(MetadataNames.ModifyDynamicVarAttribute),
+            compilation.GetTypeByMetadataName(MetadataNames.ModifyEnergyCostAttribute),
+            compilation.GetTypeByMetadataName(MetadataNames.ModifyCardPlayCountAttribute),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentStackSnapshot),
             compilation.GetTypeByMetadataName(MetadataNames.EnchantmentModel));
     }

@@ -8,8 +8,8 @@ namespace MultiEnchantmentMod.Api.Internal;
 
 /// <summary>
 /// Single discovery / registration entry point for the v2 stacking API. Supports explicit
-/// <see cref="MultiEnchantmentApi.ScanAssembly"/> plus a lazy fallback when the runtime resolves
-/// a provider for the first time.
+/// <see cref="MultiEnchantmentApi.ScanAssembly"/> plus a lazy fallback when the runtime queries
+/// the registry for the first time.
 /// </summary>
 /// <remarks>
 /// One scan pass covers two categories per assembly:
@@ -75,7 +75,7 @@ internal static class AssemblyScanner
     }
 
     /// <summary>
-    /// Lazy scan triggered from the provider resolve helpers. Walks every loaded assembly that
+    /// Lazy scan triggered from registry query helpers. Walks every loaded assembly that
     /// references this mod and that hasn't been scanned yet.
     /// </summary>
     /// <remarks>
@@ -318,6 +318,16 @@ internal static class AssemblyScanner
             foreach (DynamicVarContribution contribution in ModifyDynamicVarScanner.ScanType(type))
             {
                 registration.ModifyDynamicVar(contribution.VarKey, contribution.Contribution);
+            }
+
+            foreach (EnergyCostContribution contribution in NumericContributionScanner.ScanEnergyCost(type))
+            {
+                registration.ModifyEnergyCostInCombat(contribution);
+            }
+
+            foreach (CardPlayCountContribution contribution in NumericContributionScanner.ScanCardPlayCount(type))
+            {
+                registration.ModifyCardPlayCount(contribution);
             }
 
             if (attribute.HistoryGroupHeader != null)
