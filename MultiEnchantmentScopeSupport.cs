@@ -813,7 +813,7 @@ internal static class MultiEnchantmentScopeSupport
                 {
                     continue;
                 }
-                EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+                EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType());
                 if (entry == null)
                 {
                     continue;
@@ -843,7 +843,7 @@ internal static class MultiEnchantmentScopeSupport
         Func<EnchantmentEntry, bool> hasHandler,
         Action<EnchantmentEntry, TContext, CardModel, EnchantmentModel> action)
     {
-        EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(enchantment.GetType(), hasHandler);
+        EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
         if (entry == null)
         {
             return;
@@ -859,7 +859,7 @@ internal static class MultiEnchantmentScopeSupport
             // WhenActiveStatus predicate gates dispatch AND controls Status.
             // Manual Status = Disabled (without WhenActiveStatus) does NOT block dispatch —
             // it only affects visuals / ActiveInstanceCount.
-            EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+            EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType());
             if (entry is { HasActiveStatusPredicate: true })
             {
                 return entry.ShouldBeActive(card, enchantment);
@@ -899,7 +899,7 @@ internal static class MultiEnchantmentScopeSupport
 
         try
         {
-            EnchantmentEntry? entry = EnchantmentRegistry.GetSingleEntry(enchantment.GetType());
+            EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType());
             if (entry is not { HasActiveStatusPredicate: true })
             {
                 return false;
@@ -997,7 +997,7 @@ internal static class MultiEnchantmentScopeSupport
 
     private static EnchantmentScope ResolveScope(CardModel card, EnchantmentModel enchantment)
     {
-        return EnchantmentRegistry.GetLastEntry(enchantment.GetType(), static entry => entry.GetScope != null)?.GetSafeScope() ?? EnchantmentScope.Permanent;
+        return EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), static entry => entry.GetScope != null)?.GetSafeScope() ?? EnchantmentScope.Permanent;
     }
 
     private static void InvokeLifecycle(
@@ -1006,7 +1006,7 @@ internal static class MultiEnchantmentScopeSupport
         Func<EnchantmentEntry, bool> hasHandler,
         Action<EnchantmentEntry, CardModel, EnchantmentModel> action)
     {
-        EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(enchantment.GetType(), hasHandler);
+        EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
         if (entry == null)
         {
             return;

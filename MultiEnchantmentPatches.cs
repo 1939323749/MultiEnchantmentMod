@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.RestSite;
+using MegaCrit.Sts2.Core.Factories;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Hooks;
@@ -164,6 +165,12 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void BeforeCombatStartPostfix(ICombatState combatState)
     {
+        // First-time gate: by the time any combat starts, every ModInitializer has run and the
+        // enchantment registry must be considered closed. Late registrations after this point
+        // would change semantics for cards already cached / normalized inside the running combat.
+        // SealRegistryIfNeeded is idempotent (Interlocked-guarded), so subsequent combats no-op.
+        Api.Internal.AssemblyScanner.SealRegistryIfNeeded();
+
         MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
     }
 
@@ -865,10 +872,6 @@ internal static class MultiEnchantmentPatches
         // Keep the original control flow, but execute extra enchantments in the same phase as the
         // primary enchantment OnPlay instead of the later AfterCardPlayed hook sweep.
         bool shouldUseMultiLogic = MultiEnchantmentSupport.RequiresOnPlayWrapperMultiEnchantmentLogic(__instance);
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CardModel.OnPlayWrapper. " +
-            $"Card={__instance.Id} AutoPlay={isAutoPlay} UseMultiLogic={shouldUseMultiLogic} " +
-            $"SkipVisuals={skipCardPileVisuals}");
 
         if (!shouldUseMultiLogic)
         {
@@ -904,9 +907,6 @@ internal static class MultiEnchantmentPatches
         // Vanilla assumes Goopy is always the primary deck enchantment. In multi-enchantment combat
         // that is no longer guaranteed, and a mid-combat-added Goopy may not exist on DeckVersion
         // unless the mod mirrors it. Resolve the matching Goopy instance explicitly.
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Goopy.AfterCardPlayed. " +
-            $"GoopyCard={__instance.Card?.Id} PlayedCard={cardPlay.Card?.Id}");
         try
         {
             __result = MultiEnchantmentSupport.HandleGoopyAfterCardPlayed(__instance, choiceContext, cardPlay);
@@ -959,9 +959,6 @@ internal static class MultiEnchantmentPatches
             return true;
         }
 
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting DamageVar.UpdateCardPreview. " +
-            $"Card={card.Id} BaseValue={__instance.BaseValue} PreviewMode={previewMode}");
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
         if (!card.IsEnchantmentPreview)
         {
@@ -1001,9 +998,6 @@ internal static class MultiEnchantmentPatches
             return true;
         }
 
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting BlockVar.UpdateCardPreview. " +
-            $"Card={card.Id} BaseValue={__instance.BaseValue} PreviewMode={previewMode}");
         decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, __instance.BaseValue, __instance.Props);
         if (!card.IsEnchantmentPreview)
         {
@@ -1050,9 +1044,6 @@ internal static class MultiEnchantmentPatches
             return true;
         }
 
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CalculatedDamageVar.UpdateCardPreview. " +
-            $"Card={card.Id} PreviewMode={previewMode}");
         try
         {
             DynamicVar baseVar = GetCalculatedBaseVar(__instance);
@@ -1123,9 +1114,6 @@ internal static class MultiEnchantmentPatches
             return true;
         }
 
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CalculatedBlockVar.UpdateCardPreview. " +
-            $"Card={card.Id} PreviewMode={previewMode}");
         try
         {
             DynamicVar baseVar = GetCalculatedBaseVar(__instance);
@@ -1280,6 +1268,38 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    [HarmonyPatch(typeof(CardTransformation), nameof(CardTransformation.GetReplacement))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void CardTransformationGetReplacementPostfix(CardTransformation __instance, ref CardModel? __result)
+    {
+        if (__result == null)
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentTransformApi.CopyCompatibleEnchantments(__instance.Original, __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to preserve compatible enchantments during transform. " +
+                $"Original={__instance.Original.Id} Replacement={__result.Id}: {ex.GetBaseException().Message}");
+        }
+    }
+
+    [HarmonyPatch(typeof(NTransformPreview), nameof(NTransformPreview.Initialize))]
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.Low)]
+    private static void TransformPreviewInitializePrefix(ref IEnumerable<CardTransformation> cardTransformations)
+    {
+        cardTransformations = cardTransformations
+            .Select(CreateTransformPreviewTransformation)
+            .ToList();
+    }
+
     [HarmonyPatch(typeof(NEnchantPreview), nameof(NEnchantPreview.Init))]
     [HarmonyPrefix]
     [HarmonyPriority(Priority.Low)]
@@ -1364,7 +1384,7 @@ internal static class MultiEnchantmentPatches
         // keep following the centered card.
         if (__instance.CardNode != null)
         {
-            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance.CardNode);
+            MultiEnchantmentSupport.RefreshExtraTabTransformOnly(__instance.CardNode);
         }
     }
 
@@ -1374,7 +1394,27 @@ internal static class MultiEnchantmentPatches
     {
         if (__instance.CardNode != null)
         {
-            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance.CardNode);
+            MultiEnchantmentSupport.RefreshExtraTabTransformOnly(__instance.CardNode);
+        }
+    }
+
+    [HarmonyPatch(typeof(NCardPlay), "CenterCard")]
+    [HarmonyPostfix]
+    private static void CardPlayCenterCardPostfix(NCardPlay __instance)
+    {
+        MultiEnchantmentSupport.RefreshExtraTabsPreferInPlace(__instance.Holder?.CardNode);
+    }
+
+    [HarmonyPatch(
+        typeof(NTargetManager),
+        nameof(NTargetManager.StartTargeting),
+        new[] { typeof(TargetType), typeof(Control), typeof(TargetMode), typeof(Func<bool>), typeof(Func<Node, bool>) })]
+    [HarmonyPostfix]
+    private static void TargetManagerStartCardTargetingPostfix(Control control)
+    {
+        if (control is NCard cardNode)
+        {
+            MultiEnchantmentSupport.RefreshExtraTabsPreferInPlace(cardNode);
         }
     }
 
@@ -1553,6 +1593,56 @@ internal static class MultiEnchantmentPatches
         return calculatedVar;
     }
 
+    private static CardTransformation CreateTransformPreviewTransformation(CardTransformation transformation)
+    {
+        try
+        {
+            CardModel original = transformation.Original;
+            if (transformation.Replacement != null)
+            {
+                return new CardTransformation(
+                    original,
+                    CreateTransformPreviewReplacement(original, transformation.Replacement));
+            }
+
+            IEnumerable<CardModel> options = transformation.ReplacementOptions ??
+                                             CardFactory.GetDefaultTransformationOptions(original, transformation.IsInCombat);
+            return new CardTransformation(
+                original,
+                options.Select(option => CreateTransformPreviewReplacement(original, option)).ToList());
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to build multi-enchantment transform preview for " +
+                $"{transformation.Original.Id}. Falling back to vanilla preview. {ex.GetBaseException().Message}");
+            return transformation;
+        }
+    }
+
+    private static CardModel CreateTransformPreviewReplacement(CardModel source, CardModel replacement)
+    {
+        CardModel preview = replacement.IsMutable
+            ? (CardModel)replacement.MutableClone()
+            : replacement.ToMutable();
+
+        if (MultiEnchantmentTransformApi.TryGetTransformCopySource(replacement, out CardModel? copiedSource))
+        {
+            if (copiedSource != null)
+            {
+                MultiEnchantmentTransformApi.MarkTransformCopyState(copiedSource, preview);
+            }
+
+            if (ReferenceEquals(copiedSource, source))
+            {
+                return preview;
+            }
+        }
+
+        MultiEnchantmentTransformApi.CopyCompatibleEnchantments(source, preview);
+        return preview;
+    }
+
     private static async Task<bool> CloneRestSiteOptionWithMultiEnchantments(CloneRestSiteOption option)
     {
         Player owner = GetRestSiteOptionOwner(option);
@@ -1563,7 +1653,9 @@ internal static class MultiEnchantmentPatches
 
         foreach (CardModel card in cloneCards)
         {
-            int cloneCount = Math.Max(1, MultiEnchantmentStackSupport.GetTotalAmount(card, typeof(Clone)));
+            // Vanilla CloneRestSiteOption.OnSelect 每张带 Clone 的卡只克隆一次，与 Clone.Amount 无关。
+            // PaelsGrowth 给 Clone Amount=4，旧代码会乘出 4 张副本；改用 instance count 保持 vanilla 语义。
+            int cloneCount = Math.Max(1, MultiEnchantmentStackSupport.GetEnchantmentCount(card, typeof(Clone)));
             for (int i = 0; i < cloneCount; i++)
             {
                 CardModel clone = owner.RunState.CloneCard(card);

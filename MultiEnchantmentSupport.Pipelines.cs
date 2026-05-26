@@ -322,7 +322,7 @@ internal static partial class MultiEnchantmentSupport
 
         foreach (EnchantmentStackSnapshot snapshot in GetOrderedActiveStackSnapshots(card))
         {
-            EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(
+            EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(
                 snapshot.EnchantmentType,
                 hasHandler);
             if (entry == null)
@@ -354,7 +354,7 @@ internal static partial class MultiEnchantmentSupport
             bool invokedForCard = false;
             foreach (EnchantmentStackSnapshot snapshot in GetOrderedActiveStackSnapshots(card))
             {
-                EnchantmentEntry? entry = EnchantmentRegistry.GetLastEntry(
+                EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(
                     snapshot.EnchantmentType,
                     hasHandler);
                 if (entry == null)

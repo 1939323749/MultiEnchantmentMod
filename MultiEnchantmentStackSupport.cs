@@ -17,7 +17,7 @@ internal static class MultiEnchantmentStackSupport
 
     public static EnchantmentStackDefinition GetDefinition(Type enchantmentType)
     {
-        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.Definition != null) is { } entry)
+        if (EnchantmentRegistry.GetDefinitionEntry(enchantmentType, static entry => entry.Definition != null) is { } entry)
         {
             return entry.GetDefinition();
         }
@@ -28,7 +28,7 @@ internal static class MultiEnchantmentStackSupport
         // path above. Idempotent per type.
         Api.Internal.EnchantmentRegistry.EnsureRegistered(enchantmentType);
 
-        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.Definition != null) is { } resolvedAfterAutoRegister)
+        if (EnchantmentRegistry.GetDefinitionEntry(enchantmentType, static entry => entry.Definition != null) is { } resolvedAfterAutoRegister)
         {
             return resolvedAfterAutoRegister.GetDefinition();
         }
@@ -44,7 +44,7 @@ internal static class MultiEnchantmentStackSupport
     public static EnchantmentExecutionPolicy GetExecutionPolicy(Type enchantmentType)
     {
         EnchantmentExecutionPolicy builtIn = GetBuiltInExecutionPolicy(enchantmentType);
-        if (EnchantmentRegistry.GetLastEntry(enchantmentType, static entry => entry.ExecutionPolicy != null) is not { } entry)
+        if (EnchantmentRegistry.GetDefinitionEntry(enchantmentType, static entry => entry.ExecutionPolicy != null) is not { } entry)
         {
             return builtIn;
         }
@@ -296,9 +296,7 @@ internal static class MultiEnchantmentStackSupport
 
     public static int GetVisualStackCount(EnchantmentModel enchantment)
     {
-        return GetBehavior(enchantment.GetType()) == EnchantmentStackBehavior.MergeAmount
-            ? Math.Max(1, GetSnapshot(enchantment).VisualSlices.Count)
-            : 1;
+        return Math.Max(1, GetSnapshot(enchantment).VisualSlices.Count);
     }
 
     public static IEnumerable<MultiEnchantmentSupport.EnchantmentVisualState> ExpandVisualStates(CardModel? card)
@@ -402,7 +400,7 @@ internal static class MultiEnchantmentStackSupport
             return;
         }
 
-        if (EnchantmentRegistry.GetLastEntry(enchantment.GetType(), static entry => entry.OnMergedDelta != null) is { } entry)
+        if (EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), static entry => entry.OnMergedDelta != null) is { } entry)
         {
             entry.ApplyMergedAmountDelta(enchantment, addedAmount);
             return;
@@ -416,7 +414,7 @@ internal static class MultiEnchantmentStackSupport
 
     public static void RefreshMergedEnchantmentState(EnchantmentModel enchantment)
     {
-        if (EnchantmentRegistry.GetLastEntry(
+        if (EnchantmentRegistry.GetDefinitionEntry(
                 enchantment.GetType(),
                 static entry => entry.OnMergedRefresh != null || entry.OnMergedDelta != null) is { } entry)
         {
@@ -434,7 +432,7 @@ internal static class MultiEnchantmentStackSupport
     public static bool TryFormatExtraCardText(EnchantmentModel enchantment, string defaultText, out string formattedText)
     {
         formattedText = defaultText;
-        if (EnchantmentRegistry.GetLastEntry(
+        if (EnchantmentRegistry.GetLastContributionEntry(
                 enchantment.GetType(),
                 static entry => entry.FormatExtraText != null) is not { } entry)
         {
@@ -588,7 +586,7 @@ internal static class MultiEnchantmentStackSupport
         EnchantmentStackSnapshot snapshot,
         EnchantmentModel anchor)
     {
-        if (EnchantmentRegistry.GetLastEntry(
+        if (EnchantmentRegistry.GetLastContributionEntry(
                 snapshot.EnchantmentType,
                 static entry => entry.GetVisualSlices != null) is not { } entry)
         {
@@ -609,7 +607,7 @@ internal static class MultiEnchantmentStackSupport
         int[] defaultSliceAmounts,
         List<EnchantmentStackSlice> defaultSlices)
     {
-        if (EnchantmentRegistry.GetLastEntry(
+        if (EnchantmentRegistry.GetLastContributionEntry(
                 defaultSnapshot.EnchantmentType,
                 static entry => entry.GetVisualSlices != null || entry.GetVisualSliceAmounts != null) is not { } entry)
         {

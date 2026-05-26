@@ -16,6 +16,16 @@ internal static class MultiEnchantmentSaveSidecar
     private const string FileName = "multi_enchantment_save_sidecar.json";
     private const string Prefix = "MultiEnchantment";
 
+    // Special MultiEnchantment-prefixed SavedProperty kept in the main save (NOT stripped to
+    // sidecar). Holds a stable per-EnchantmentModel GUID so the v2 sidecar key (`v2e:{guid}`)
+    // can be looked up at load time before any other multi-enchant state is restored. Survives
+    // the SerializableEnchantment ↔ EnchantmentModel round trip via the vanilla SavedProperties
+    // bag; size is one ~36-char string per enchantment, negligible.
+    internal const string InstanceIdPropertyName = "MultiEnchantmentInstanceId";
+
+    private const string CardKeyPrefix = "v2c:";
+    private const string EnchantmentKeyPrefix = "v2e:";
+
     private static readonly object Sync = new();
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -29,6 +39,15 @@ internal static class MultiEnchantmentSaveSidecar
 
     internal static bool IsMultiEnchantmentProperty(string? name) =>
         name != null && name.StartsWith(Prefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// True for the one MultiEnchantment-prefixed property we deliberately leave in the main
+    /// vanilla save: <see cref="InstanceIdPropertyName"/>. Strip routines exclude it via this
+    /// check so it remains accessible at load time for sidecar lookup.
+    /// </summary>
+    private static bool ShouldStripFromMainSave(string? name) =>
+        IsMultiEnchantmentProperty(name) &&
+        !string.Equals(name, InstanceIdPropertyName, StringComparison.Ordinal);
 
     internal static void Reload()
     {
@@ -57,6 +76,16 @@ internal static class MultiEnchantmentSaveSidecar
         }
 
         CaptureSerializableEnchantment(save);
+
+        // Mirror the (possibly freshly generated) instance id back onto the live model so the
+        // next in-session ToSerializable produces the same key and we don't orphan the sidecar
+        // entry we just wrote. Idempotent — Upsert overwrites the same value when present.
+        if (TryReadInstanceId(save) is { } instanceId)
+        {
+            enchantment.Props ??= new SavedProperties();
+            enchantment.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
+            Upsert(enchantment.Props.strings, InstanceIdPropertyName, instanceId);
+        }
     }
 
     internal static void CaptureSerializableCard(SerializableCard card)
@@ -89,10 +118,15 @@ internal static class MultiEnchantmentSaveSidecar
 
         if (TryExtractPayload(enchantment.Props, out SavedPropertiesPayload payload))
         {
+            // Allocate or recover the stable instance id. Done lazily here (rather than at
+            // model creation) so legacy in-memory enchantments that pre-date this code path
+            // get an id the first time they're serialized — keeping the migration boundary
+            // local to the sidecar.
+            string instanceId = EnsureInstanceId(enchantment);
             lock (Sync)
             {
                 EnsureLoadedLocked();
-                document.Enchantments[BuildEnchantmentKey(enchantment)] = payload;
+                document.Enchantments[$"{EnchantmentKeyPrefix}{instanceId}"] = payload;
                 dirty = true;
             }
         }
@@ -108,10 +142,22 @@ internal static class MultiEnchantmentSaveSidecar
         }
 
         SavedPropertiesPayload? payload;
+        string v2Key = BuildCardKey(save);
+        string legacyKey = BuildLegacyCardKey(save);
+        bool migratedFromLegacy = false;
         lock (Sync)
         {
             EnsureLoadedLocked();
-            document.Cards.TryGetValue(BuildCardKey(save), out payload);
+            if (!document.Cards.TryGetValue(v2Key, out payload) &&
+                document.Cards.TryGetValue(legacyKey, out payload))
+            {
+                // Legacy hit — promote to v2 key so subsequent reads / saves use the stable
+                // schema. Keep the legacy entry around for now; a future release will drop
+                // it after enough players have migrated.
+                document.Cards[v2Key] = payload;
+                dirty = true;
+                migratedFromLegacy = true;
+            }
         }
 
         if (payload != null)
@@ -119,6 +165,12 @@ internal static class MultiEnchantmentSaveSidecar
             SavedProperties? props = save.Props;
             ApplyPayload(ref props, payload);
             save.Props = props;
+
+            if (migratedFromLegacy)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment][SaveSidecar] Migrated legacy card key {legacyKey} → {v2Key}.");
+            }
         }
 
         RestoreInto(save.Enchantment);
@@ -131,11 +183,27 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
-        SavedPropertiesPayload? payload;
+        SavedPropertiesPayload? payload = null;
+        string? v2Key = BuildEnchantmentKey(save);
+        string legacyKey = BuildLegacyEnchantmentKey(save);
+        bool migratedFromLegacy = false;
+
         lock (Sync)
         {
             EnsureLoadedLocked();
-            document.Enchantments.TryGetValue(BuildEnchantmentKey(save), out payload);
+            if (v2Key != null && document.Enchantments.TryGetValue(v2Key, out payload))
+            {
+                // direct v2 hit
+            }
+            else if (document.Enchantments.TryGetValue(legacyKey, out payload))
+            {
+                // Legacy hit — assign an instance id now (if the save didn't carry one) and
+                // rewrite the payload under v2 so this enchantment migrates exactly once.
+                string instanceId = EnsureInstanceId(save);
+                document.Enchantments[$"{EnchantmentKeyPrefix}{instanceId}"] = payload;
+                dirty = true;
+                migratedFromLegacy = true;
+            }
         }
 
         if (payload != null)
@@ -143,6 +211,12 @@ internal static class MultiEnchantmentSaveSidecar
             SavedProperties? props = save.Props;
             ApplyPayload(ref props, payload);
             save.Props = props;
+
+            if (migratedFromLegacy)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment][SaveSidecar] Migrated legacy enchantment key {legacyKey} → v2.");
+            }
         }
     }
 
@@ -202,35 +276,16 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-    internal static void PruneStale(IEnumerable<CardModel> liveCards)
-    {
-        if (liveCards == null)
-        {
-            return;
-        }
-
-        HashSet<string> liveIds = liveCards.Select(card => card.Id.ToString()).ToHashSet(StringComparer.Ordinal);
-        lock (Sync)
-        {
-            EnsureLoadedLocked();
-            foreach (string key in document.Cards.Keys.Where(key => !liveIds.Any(id => key.Contains(id, StringComparison.Ordinal))).ToList())
-            {
-                document.Cards.Remove(key);
-                dirty = true;
-            }
-
-            FlushLocked();
-        }
-    }
-
-    private static bool TryExtractPayload(SavedProperties? props, out SavedPropertiesPayload payload)
+private static bool TryExtractPayload(SavedProperties? props, out SavedPropertiesPayload payload)
     {
         payload = new SavedPropertiesPayload();
         if (props?.strings != null)
         {
             foreach (SavedProperties.SavedProperty<string> property in props.strings)
             {
-                if (IsMultiEnchantmentProperty(property.name))
+                // InstanceId stays in the main save as a lookup index; the sidecar payload only
+                // carries the rich state. Skipping it here also keeps the sidecar JSON minimal.
+                if (ShouldStripFromMainSave(property.name))
                 {
                     payload.Strings[property.name] = property.value;
                 }
@@ -241,7 +296,7 @@ internal static class MultiEnchantmentSaveSidecar
         {
             foreach (SavedProperties.SavedProperty<int[]> property in props.intArrays)
             {
-                if (IsMultiEnchantmentProperty(property.name))
+                if (ShouldStripFromMainSave(property.name))
                 {
                     payload.IntArrays[property.name] = property.value.ToArray();
                 }
@@ -285,8 +340,8 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
-        props.strings?.RemoveAll(property => IsMultiEnchantmentProperty(property.name));
-        props.intArrays?.RemoveAll(property => IsMultiEnchantmentProperty(property.name));
+        props.strings?.RemoveAll(property => ShouldStripFromMainSave(property.name));
+        props.intArrays?.RemoveAll(property => ShouldStripFromMainSave(property.name));
     }
 
     private static void CaptureNestedProperties(SavedProperties? props)
@@ -378,15 +433,66 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-    private static string BuildCardKey(SerializableCard card)
+    /// <summary>
+    /// v2 card key. <c>SerializableCard.Id</c> is the game-assigned GUID for the card model and
+    /// is stable across save/load, so we don't need to mix in upgrade / floor / primary
+    /// enchantment state (all of which can drift mid-run, orphaning the entry).
+    /// </summary>
+    private static string BuildCardKey(SerializableCard card) =>
+        $"{CardKeyPrefix}{card.Id}";
+
+    /// <summary>
+    /// v2 enchantment key. Derived from the per-instance GUID stored as
+    /// <see cref="InstanceIdPropertyName"/> on the enchantment's SavedProperties. The capture
+    /// path generates one if absent. Returns <c>null</c> when no instance id can be assigned
+    /// (e.g. SerializableEnchantment with null Props on a read-only restore path).
+    /// </summary>
+    private static string? BuildEnchantmentKey(SerializableEnchantment enchantment) =>
+        TryReadInstanceId(enchantment) is { } id ? $"{EnchantmentKeyPrefix}{id}" : null;
+
+    /// <summary>
+    /// Legacy card key from the pre-v2 (composite Id+upgrade+primary+floor) scheme. Used as a
+    /// migration fallback when v2 lookup misses.
+    /// </summary>
+    private static string BuildLegacyCardKey(SerializableCard card)
     {
-        string primary = card.Enchantment == null ? "none" : BuildEnchantmentKey(card.Enchantment);
+        string primary = card.Enchantment == null ? "none" : BuildLegacyEnchantmentKey(card.Enchantment);
         return $"{card.Id}#u{card.CurrentUpgradeLevel}#e{primary}#f{card.FloorAddedToDeck?.ToString() ?? "-"}";
     }
 
-    private static string BuildEnchantmentKey(SerializableEnchantment enchantment)
+    private static string BuildLegacyEnchantmentKey(SerializableEnchantment enchantment) =>
+        $"{enchantment.Id}#a{enchantment.Amount}";
+
+    private static string? TryReadInstanceId(SerializableEnchantment enchantment)
     {
-        return $"{enchantment.Id}#a{enchantment.Amount}";
+        if (enchantment.Props?.strings == null)
+        {
+            return null;
+        }
+
+        foreach (SavedProperties.SavedProperty<string> property in enchantment.Props.strings)
+        {
+            if (string.Equals(property.name, InstanceIdPropertyName, StringComparison.Ordinal))
+            {
+                return string.IsNullOrEmpty(property.value) ? null : property.value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string EnsureInstanceId(SerializableEnchantment enchantment)
+    {
+        if (TryReadInstanceId(enchantment) is { } existing)
+        {
+            return existing;
+        }
+
+        enchantment.Props ??= new SavedProperties();
+        enchantment.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
+        string id = Guid.NewGuid().ToString("N");
+        enchantment.Props.strings.Add(new SavedProperties.SavedProperty<string>(InstanceIdPropertyName, id));
+        return id;
     }
 
     private static void Upsert<T>(List<SavedProperties.SavedProperty<T>> list, string name, T value)

@@ -281,6 +281,15 @@ internal static partial class MultiEnchantmentSupport
 
     internal static void TriggerEnchantmentChanged(CardModel card)
     {
+        foreach (NCard cardNode in CardUiStates.Select(static entry => entry.Key).Where(node => node.Model == card).ToList())
+        {
+            if (CardUiStates.TryGetValue(cardNode, out CardUiState? state))
+            {
+                state.LastVisualStateFingerprint = null;
+                state.LastSyncCardModel = null;
+            }
+        }
+
         if (CardEnchantmentChangedField?.GetValue(card) is Action action)
         {
             action();

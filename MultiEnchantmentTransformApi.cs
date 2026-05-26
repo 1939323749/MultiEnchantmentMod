@@ -124,6 +124,30 @@ public static class MultiEnchantmentTransformApi
         }
     }
 
+    internal static bool TryGetTransformCopySource(CardModel replacement, out CardModel? source)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        if (TransformCopyStates.TryGetValue(replacement, out TransformCopyState? state) &&
+            state.HasAppliedCopy)
+        {
+            source = state.Source;
+            return true;
+        }
+
+        source = null;
+        return false;
+    }
+
+    internal static void MarkTransformCopyState(CardModel source, CardModel replacement)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        TransformCopyState state = TransformCopyStates.GetOrCreateValue(replacement);
+        state.Source = source;
+        state.HasAppliedCopy = true;
+    }
+
     private sealed class TransformCopyState
     {
         public CardModel? Source { get; set; }

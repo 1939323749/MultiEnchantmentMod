@@ -38,11 +38,17 @@ public partial class MultiEnchantmentMod : Node
         new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
         PatchThievingHopperPriorities();
 
-        // Deliberately do NOT auto-seal the registry here. Third-party mods may run their own
-        // [ModInitializer] AFTER ours and call MultiEnchantmentApi.ScanCallingAssembly() — sealing
-        // now would reject those late-arriving registrations. SealRegistry() remains an opt-in
-        // power-user API; the post-seal write paths in AssemblyScanner already log + no-op rather
-        // than throw, so the safety net is in place either way.
+        // Final discovery sweep before the game proper starts: pick up every loaded assembly
+        // that references the API. Third-party mods whose own [ModInitializer] runs after ours
+        // can still ScanCallingAssembly themselves up until the first BeforeCombatStart Harmony
+        // patch fires SealRegistryIfNeeded — at that point the registry freezes for the run.
+        // Hot-path registry reads no longer call EnsureScanned, so this single sweep is the
+        // canonical "I see everything that's loaded now" pass.
+        Api.Internal.AssemblyScanner.EnsureScanned();
+
+        // Boot-time integrity check for the small set of vanilla methods this mod copies
+        // verbatim. Logs current IL hashes (and any drift vs. frozen baseline). Idempotent.
+        Api.Internal.VanillaCopyGuard.RunOnce();
     }
 
     private static void PatchThievingHopperPriorities()

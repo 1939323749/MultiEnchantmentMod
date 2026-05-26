@@ -288,6 +288,57 @@ internal sealed class EnchantmentEntry
 
     public bool HasActiveStatusPredicate => GetActiveStatus != null;
 
+    /// <summary>
+    /// True when this entry sets any field that defines the enchantment's behavior — stack
+    /// definition, execution policy, scope, active-status predicate, merge response, or any
+    /// lifecycle / vanilla-bridge / stacked-hook callback. Each enchantment type is allowed at
+    /// most one Definition entry; later <c>Register&lt;T&gt;()</c> calls may only add
+    /// Contribution-only entries (dynamic-var / energy / play-count / keyword / presentation).
+    /// See <see cref="EnchantmentRegistry.Install{T}"/> for the enforcement point.
+    /// </summary>
+    public bool IsDefinitionEntry =>
+        Definition != null
+        || ExecutionPolicy != null
+        || GetScope != null
+        || GetActiveStatus != null
+        || OnMergedDelta != null
+        || OnMergedRefresh != null
+        || OnApplied != null
+        || OnRemoved != null
+        || OnCombatStart != null
+        || OnCombatEnd != null
+        || OnTurnStart != null
+        || OnTurnEnd != null
+        || OnRestored != null
+        || OnCardPlayed != null
+        || OnCardDrawn != null
+        || OnCardExhausted != null
+        || OnCardDiscarded != null
+        || OnCardEnteredCombat != null
+        || OnAfterDamageReceived != null
+        || OnSideTurnStart != null
+        || OnBeforeSideTurnStart != null
+        || OnBeforeAttack != null
+        || OnAfterAttack != null
+        || OnCardChangedPiles != null
+        || OnCardRetained != null
+        || OnBeforeBlockGained != null
+        || OnBlockGained != null
+        || OnShouldDie != null
+        || OnAnyCardPlayed != null
+        || OnAnyCardDrawn != null
+        || OnAnyCardExhausted != null
+        || OnAnyCardDiscarded != null
+        || OnSiblingApplied != null
+        || OnSiblingRemoved != null
+        || OnPlayStacked != null
+        || BeforeCardPlayedStacked != null
+        || AfterCardPlayedStacked != null
+        || AfterCardDrawnStacked != null
+        || AfterAnyCardDrawnStacked != null
+        || BeforeFlushStacked != null
+        || AfterDamageGivenStacked != null;
+
     public bool ShouldBeActive(CardModel card, EnchantmentModel enchantment)
     {
         if (GetActiveStatus == null) return true;

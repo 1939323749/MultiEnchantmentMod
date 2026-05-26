@@ -73,6 +73,28 @@ internal static class EnchantmentRegistry
                 EntriesByType[typeof(TEnchantment)] = list;
             }
 
+            // Multi-registration contract: at most one Definition entry per type. Later
+            // registrations may only add Contribution-only payload (dynamic var, energy cost,
+            // card play count, keyword, presentation text / visuals, history display). The
+            // assembly scanner path swallows the exception via try/catch + warn log, so the
+            // second registration becomes a no-op there too.
+            if (entry.IsDefinitionEntry)
+            {
+                foreach (EnchantmentEntry existing in list)
+                {
+                    if (existing.IsDefinitionEntry)
+                    {
+                        throw new InvalidOperationException(
+                            $"[StackApi] {entry.EnchantmentType.FullName} already has a Definition registration. " +
+                            "Each enchantment type allows at most one Definition entry (Stack / scope / " +
+                            "active-status / lifecycle / merge / stacked-hook). Subsequent Register<T>() " +
+                            "calls must only set Contribution-only fields (TrackKeyword / ModifyDynamicVar / " +
+                            "ModifyEnergyCostInCombat / ModifyCardPlayCount / FormatExtraText / WithVisualSlice / " +
+                            "HistoryDisplay).");
+                    }
+                }
+            }
+
             list.Add(entry);
 
             bool keysChanged = false;
@@ -136,7 +158,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static IReadOnlyList<DynamicVarContribution> GetContributions(Type enchantmentType, string varKey)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -164,21 +185,56 @@ internal static class EnchantmentRegistry
     }
 
 
-    internal static EnchantmentEntry? GetSingleEntry(Type enchantmentType)
+    /// <summary>
+    /// Returns the (at most one) Definition entry for <paramref name="enchantmentType"/>, i.e.
+    /// the registration that supplied stack / scope / active-status / lifecycle / merge /
+    /// stacked-hook behavior. Contribution-only registrations are ignored.
+    /// </summary>
+    internal static EnchantmentEntry? GetDefinitionEntry(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
-            return EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries) &&
-                   entries.Count > 0
-                ? entries[^1]
-                : null;
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return null;
+            }
+
+            foreach (EnchantmentEntry entry in entries)
+            {
+                if (entry.IsDefinitionEntry)
+                {
+                    return entry;
+                }
+            }
+
+            return null;
         }
     }
 
-    internal static EnchantmentEntry? GetLastEntry(Type enchantmentType, Func<EnchantmentEntry, bool> predicate)
+    /// <summary>
+    /// Returns the Definition entry only if it satisfies <paramref name="predicate"/> — used by
+    /// dispatchers that want to skip the dispatch entirely when no handler is wired up. With the
+    /// "at most one Definition entry" contract enforced by <see cref="Install{T}"/>, this is
+    /// just a Definition lookup plus a final filter.
+    /// </summary>
+    internal static EnchantmentEntry? GetDefinitionEntry(Type enchantmentType, Func<EnchantmentEntry, bool> predicate)
     {
-        AssemblyScanner.EnsureScanned();
+        EnchantmentEntry? entry = GetDefinitionEntry(enchantmentType);
+        return entry != null && predicate(entry) ? entry : null;
+    }
+
+    /// <summary>
+    /// Walks every registered entry (Definition + Contribution-only) for
+    /// <paramref name="enchantmentType"/> from newest to oldest, returning the first match.
+    /// Use this only for Contribution-only field lookups where multiple registrations can each
+    /// supply the field and the latest registration wins (e.g. <c>FormatExtraText</c>,
+    /// <c>GetVisualSliceAmounts</c>, custom history text formatter). Definition-field lookups
+    /// must use <see cref="GetDefinitionEntry(Type, Func{EnchantmentEntry,bool})"/> instead so
+    /// that an unrelated Contribution-only registration cannot accidentally satisfy the
+    /// predicate.
+    /// </summary>
+    internal static EnchantmentEntry? GetLastContributionEntry(Type enchantmentType, Func<EnchantmentEntry, bool> predicate)
+    {
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -211,13 +267,11 @@ internal static class EnchantmentRegistry
 
     internal static bool HasLifecycleHandlers(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
-        return GetLastEntry(enchantmentType, HasLifecycleHandlersPredicate) != null;
+        return GetDefinitionEntry(enchantmentType, HasLifecycleHandlersPredicate) != null;
     }
 
     internal static IReadOnlyList<EnchantmentEntry> GetEntries(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             return EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries)
@@ -235,7 +289,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool HasContributionsFor(string varKey)
     {
-        AssemblyScanner.EnsureScanned();
         return Volatile.Read(ref _dynamicVarKeysSnapshot).Contains(varKey);
     }
 
@@ -247,7 +300,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static int? GetMaxInstances(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -290,7 +342,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static StackOverflowPolicy GetOverflowPolicy(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -320,7 +371,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool HasAnyDynamicVarContributions(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -346,7 +396,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static HistoryDisplayMode GetHistoryDisplayMode(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -371,7 +420,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static string? GetHistoryGroupHeader(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -397,7 +445,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static HistoryTextFormatter? GetHistoryTextFormatter(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
@@ -425,7 +472,6 @@ internal static class EnchantmentRegistry
     /// </summary>
     internal static bool IsPermanentScope(Type enchantmentType)
     {
-        AssemblyScanner.EnsureScanned();
         lock (Sync)
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))

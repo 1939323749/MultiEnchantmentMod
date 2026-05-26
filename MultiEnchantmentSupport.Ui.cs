@@ -85,7 +85,6 @@ internal static partial class MultiEnchantmentSupport
         }
 
         IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(model);
-        List<EnchantmentVisualState> visualStates = MultiEnchantmentStackSupport.ExpandVisualStates(model).ToList();
         CardUiState uiState = CardUiStates.GetOrCreateValue(cardNode);
         SubscribeExtraStatusHandlers(cardNode, uiState, extras);
 
@@ -100,13 +99,25 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        RemoveOrphanedExtraEnchantmentTabs(primaryTab.GetParent(), uiState.ExtraTabs);
-
+        List<EnchantmentVisualState> visualStates = MultiEnchantmentStackSupport.ExpandVisualStates(model).ToList();
         if (visualStates.Count == 0)
         {
             ClearCardUi(cardNode);
             return;
         }
+
+        Node badgeRoot = primaryTab.GetParent();
+        int expectedExtraTabCount = Math.Max(0, visualStates.Count - 1);
+        int fingerprint = ComputeVisualStateFingerprint(model, visualStates, primaryTab, defaultPosition);
+        if (uiState.LastSyncCardModel == model &&
+            uiState.LastVisualStateFingerprint == fingerprint &&
+            AreExtraTabsStillSynced(badgeRoot, primaryTab, uiState, expectedExtraTabCount, expectedVisible: true))
+        {
+            ApplyExistingEnchantmentTabs(cardNode, uiState, primaryTab, badgeRoot, model, visualStates, defaultPosition);
+            return;
+        }
+
+        RemoveOrphanedExtraEnchantmentTabs(badgeRoot, uiState.ExtraTabs);
 
         // Base-game source: NCard.UpdateEnchantmentVisuals.
         // Reconstruct the primary tab layout exactly like vanilla, then reuse the resulting slot
@@ -118,9 +129,21 @@ internal static partial class MultiEnchantmentSupport
             visualStates.Count,
             defaultPosition);
 
+        ApplyEnchantmentSlotLayout(primaryTab, slotLayouts[0], visible: true);
         ApplyEnchantmentVisualState(primaryTab, visualStates[0]);
 
-        while (uiState.ExtraTabs.Count < visualStates.Count - 1)
+        while (uiState.ExtraTabs.Count > expectedExtraTabCount)
+        {
+            int lastIndex = uiState.ExtraTabs.Count - 1;
+            Control tab = uiState.ExtraTabs[lastIndex];
+            uiState.ExtraTabs.RemoveAt(lastIndex);
+            if (GodotObject.IsInstanceValid(tab))
+            {
+                tab.QueueFreeSafely();
+            }
+        }
+
+        while (uiState.ExtraTabs.Count < expectedExtraTabCount)
         {
             Control tab = (Control)primaryTab.Duplicate();
             tab.Name = $"{ExtraEnchantmentTabPrefix}{uiState.ExtraTabs.Count + 1}";
@@ -129,23 +152,26 @@ internal static partial class MultiEnchantmentSupport
                 tab.Material = (Material)tab.Material.Duplicate();
             }
 
-            primaryTab.GetParent().AddChildSafely(tab);
+            badgeRoot.AddChildSafely(tab);
             uiState.ExtraTabs.Add(tab);
         }
 
         for (int i = 0; i < uiState.ExtraTabs.Count; i++)
         {
             Control tab = uiState.ExtraTabs[i];
-            if (i >= visualStates.Count - 1)
+            if (i >= expectedExtraTabCount)
             {
                 tab.Visible = false;
                 continue;
             }
 
             EnchantmentVisualState visualState = visualStates[i + 1];
-            ApplyEnchantmentSlotLayout(tab, slotLayouts[i + 1], primaryTab.Visible);
+            ApplyEnchantmentSlotLayout(tab, slotLayouts[i + 1], visible: true);
             ApplyEnchantmentVisualState(tab, visualState);
         }
+
+        EnsureExtraTabSiblingOrder(badgeRoot, primaryTab, uiState.ExtraTabs);
+        UpdateCardUiCache(uiState, model, visualStates, primaryTab, defaultPosition, expectedExtraTabCount);
     }
 
     public static void ClearCardUi(NCard cardNode)
@@ -179,6 +205,9 @@ internal static partial class MultiEnchantmentSupport
 
         state.ExtraTabs.Clear();
         state.StatusHandlers.Clear();
+        state.LastVisualStateFingerprint = null;
+        state.LastSyncCardModel = null;
+        state.LastExpectedExtraTabCount = 0;
         CardUiStates.Remove(cardNode);
     }
 
@@ -202,7 +231,100 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
+        InvalidateCardUiCache(cardNode);
         SyncExtraEnchantmentTabs(cardNode);
+    }
+
+    public static void RefreshExtraTabTransformOnly(NCard? cardNode)
+    {
+        RefreshExtraTabsPreferInPlace(cardNode);
+    }
+
+    public static void RefreshExtraTabsPreferInPlace(NCard? cardNode)
+    {
+        if (cardNode == null || !GodotObject.IsInstanceValid(cardNode) || !cardNode.IsNodeReady())
+        {
+            return;
+        }
+
+        if (TryReapplyExtraTabVisualsInPlace(cardNode))
+        {
+            return;
+        }
+
+        CardModel? model = cardNode.Model;
+        bool hasTrackedTabs = CardUiStates.TryGetValue(cardNode, out CardUiState? state) && state.ExtraTabs.Count > 0;
+        if (NeedsExtraEnchantmentTabs(model) || hasTrackedTabs)
+        {
+            RefreshExtraEnchantmentTabs(cardNode);
+        }
+    }
+
+    public static void RefreshExtraTabsInPlaceOnly(NCard? cardNode)
+    {
+        if (cardNode == null || !GodotObject.IsInstanceValid(cardNode) || !cardNode.IsNodeReady())
+        {
+            return;
+        }
+
+        TryReapplyExtraTabVisualsInPlace(cardNode);
+    }
+
+    private static bool TryReapplyExtraTabVisualsInPlace(NCard cardNode)
+    {
+        if (!CardUiStates.TryGetValue(cardNode, out CardUiState? state))
+        {
+            return false;
+        }
+
+        Control? primaryTab = NCardEnchantmentTabField?.GetValue(cardNode) as Control;
+        Node? badgeRoot = primaryTab?.GetParent();
+        if (primaryTab == null || badgeRoot == null)
+        {
+            return false;
+        }
+
+        return ReapplyExtraTabVisualsInPlace(cardNode, state, primaryTab, badgeRoot);
+    }
+
+    private static bool ReapplyExtraTabVisualsInPlace(
+        NCard cardNode,
+        CardUiState state,
+        Control primaryTab,
+        Node badgeRoot)
+    {
+        CardModel? model = cardNode.Model;
+        if (model == null)
+        {
+            return false;
+        }
+
+        Vector2 defaultPosition = NCardDefaultEnchantmentPositionField?.GetValue(cardNode) is Vector2 position
+            ? position
+            : Vector2.Zero;
+        List<EnchantmentVisualState> visualStates = MultiEnchantmentStackSupport.ExpandVisualStates(model).ToList();
+        int expectedExtraTabCount = Math.Max(0, visualStates.Count - 1);
+        if (visualStates.Count == 0 ||
+            state.ExtraTabs.Count != expectedExtraTabCount ||
+            state.ExtraTabs.Any(tab => !GodotObject.IsInstanceValid(tab) || tab.GetParent() != badgeRoot))
+        {
+            return false;
+        }
+
+        SubscribeExtraStatusHandlers(cardNode, state, GetAdditionalEnchantments(model));
+        ApplyExistingEnchantmentTabs(cardNode, state, primaryTab, badgeRoot, model, visualStates, defaultPosition);
+        return true;
+    }
+
+    private static void InvalidateCardUiCache(NCard cardNode)
+    {
+        if (!CardUiStates.TryGetValue(cardNode, out CardUiState? state))
+        {
+            return;
+        }
+
+        state.LastVisualStateFingerprint = null;
+        state.LastSyncCardModel = null;
     }
 
     public static void CaptureEnchantVfxSnapshot(Node? vfxNode, CardModel? card)
@@ -360,6 +482,87 @@ internal static partial class MultiEnchantmentSupport
         tab.TopLevel = layout.TopLevel;
     }
 
+    private static void ApplyExistingEnchantmentTabs(
+        NCard cardNode,
+        CardUiState state,
+        Control primaryTab,
+        Node badgeRoot,
+        CardModel model,
+        IReadOnlyList<EnchantmentVisualState> visualStates,
+        Vector2 defaultPosition)
+    {
+        if (visualStates.Count == 0)
+        {
+            return;
+        }
+
+        int expectedExtraTabCount = Math.Max(0, visualStates.Count - 1);
+        List<EnchantmentSlotLayout> slotLayouts = BuildEnchantmentSlotLayouts(
+            cardNode,
+            primaryTab,
+            visualStates.Count,
+            defaultPosition);
+
+        ApplyEnchantmentSlotLayout(primaryTab, slotLayouts[0], visible: true);
+        ApplyEnchantmentVisualState(primaryTab, visualStates[0]);
+        for (int i = 0; i < state.ExtraTabs.Count; i++)
+        {
+            Control tab = state.ExtraTabs[i];
+            bool shouldShow = i < expectedExtraTabCount;
+            if (!shouldShow)
+            {
+                tab.Visible = false;
+                continue;
+            }
+
+            ApplyEnchantmentSlotLayout(tab, slotLayouts[i + 1], visible: true);
+            ApplyEnchantmentVisualState(tab, visualStates[i + 1]);
+        }
+
+        EnsureExtraTabSiblingOrder(badgeRoot, primaryTab, state.ExtraTabs);
+        UpdateCardUiCache(state, model, visualStates, primaryTab, defaultPosition, expectedExtraTabCount);
+    }
+
+    private static void EnsureExtraTabSiblingOrder(Node badgeRoot, Control primaryTab, IReadOnlyList<Control> extraTabs)
+    {
+        if (!GodotObject.IsInstanceValid(primaryTab) || primaryTab.GetParent() != badgeRoot)
+        {
+            return;
+        }
+
+        List<Control> validTabs = extraTabs
+            .Where(tab => GodotObject.IsInstanceValid(tab) && tab.GetParent() == badgeRoot)
+            .ToList();
+
+        foreach (Control tab in validTabs)
+        {
+            badgeRoot.MoveChild(tab, Math.Max(0, badgeRoot.GetChildCount() - 1));
+        }
+
+        for (int i = validTabs.Count - 1; i >= 0; i--)
+        {
+            Control tab = validTabs[i];
+            int targetIndex = Math.Min(primaryTab.GetIndex() + 1, Math.Max(0, badgeRoot.GetChildCount() - 1));
+            if (tab.GetIndex() != targetIndex)
+            {
+                badgeRoot.MoveChild(tab, targetIndex);
+            }
+        }
+    }
+
+    private static void UpdateCardUiCache(
+        CardUiState state,
+        CardModel model,
+        IReadOnlyList<EnchantmentVisualState> visualStates,
+        Control primaryTab,
+        Vector2 defaultPosition,
+        int expectedExtraTabCount)
+    {
+        state.LastSyncCardModel = model;
+        state.LastVisualStateFingerprint = ComputeVisualStateFingerprint(model, visualStates, primaryTab, defaultPosition);
+        state.LastExpectedExtraTabCount = expectedExtraTabCount;
+    }
+
     private static void SubscribeExtraStatusHandlers(NCard cardNode, CardUiState uiState, IReadOnlyList<EnchantmentModel> extras)
     {
         foreach ((EnchantmentModel enchantment, Action handler) in uiState.StatusHandlers.ToArray())
@@ -435,6 +638,83 @@ internal static partial class MultiEnchantmentSupport
                 label.SelfModulate = Colors.White;
             }
         }
+    }
+
+    private static bool AreExtraTabsStillSynced(
+        Node badgeRoot,
+        Control primaryTab,
+        CardUiState state,
+        int expectedExtraTabCount,
+        bool expectedVisible)
+    {
+        if (state.ExtraTabs.Count != expectedExtraTabCount ||
+            state.LastExpectedExtraTabCount != expectedExtraTabCount)
+        {
+            return false;
+        }
+
+        foreach (Control tab in state.ExtraTabs)
+        {
+            if (!GodotObject.IsInstanceValid(tab) ||
+                tab.GetParent() != badgeRoot ||
+                tab.Visible != expectedVisible)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool NeedsExtraEnchantmentTabs(CardModel? model)
+    {
+        if (model == null)
+        {
+            return false;
+        }
+
+        if (GetAdditionalEnchantments(model).Count > 0)
+        {
+            return true;
+        }
+
+        EnchantmentModel? primary = model.Enchantment;
+        return primary != null && MultiEnchantmentStackSupport.GetVisualStackCount(primary) > 1;
+    }
+
+    private static int ComputeVisualStateFingerprint(
+        CardModel model,
+        IReadOnlyList<EnchantmentVisualState> visualStates,
+        Control primaryTab,
+        Vector2 defaultPosition)
+    {
+        HashCode hash = new();
+        hash.Add(model.HasStarCostX);
+        hash.Add(model.CurrentStarCost >= 0);
+        hash.Add(defaultPosition);
+        hash.Add(primaryTab.Position);
+        hash.Add(primaryTab.Size);
+        hash.Add(primaryTab.Scale);
+        hash.Add(primaryTab.Rotation);
+        hash.Add(primaryTab.PivotOffset);
+        hash.Add(primaryTab.ZIndex);
+        hash.Add(primaryTab.TopLevel);
+        hash.Add(visualStates.Count);
+        foreach (EnchantmentVisualState visualState in visualStates)
+        {
+            AddFingerprint(ref hash, visualState);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static void AddFingerprint(ref HashCode hash, EnchantmentVisualState visualState)
+    {
+        hash.Add(visualState.Icon);
+        hash.Add(visualState.Icon?.ResourcePath);
+        hash.Add(visualState.DisplayAmount);
+        hash.Add(visualState.ShowAmount);
+        hash.Add((int)visualState.Status);
     }
 
     private static void ClearNamedChildren(Node parent, string prefix)

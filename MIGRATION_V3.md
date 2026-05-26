@@ -2,6 +2,35 @@
 
 API 版本号为 2。下游 mod 应使用 `MultiEnchantmentApi.RequireApiVersion(2)` 检查运行时兼容性。
 
+## v2.2 框架改进（本批次）
+
+### 注册决议规则正式契约化
+每个 `EnchantmentModel` 子类至多允许一条 **Definition entry** —— 即设置了 `Stack` / 任意 lifecycle hook (`OnApplied` / `OnRemoved` / `OnCombatStart` 等) / `WithScope` / `WhenActiveStatus` / `OnMergedDelta` / `OnMergedRefresh` / `Execution` / 任一 stacked async hook / 任一 vanilla 桥接 hook (`OnCardPlayed` / `OnSiblingApplied` / `OnAfterDamageReceived` / ...) 的 `Register<T>()` 调用。
+
+第二次试图注册带 Definition 字段的 entry 会抛 `InvalidOperationException`（注解扫描路径会 log warn 并跳过）。`TrackKeyword` / `FormatExtraText` / `ModifyDynamicVar` / `ModifyEnergyCostInCombat` / `ModifyCardPlayCount` / `HistoryDisplay` / `HistoryText` / `VisualSlices` 等 **Contribution-only** entry 不受此限，可被多个 mod 各自追加。
+
+迁移建议：如果你过去依赖"用第二次 Register 覆盖第一次"的行为，请把所有 Definition 字段聚合到单个 fluent 链里。
+
+### 注册表生命周期
+- 第一次 `Hook.BeforeCombatStart` 触发时自动 `Seal` —— 进入战斗后任何 `Register<T>()` / `ScanCallingAssembly` 都会被 log 拒绝。
+- `MultiEnchantmentApi.SealRegistry()` 仍可手动调用（开发者 escape hatch）。
+- registry 读取路径不再每次反射扫装配；所有显式扫描在 `Initialize` 末尾一次完成。
+
+### Sidecar 存档键升级 v2 + 双读
+- 新 enchantment key 基于稳定 GUID（`MultiEnchantmentInstanceId` SavedProperty），不再因 amount/upgrade 漂移。
+- 新 card key 直接用 `SerializableCard.Id`。
+- 旧 key (`{Id}#u..#e..#f..`) 读取时仍能命中并迁移到 v2，迁移后写一行 info log；旧 key 计划在 v4 移除。
+
+### `IEnchantmentRegistration` 能力接口拆分
+为方便文档化和未来按能力扩展，把 `IEnchantmentRegistration` 拆成五个 super-interface：
+- `IStackingRegistration`：Stack / scope / Execution / OnMergedDelta / OnMergedRefresh
+- `ILifecycleRegistration`：OnApplied / OnRemoved / OnCombatStart 等所有 lifecycle 与 vanilla 桥接
+- `IDynamicVarRegistration`：ModifyDynamicVar / ModifyEnergyCostInCombat / ModifyCardPlayCount
+- `IPresentationRegistration`：TrackKeyword / FormatExtraText / VisualSlices / HistoryDisplay
+- `IStackedHookRegistration`：OnPlayStacked / BeforeCardPlayedStacked 等 stacked async hooks
+
+`IEnchantmentRegistration` 现在继承上述五个接口。所有方法签名、扩展方法、二进制兼容性都保持不变 —— 第三方代码无需任何修改。
+
 ## 一句话总结
 
 v2 新增 `ModifyDynamicVar` API 让多个附魔可以协同修改同一个动态变量（伤害 / 格挡 / `{Times}` / 第三方自定义 key），让 `amount <= 0` 与原版一致按 1 处理，并加了第三方未注册附魔的 auto-detect 兜底。

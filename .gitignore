@@ -16,5 +16,8 @@ riderModule.iml
 # Claude Code harness
 .claude/
 
+# Local decompile scratch space
+.decomp/
+
 # Analyzer NuGet output
 MultiEnchantmentMod.Analyzers/nupkg/

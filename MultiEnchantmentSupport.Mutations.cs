@@ -507,7 +507,7 @@ internal static partial class MultiEnchantmentSupport
 
         if (!bypassVeto)
         {
-            EnchantmentEntry? lifecycle = EnchantmentRegistry.GetLastEntry(
+            EnchantmentEntry? lifecycle = EnchantmentRegistry.GetDefinitionEntry(
                 enchantment.GetType(),
                 static entry => entry.OnRemoved != null);
             if (lifecycle != null && !lifecycle.RunOnRemoved(card, enchantment, reason))

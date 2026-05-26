@@ -47,6 +47,9 @@ internal static partial class MultiEnchantmentSupport
     {
         public List<Control> ExtraTabs { get; } = new();
         public Dictionary<EnchantmentModel, Action> StatusHandlers { get; } = new(ReferenceEqualityComparer.Instance);
+        public int? LastVisualStateFingerprint { get; set; }
+        public CardModel? LastSyncCardModel { get; set; }
+        public int LastExpectedExtraTabCount { get; set; }
     }
 
     private sealed class EnchantmentVfxSnapshotState

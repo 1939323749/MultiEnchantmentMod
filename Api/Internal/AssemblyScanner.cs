@@ -104,43 +104,54 @@ internal static class AssemblyScanner
                 return;
             }
 
-            // Re-read in case other threads loaded more assemblies while we waited for the lock.
-            assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            if (assemblies.Length == _lastSeenAssemblyCount)
-            {
-                return;
-            }
-
-            foreach (Assembly assembly in assemblies)
-            {
-                if (ScannedAssemblies.Contains(assembly))
-                {
-                    continue;
-                }
-
-                if (!CouldReferenceModAssembly(assembly))
-                {
-                    continue;
-                }
-
-                if (!PassesApiCompatibilityCheck(assembly))
-                {
-                    ScannedAssemblies.Add(assembly);
-                    continue;
-                }
-
-                ScannedAssemblies.Add(assembly);
-                ScanCore(assembly);
-            }
-
-            _lastSeenAssemblyCount = assemblies.Length;
+            EnsureScannedLocked();
         }
+    }
+
+    /// <summary>
+    /// Same as <see cref="EnsureScanned"/> but expects the caller to already hold <c>Sync</c>.
+    /// Used by <see cref="SealRegistryIfNeeded"/> so the auto-seal flow can do one final scan
+    /// and flip <c>_sealed</c> under the same critical section.
+    /// </summary>
+    private static void EnsureScannedLocked()
+    {
+        // Re-read in case other threads loaded more assemblies while we waited for the lock /
+        // the caller acquired it.
+        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        if (assemblies.Length == _lastSeenAssemblyCount)
+        {
+            return;
+        }
+
+        foreach (Assembly assembly in assemblies)
+        {
+            if (ScannedAssemblies.Contains(assembly))
+            {
+                continue;
+            }
+
+            if (!CouldReferenceModAssembly(assembly))
+            {
+                continue;
+            }
+
+            if (!PassesApiCompatibilityCheck(assembly))
+            {
+                ScannedAssemblies.Add(assembly);
+                continue;
+            }
+
+            ScannedAssemblies.Add(assembly);
+            ScanCore(assembly);
+        }
+
+        _lastSeenAssemblyCount = assemblies.Length;
     }
 
     /// <summary>
     /// Freezes the registry. Further <see cref="ScanAssembly"/> calls log a warning and do
     /// nothing; <see cref="EnsureScanned"/> becomes a no-op. Useful once the game enters its
-    /// "active gameplay" phase and no further mods can be loaded.
+    /// "active gameplay" phase and no further mods can be loaded. Idempotent.
     /// </summary>
     public static void Seal()
     {
@@ -148,6 +159,31 @@ internal static class AssemblyScanner
         {
             _sealed = true;
         }
+    }
+
+    /// <summary>
+    /// Auto-seal entry point used by the <c>Hook.BeforeCombatStart</c> patch: on the first call,
+    /// performs one last scan sweep, seals the registry, and logs once. Idempotent — second and
+    /// subsequent calls are zero-cost. Separate from <see cref="Seal"/> so the manual escape
+    /// hatch (<c>MultiEnchantmentApi.SealRegistry</c>) keeps its existing log-once semantics.
+    /// </summary>
+    public static void SealRegistryIfNeeded()
+    {
+        lock (Sync)
+        {
+            if (_sealed)
+            {
+                return;
+            }
+
+            // Pick up any assembly that loaded between Initialize and first combat without
+            // having called ScanCallingAssembly explicitly. After this we no-op forever.
+            EnsureScannedLocked();
+            _sealed = true;
+        }
+
+        global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+            "[StackApi] Registry sealed at first BeforeCombatStart. Further Register/ScanAssembly calls will be rejected.");
     }
 
     private static int ScanCore(Assembly assembly)
