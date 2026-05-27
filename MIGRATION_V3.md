@@ -18,7 +18,7 @@ API 版本号为 2。下游 mod 应使用 `MultiEnchantmentApi.RequireApiVersion
 
 ### Sidecar 存档键升级 v2 + 双读
 - 新 enchantment key 基于稳定 GUID（`MultiEnchantmentInstanceId` SavedProperty），不再因 amount/upgrade 漂移。
-- 新 card key 直接用 `SerializableCard.Id`。
+- 新 card key 基于稳定 GUID（`MultiEnchantmentCardInstanceId` SavedProperty）；`SerializableCard.Id` 只是 card definition id，不能区分同名卡实例。
 - 旧 key (`{Id}#u..#e..#f..`) 读取时仍能命中并迁移到 v2，迁移后写一行 info log；旧 key 计划在 v4 移除。
 
 ### `IEnchantmentRegistration` 能力接口拆分

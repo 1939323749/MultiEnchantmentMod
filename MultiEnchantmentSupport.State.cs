@@ -100,5 +100,11 @@ internal static partial class MultiEnchantmentSupport
 
         [SavedProperty]
         public string MultiEnchantmentScopeData { get; set; } = string.Empty;
+
+        [SavedProperty]
+        public string MultiEnchantmentInstanceId { get; set; } = string.Empty;
+
+        [SavedProperty]
+        public string MultiEnchantmentCardInstanceId { get; set; } = string.Empty;
     }
 }

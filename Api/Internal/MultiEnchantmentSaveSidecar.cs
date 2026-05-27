@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Godot;
@@ -16,17 +17,17 @@ internal static class MultiEnchantmentSaveSidecar
     private const string FileName = "multi_enchantment_save_sidecar.json";
     private const string Prefix = "MultiEnchantment";
 
-    // Special MultiEnchantment-prefixed SavedProperty kept in the main save (NOT stripped to
-    // sidecar). Holds a stable per-EnchantmentModel GUID so the v2 sidecar key (`v2e:{guid}`)
-    // can be looked up at load time before any other multi-enchant state is restored. Survives
-    // the SerializableEnchantment ↔ EnchantmentModel round trip via the vanilla SavedProperties
-    // bag; size is one ~36-char string per enchantment, negligible.
+    // MultiEnchantment-prefixed lookup properties kept in the main save (NOT stripped to
+    // sidecar). They hold stable per-instance GUIDs so v2 sidecar keys can be looked up at
+    // load time before any other multi-enchant state is restored.
     internal const string InstanceIdPropertyName = "MultiEnchantmentInstanceId";
+    internal const string CardInstanceIdPropertyName = "MultiEnchantmentCardInstanceId";
 
     private const string CardKeyPrefix = "v2c:";
     private const string EnchantmentKeyPrefix = "v2e:";
 
     private static readonly object Sync = new();
+    private static readonly ConditionalWeakTable<CardModel, CardInstanceIdState> CardInstanceIds = new();
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -41,13 +42,17 @@ internal static class MultiEnchantmentSaveSidecar
         name != null && name.StartsWith(Prefix, StringComparison.Ordinal);
 
     /// <summary>
-    /// True for the one MultiEnchantment-prefixed property we deliberately leave in the main
-    /// vanilla save: <see cref="InstanceIdPropertyName"/>. Strip routines exclude it via this
-    /// check so it remains accessible at load time for sidecar lookup.
+    /// True for MultiEnchantment-prefixed lookup properties we deliberately leave in the main
+    /// vanilla save. Strip routines exclude these values so they remain accessible at load time
+    /// for sidecar lookup.
     /// </summary>
+    private static bool IsLookupProperty(string? name) =>
+        string.Equals(name, InstanceIdPropertyName, StringComparison.Ordinal) ||
+        string.Equals(name, CardInstanceIdPropertyName, StringComparison.Ordinal);
+
     private static bool ShouldStripFromMainSave(string? name) =>
         IsMultiEnchantmentProperty(name) &&
-        !string.Equals(name, InstanceIdPropertyName, StringComparison.Ordinal);
+        !IsLookupProperty(name);
 
     internal static void Reload()
     {
@@ -65,7 +70,7 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
-        CaptureSerializableCard(save);
+        CaptureSerializableCard(save, card, clearStaleEntries: true);
     }
 
     internal static void CaptureEnchantment(EnchantmentModel enchantment, SerializableEnchantment save)
@@ -75,7 +80,7 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
-        CaptureSerializableEnchantment(save);
+        CaptureSerializableEnchantment(save, clearStaleEntries: true);
 
         // Mirror the (possibly freshly generated) instance id back onto the live model so the
         // next in-session ToSerializable produces the same key and we don't orphan the sidecar
@@ -95,21 +100,52 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
+        CaptureSerializableCard(card, liveCard: null, clearStaleEntries: true);
+    }
+
+    private static void CaptureSerializableCard(SerializableCard card, CardModel? liveCard, bool clearStaleEntries)
+    {
         if (TryExtractPayload(card.Props, out SavedPropertiesPayload payload))
         {
+            string instanceId = EnsureCardInstanceId(card, liveCard);
             lock (Sync)
             {
                 EnsureLoadedLocked();
-                document.Cards[BuildCardKey(card)] = payload;
+                document.Cards[BuildCardKey(instanceId)] = payload;
+                RemoveUnsafeModelIdCardKeyLocked(card);
                 dirty = true;
             }
         }
+        else
+        {
+            string? instanceId = TryGetKnownCardInstanceId(card, liveCard);
+            lock (Sync)
+            {
+                EnsureLoadedLocked();
+                bool removed = false;
+                if (clearStaleEntries && instanceId != null)
+                {
+                    removed |= document.Cards.Remove(BuildCardKey(instanceId));
+                }
 
-        CaptureSerializableEnchantment(card.Enchantment);
-        CaptureNestedProperties(card.Props);
+                removed |= RemoveUnsafeModelIdCardKeyLocked(card);
+                if (removed)
+                {
+                    dirty = true;
+                }
+            }
+        }
+
+        CaptureSerializableEnchantment(card.Enchantment, clearStaleEntries);
+        CaptureNestedProperties(card.Props, clearStaleEntries);
     }
 
     internal static void CaptureSerializableEnchantment(SerializableEnchantment? enchantment)
+    {
+        CaptureSerializableEnchantment(enchantment, clearStaleEntries: true);
+    }
+
+    private static void CaptureSerializableEnchantment(SerializableEnchantment? enchantment, bool clearStaleEntries)
     {
         if (enchantment == null)
         {
@@ -130,33 +166,55 @@ internal static class MultiEnchantmentSaveSidecar
                 dirty = true;
             }
         }
+        else if (clearStaleEntries && BuildEnchantmentKey(enchantment) is { } staleKey)
+        {
+            lock (Sync)
+            {
+                EnsureLoadedLocked();
+                if (document.Enchantments.Remove(staleKey))
+                {
+                    dirty = true;
+                }
+            }
+        }
 
-        CaptureNestedProperties(enchantment.Props);
+        CaptureNestedProperties(enchantment.Props, clearStaleEntries);
     }
 
-    internal static void RestoreInto(SerializableCard save)
+    internal static void RestoreInto(SerializableCard save, CardModel? liveCard = null)
     {
         if (save == null)
         {
             return;
         }
 
-        SavedPropertiesPayload? payload;
-        string v2Key = BuildCardKey(save);
+        SavedPropertiesPayload? payload = null;
+        string? cardInstanceId = TryGetKnownCardInstanceId(save, liveCard);
+        string v2Key = cardInstanceId == null ? string.Empty : BuildCardKey(cardInstanceId);
         string legacyKey = BuildLegacyCardKey(save);
         bool migratedFromLegacy = false;
         lock (Sync)
         {
             EnsureLoadedLocked();
-            if (!document.Cards.TryGetValue(v2Key, out payload) &&
-                document.Cards.TryGetValue(legacyKey, out payload))
+            if (!string.IsNullOrEmpty(v2Key) && document.Cards.TryGetValue(v2Key, out payload))
             {
-                // Legacy hit — promote to v2 key so subsequent reads / saves use the stable
-                // schema. Keep the legacy entry around for now; a future release will drop
-                // it after enough players have migrated.
+                RememberCardInstanceId(liveCard, cardInstanceId!);
+            }
+            else if (document.Cards.TryGetValue(legacyKey, out payload))
+            {
+                // Legacy composite-key hit. Move it to a per-card instance key; do not read
+                // from or preserve the unsafe ModelId-only key because it leaks across runs.
+                cardInstanceId = EnsureCardInstanceId(save, liveCard);
+                v2Key = BuildCardKey(cardInstanceId);
                 document.Cards[v2Key] = payload;
+                document.Cards.Remove(legacyKey);
+                RemoveUnsafeModelIdCardKeyLocked(save);
                 dirty = true;
                 migratedFromLegacy = true;
+            }
+            else if (RemoveUnsafeModelIdCardKeyLocked(save))
+            {
+                dirty = true;
             }
         }
 
@@ -165,6 +223,10 @@ internal static class MultiEnchantmentSaveSidecar
             SavedProperties? props = save.Props;
             ApplyPayload(ref props, payload);
             save.Props = props;
+            if (cardInstanceId != null)
+            {
+                UpsertCardInstanceId(save, cardInstanceId);
+            }
 
             if (migratedFromLegacy)
             {
@@ -220,7 +282,7 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-    internal static void PrepareRunForDisk(SerializableRun save)
+    internal static void PrepareRunForDisk(SerializableRun save, bool clearStaleEntries = true)
     {
         if (save == null)
         {
@@ -229,7 +291,7 @@ internal static class MultiEnchantmentSaveSidecar
 
         foreach (SerializableCard card in EnumerateCards(save))
         {
-            CaptureSerializableCard(card);
+            CaptureSerializableCard(card, liveCard: null, clearStaleEntries: clearStaleEntries);
             StripForDisk(card);
         }
 
@@ -276,15 +338,16 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-private static bool TryExtractPayload(SavedProperties? props, out SavedPropertiesPayload payload)
+    private static bool TryExtractPayload(SavedProperties? props, out SavedPropertiesPayload payload)
     {
         payload = new SavedPropertiesPayload();
         if (props?.strings != null)
         {
             foreach (SavedProperties.SavedProperty<string> property in props.strings)
             {
-                // InstanceId stays in the main save as a lookup index; the sidecar payload only
-                // carries the rich state. Skipping it here also keeps the sidecar JSON minimal.
+                // InstanceId / CardInstanceId stay in the main save as lookup indexes; the
+                // sidecar payload only carries rich state. Skipping them here also keeps the
+                // sidecar JSON minimal.
                 if (ShouldStripFromMainSave(property.name))
                 {
                     payload.Strings[property.name] = property.value;
@@ -344,7 +407,7 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
         props.intArrays?.RemoveAll(property => ShouldStripFromMainSave(property.name));
     }
 
-    private static void CaptureNestedProperties(SavedProperties? props)
+    private static void CaptureNestedProperties(SavedProperties? props, bool clearStaleEntries)
     {
         if (props == null)
         {
@@ -355,7 +418,7 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
         {
             foreach (SavedProperties.SavedProperty<SerializableCard> property in props.cards)
             {
-                CaptureSerializableCard(property.value);
+                CaptureSerializableCard(property.value, liveCard: null, clearStaleEntries: clearStaleEntries);
             }
         }
 
@@ -365,7 +428,7 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
             {
                 foreach (SerializableCard card in property.value)
                 {
-                    CaptureSerializableCard(card);
+                    CaptureSerializableCard(card, liveCard: null, clearStaleEntries: clearStaleEntries);
                 }
             }
         }
@@ -433,12 +496,10 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
         }
     }
 
-    /// <summary>
-    /// v2 card key. <c>SerializableCard.Id</c> is the game-assigned GUID for the card model and
-    /// is stable across save/load, so we don't need to mix in upgrade / floor / primary
-    /// enchantment state (all of which can drift mid-run, orphaning the entry).
-    /// </summary>
-    private static string BuildCardKey(SerializableCard card) =>
+    private static string BuildCardKey(string instanceId) =>
+        $"{CardKeyPrefix}{instanceId}";
+
+    private static string BuildUnsafeModelIdCardKey(SerializableCard card) =>
         $"{CardKeyPrefix}{card.Id}";
 
     /// <summary>
@@ -462,6 +523,100 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
 
     private static string BuildLegacyEnchantmentKey(SerializableEnchantment enchantment) =>
         $"{enchantment.Id}#a{enchantment.Amount}";
+
+    private static string? TryReadCardInstanceId(SerializableCard card)
+    {
+        if (card.Props?.strings == null)
+        {
+            return null;
+        }
+
+        foreach (SavedProperties.SavedProperty<string> property in card.Props.strings)
+        {
+            if (string.Equals(property.name, CardInstanceIdPropertyName, StringComparison.Ordinal))
+            {
+                return string.IsNullOrEmpty(property.value) ? null : property.value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryGetKnownCardInstanceId(SerializableCard card, CardModel? liveCard)
+    {
+        if (TryReadCardInstanceId(card) is { } saved)
+        {
+            RememberCardInstanceId(liveCard, saved);
+            return saved;
+        }
+
+        if (liveCard != null &&
+            CardInstanceIds.TryGetValue(liveCard, out CardInstanceIdState? state) &&
+            !string.IsNullOrEmpty(state.InstanceId))
+        {
+            UpsertCardInstanceId(card, state.InstanceId);
+            return state.InstanceId;
+        }
+
+        return null;
+    }
+
+    private static string EnsureCardInstanceId(SerializableCard card, CardModel? liveCard)
+    {
+        if (TryGetKnownCardInstanceId(card, liveCard) is { } existing)
+        {
+            return existing;
+        }
+
+        string id = Guid.NewGuid().ToString("N");
+        UpsertCardInstanceId(card, id);
+        RememberCardInstanceId(liveCard, id);
+        return id;
+    }
+
+    private static void UpsertCardInstanceId(SerializableCard card, string id)
+    {
+        card.Props ??= new SavedProperties();
+        card.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
+        Upsert(card.Props.strings, CardInstanceIdPropertyName, id);
+    }
+
+    private static void RememberCardInstanceId(CardModel? card, string id)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        CardInstanceIds.GetOrCreateValue(card).InstanceId = id;
+    }
+
+    private static bool RemoveUnsafeModelIdCardKeyLocked(SerializableCard card)
+    {
+        return document.Cards.Remove(BuildUnsafeModelIdCardKey(card));
+    }
+
+    private static bool RemoveMalformedCardInstanceKeysLocked()
+    {
+        bool removed = false;
+        foreach (string key in document.Cards.Keys.Where(IsMalformedCardInstanceKey).ToArray())
+        {
+            removed |= document.Cards.Remove(key);
+        }
+
+        return removed;
+    }
+
+    private static bool IsMalformedCardInstanceKey(string key)
+    {
+        if (!key.StartsWith(CardKeyPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string instanceId = key[CardKeyPrefix.Length..];
+        return !Guid.TryParseExact(instanceId, "N", out _);
+    }
 
     private static string? TryReadInstanceId(SerializableEnchantment enchantment)
     {
@@ -548,6 +703,10 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
         try
         {
             document = JsonSerializer.Deserialize<SidecarDocument>(File.ReadAllText(path), JsonOptions) ?? new SidecarDocument();
+            if (RemoveMalformedCardInstanceKeysLocked())
+            {
+                dirty = true;
+            }
         }
         catch (Exception ex)
         {
@@ -619,5 +778,10 @@ private static bool TryExtractPayload(SavedProperties? props, out SavedPropertie
 
         [JsonIgnore]
         public bool HasAny => Strings.Count > 0 || IntArrays.Count > 0;
+    }
+
+    private sealed class CardInstanceIdState
+    {
+        public string InstanceId { get; set; } = string.Empty;
     }
 }

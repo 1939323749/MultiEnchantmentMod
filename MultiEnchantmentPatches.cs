@@ -547,8 +547,8 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void FromSerializablePostfix(SerializableCard save, ref CardModel __result)
     {
-        MultiEnchantmentSaveSidecar.RestoreInto(save);
-        MultiEnchantmentSaveSidecar.CaptureSerializableCard(save);
+        MultiEnchantmentSaveSidecar.RestoreInto(save, __result);
+        MultiEnchantmentSaveSidecar.CaptureCard(__result, save);
         MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
         if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
         {
@@ -600,7 +600,7 @@ internal static class MultiEnchantmentPatches
         if (__result is { Success: true, SaveData: { } save })
         {
             MultiEnchantmentSaveSidecar.Reload();
-            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, clearStaleEntries: false);
         }
     }
 
@@ -611,7 +611,7 @@ internal static class MultiEnchantmentPatches
         if (__result is { Success: true, SaveData: { } save })
         {
             MultiEnchantmentSaveSidecar.Reload();
-            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, clearStaleEntries: false);
         }
     }
 

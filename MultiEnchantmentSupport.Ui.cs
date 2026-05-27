@@ -147,6 +147,7 @@ internal static partial class MultiEnchantmentSupport
         {
             Control tab = (Control)primaryTab.Duplicate();
             tab.Name = $"{ExtraEnchantmentTabPrefix}{uiState.ExtraTabs.Count + 1}";
+            tab.UniqueNameInOwner = false;
             if (tab.Material != null)
             {
                 tab.Material = (Material)tab.Material.Duplicate();
@@ -213,12 +214,31 @@ internal static partial class MultiEnchantmentSupport
 
     public static void HideExtraEnchantmentTabs(NCard? cardNode)
     {
-        if (cardNode == null || !CardUiStates.TryGetValue(cardNode, out CardUiState? state))
+        if (cardNode == null || !GodotObject.IsInstanceValid(cardNode))
         {
             return;
         }
 
-        foreach (Control tab in state.ExtraTabs)
+        Control? primaryTab = NCardEnchantmentTabField?.GetValue(cardNode) as Control;
+        Node? badgeRoot = primaryTab?.GetParent();
+        if (badgeRoot != null)
+        {
+            foreach (Node child in badgeRoot.GetChildren())
+            {
+                if (child is Control tab &&
+                    tab.Name.ToString().StartsWith(ExtraEnchantmentTabPrefix, StringComparison.Ordinal))
+                {
+                    tab.Visible = false;
+                }
+            }
+        }
+
+        if (!CardUiStates.TryGetValue(cardNode, out CardUiState? state))
+        {
+            return;
+        }
+
+        foreach (Control tab in state.ExtraTabs.Where(GodotObject.IsInstanceValid))
         {
             tab.Visible = false;
         }
@@ -567,7 +587,7 @@ internal static partial class MultiEnchantmentSupport
     {
         foreach ((EnchantmentModel enchantment, Action handler) in uiState.StatusHandlers.ToArray())
         {
-            if (extras.Contains(enchantment))
+            if (extras.Any(extra => ReferenceEquals(extra, enchantment)))
             {
                 continue;
             }

@@ -122,15 +122,14 @@
         <Message Text="Skipping Godot .pck export because GodotPath is not configured." Importance="high"/>
     </Target>
 
-    <!-- Copy the compiled DLL (and PDB when present) to the game's mods folder after Publish,
-         so the deployed mod assembly stays in sync with the .pck export above. -->
-    <Target Name="CopyDllToMods" AfterTargets="Publish" Condition="'$(ModsPath)' != '' and '$(IsInnerGodotExport)' != 'true'">
+    <!-- Publish deploys only the mod manifest, pck, and dll into the game's mods folder. -->
+    <Target Name="CopyPublishArtifactsToMods" AfterTargets="Publish" Condition="'$(ModsPath)' != '' and '$(IsInnerGodotExport)' != 'true'">
         <PropertyGroup>
             <_ModOutputDir>$(ModsPath)$(MSBuildProjectName)/</_ModOutputDir>
         </PropertyGroup>
         <MakeDir Directories="$(_ModOutputDir)" Condition="!Exists('$(_ModOutputDir)')"/>
+        <Copy SourceFiles="MultiEnchantmentMod.json" DestinationFiles="$(_ModOutputDir)$(MSBuildProjectName).json" SkipUnchangedFiles="true"/>
         <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).dll" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true"/>
-        <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).pdb" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true" Condition="Exists('$(PublishDir)$(MSBuildProjectName).pdb')"/>
-        <Message Text="Copied $(MSBuildProjectName).dll to $(_ModOutputDir)" Importance="high"/>
+        <Message Text="Copied $(MSBuildProjectName).json/.pck/.dll to $(_ModOutputDir)" Importance="high"/>
     </Target>
 </Project>
