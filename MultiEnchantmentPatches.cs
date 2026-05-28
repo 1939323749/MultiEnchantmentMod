@@ -739,6 +739,13 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
     }
 
+    [HarmonyPatch(typeof(SavedPropertiesTypeCache), nameof(SavedPropertiesTypeCache.InjectTypeIntoCache))]
+    [HarmonyPostfix]
+    private static void SavedPropertiesInjectTypeIntoCachePostfix()
+    {
+        MultiEnchantmentSupport.RefreshSavedPropertiesNetIdBitSize();
+    }
+
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun), new[] { typeof(SerializableRun), typeof(bool) })]
     [HarmonyPrefix]
     private static void SaveRunPrefix(SerializableRun save)

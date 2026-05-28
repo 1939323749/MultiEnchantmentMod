@@ -88,6 +88,10 @@ internal static partial class MultiEnchantmentSupport
         AccessTools.Method(typeof(CardModel), "PlayPowerCardFlyVfx");
     private static readonly MethodInfo? CardModelClearEnchantmentInternalMethod =
         AccessTools.Method(typeof(CardModel), "ClearEnchantmentInternal");
+    private static readonly FieldInfo? SavedPropertiesNetIdMapField =
+        AccessTools.Field(typeof(SavedPropertiesTypeCache), "_netIdToPropertyNameMap");
+    private static readonly PropertyInfo? SavedPropertiesNetIdBitSizeProperty =
+        AccessTools.Property(typeof(SavedPropertiesTypeCache), nameof(SavedPropertiesTypeCache.NetIdBitSize));
 
     private static readonly StringName ShaderH = new("h");
     private static readonly StringName ShaderS = new("s");
@@ -97,6 +101,7 @@ internal static partial class MultiEnchantmentSupport
     {
         ValidateReflectionTargets();
         SavedPropertiesTypeCache.InjectTypeIntoCache(typeof(MultiEnchantmentSaveCarrier));
+        RefreshSavedPropertiesNetIdBitSize();
     }
 
     private static void ValidateReflectionTargets()
@@ -116,6 +121,8 @@ internal static partial class MultiEnchantmentSupport
         AddMissing(missing, CardModelGetResultPileTypeMethod, "CardModel.GetResultPileTypeForCardPlay");
         AddMissing(missing, CardModelPlayPowerCardFlyVfxMethod, "CardModel.PlayPowerCardFlyVfx");
         AddMissing(missing, CardModelClearEnchantmentInternalMethod, "CardModel.ClearEnchantmentInternal");
+        AddMissing(missing, SavedPropertiesNetIdMapField, "SavedPropertiesTypeCache._netIdToPropertyNameMap");
+        AddMissing(missing, SavedPropertiesNetIdBitSizeProperty, "SavedPropertiesTypeCache.NetIdBitSize");
 
         if (missing.Count > 0)
         {
@@ -131,6 +138,19 @@ internal static partial class MultiEnchantmentSupport
         {
             missing.Add(name);
         }
+    }
+
+    internal static void RefreshSavedPropertiesNetIdBitSize()
+    {
+        if (SavedPropertiesNetIdMapField?.GetValue(null) is not List<string> propertyNames ||
+            SavedPropertiesNetIdBitSizeProperty == null)
+        {
+            throw new InvalidOperationException("Failed to access SavedPropertiesTypeCache network ID metadata.");
+        }
+
+        int count = Math.Max(1, propertyNames.Count);
+        int bitSize = Mathf.CeilToInt(Math.Log2(count));
+        SavedPropertiesNetIdBitSizeProperty.SetValue(null, bitSize);
     }
 
     public static IEnumerable<EnchantmentModel> GetEnchantments(CardModel? card)
