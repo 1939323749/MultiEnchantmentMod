@@ -107,7 +107,7 @@ internal static class MultiEnchantmentPatches
 
         // All other vanilla checks pass. The only remaining reason vanilla could have rejected is
         // the "same enchantment already exists" clause — re-enable iff mod's stack policy permits.
-        bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
+        bool relaxed = MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
         if (relaxed)
         {
             __result = true;
