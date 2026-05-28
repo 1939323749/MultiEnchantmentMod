@@ -8,5 +8,5 @@
   "has_dll": true,
   "dependencies": ["MultiEnchantmentMod"],
   "affects_gameplay": false,
-  "min_game_version": "0.105.1"
+  "min_game_version": "0.106.1"
 }

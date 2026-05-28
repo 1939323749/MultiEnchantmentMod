@@ -31,13 +31,6 @@ public sealed class SampleChargedSurge : EnchantmentModel
 {
     public override bool ShowAmount => false;
     public override bool HasExtraCardText => true;
-
-    [ModifyDynamicVar("damage")]
-    public decimal AddDamage(EnchantmentStackSnapshot snapshot, decimal current)
-    {
-        _ = snapshot;
-        return current + 5m;
-    }
 }
 
 public static class SampleChargedSurgeRegistration
@@ -49,6 +42,11 @@ public static class SampleChargedSurgeRegistration
         _registration ??= MultiEnchantmentApi.Register<SampleChargedSurge>()
             .Stack(StackBehavior.DisallowDuplicate, StatusAggregation.AnyInstanceCountsAsOne)
             .MaxActivations(3, ActivationTrigger.OnPlay)
+            .ModifyDynamicVar("damage", (snapshot, current) =>
+            {
+                _ = snapshot;
+                return current + 5m;
+            })
             .FormatExtraText((EnchantmentStackSnapshot snapshot, string defaultText, out string formatted) =>
             {
                 _ = defaultText;

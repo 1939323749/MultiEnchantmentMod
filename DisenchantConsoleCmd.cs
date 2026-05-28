@@ -70,12 +70,19 @@ public class DisenchantConsoleCmd : AbstractConsoleCmd
 
         if (enchantmentFilter == null)
         {
+            int removed = 0;
             foreach (EnchantmentModel e in enchantments)
             {
-                MultiEnchantmentApi.RemoveEnchantment(card, e, RemovalReason.Manual);
+                if (MultiEnchantmentApi.RemoveEnchantment(card, e, RemovalReason.Manual))
+                {
+                    removed++;
+                }
             }
-            return new CmdResult(success: true,
-                $"Removed all {enchantments.Count} enchantment(s) from '{card.Title}'.");
+
+            return new CmdResult(success: removed > 0,
+                removed == enchantments.Count
+                    ? $"Removed all {removed} enchantment(s) from '{card.Title}'."
+                    : $"Removed {removed}/{enchantments.Count} enchantment(s) from '{card.Title}'; remaining removals were vetoed or failed.");
         }
 
         List<EnchantmentModel> matching = enchantments
@@ -89,13 +96,19 @@ public class DisenchantConsoleCmd : AbstractConsoleCmd
                 $"No enchantment '{enchantmentFilter}' on '{card.Title}'. Has: {available}");
         }
 
+        int matchingRemoved = 0;
         foreach (EnchantmentModel e in matching)
         {
-            MultiEnchantmentApi.RemoveEnchantment(card, e, RemovalReason.Manual);
+            if (MultiEnchantmentApi.RemoveEnchantment(card, e, RemovalReason.Manual))
+            {
+                matchingRemoved++;
+            }
         }
 
-        return new CmdResult(success: true,
-            $"Removed {matching.Count} '{enchantmentFilter}' enchantment(s) from '{card.Title}'.");
+        return new CmdResult(success: matchingRemoved > 0,
+            matchingRemoved == matching.Count
+                ? $"Removed {matchingRemoved} '{enchantmentFilter}' enchantment(s) from '{card.Title}'."
+                : $"Removed {matchingRemoved}/{matching.Count} '{enchantmentFilter}' enchantment(s) from '{card.Title}'; remaining removals were vetoed or failed.");
     }
 
     public override CompletionResult GetArgumentCompletions(Player? player, string[] args)

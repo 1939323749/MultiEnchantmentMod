@@ -333,21 +333,23 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
             return;
         }
 
-        string? modelStack = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Stack");
-        string? modelStatus = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Status");
+        string? modelStack = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Stack") ?? "DisallowDuplicate";
+        string? modelStatus = SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Status") ?? "AnyInstanceCountsAsOne";
 
-        bool stackMismatch = false;
-        bool statusMismatch = false;
+        string? definitionStack = definition.DeclaredStack;
+        string? definitionStatus = definition.DeclaredStatus;
+        bool stackMismatch = definitionStack != null && definitionStack != modelStack;
+        bool statusMismatch = definitionStatus != null && definitionStatus != modelStatus;
         if (!stackMismatch && !statusMismatch)
         {
             return;
         }
 
         string mismatchPart = stackMismatch && statusMismatch
-            ? $"Stack/Status ({modelStack}/{modelStatus} vs {definition.Stack}/{definition.Status})"
+            ? $"Stack/Status ({modelStack}/{modelStatus} vs {definitionStack}/{definitionStatus})"
             : stackMismatch
-                ? $"Stack ({modelStack} vs {definition.Stack})"
-                : $"Status ({modelStatus} vs {definition.Status})";
+                ? $"Stack ({modelStack} vs {definitionStack})"
+                : $"Status ({modelStatus} vs {definitionStatus})";
 
         context.ReportDiagnostic(Diagnostic.Create(
             Mem002,
@@ -382,22 +384,26 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeExecutionMode(SymbolAnalysisContext context, DefinitionInfo definition)
     {
-        if (definition.Stack == null || definition.Execution == null)
+        if (definition.Stack == null || definition.ExecutionModes.Length == 0)
         {
             return;
         }
 
-        if (!IsExecutionMismatch(definition.Stack, definition.Execution))
+        foreach (string execution in definition.ExecutionModes)
         {
+            if (!IsExecutionMismatch(definition.Stack, execution))
+            {
+                continue;
+            }
+
+            context.ReportDiagnostic(Diagnostic.Create(
+                Mem005,
+                SymbolHelpers.GetBestLocation(definition.DefinitionType),
+                execution,
+                definition.DefinitionType.Name,
+                definition.Stack));
             return;
         }
-
-        context.ReportDiagnostic(Diagnostic.Create(
-            Mem005,
-            SymbolHelpers.GetBestLocation(definition.DefinitionType),
-            definition.Execution,
-            definition.DefinitionType.Name,
-            definition.Stack));
     }
 
     private static void AnalyzePresentation(SymbolAnalysisContext context, DefinitionInfo definition)

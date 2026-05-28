@@ -163,7 +163,12 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeCombatStart))]
     [HarmonyPostfix]
-    private static void BeforeCombatStartPostfix(ICombatState combatState)
+    private static void BeforeCombatStartPostfix(ref Task __result, ICombatState? combatState)
+    {
+        __result = BeforeCombatStartPostfixAsync(__result, combatState);
+    }
+
+    private static async Task BeforeCombatStartPostfixAsync(Task original, ICombatState? combatState)
     {
         // First-time gate: by the time any combat starts, every ModInitializer has run and the
         // enchantment registry must be considered closed. Late registrations after this point
@@ -171,20 +176,38 @@ internal static class MultiEnchantmentPatches
         // SealRegistryIfNeeded is idempotent (Interlocked-guarded), so subsequent combats no-op.
         Api.Internal.AssemblyScanner.SealRegistryIfNeeded();
 
+        await original;
+        if (combatState == null)
+        {
+            return;
+        }
+
         MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCombatEnd))]
     [HarmonyPostfix]
-    private static void AfterCombatEndPostfix(IRunState runState, ICombatState? combatState)
+    private static void AfterCombatEndPostfix(ref Task __result, IRunState runState, ICombatState? combatState)
     {
+        __result = AfterCombatEndPostfixAsync(__result, runState, combatState);
+    }
+
+    private static async Task AfterCombatEndPostfixAsync(Task original, IRunState runState, ICombatState? combatState)
+    {
+        await original;
         MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardEnteredCombat))]
     [HarmonyPostfix]
-    private static void AfterCardEnteredCombatPostfix(ICombatState combatState, CardModel card)
+    private static void AfterCardEnteredCombatPostfix(ref Task __result, ICombatState combatState, CardModel card)
     {
+        __result = AfterCardEnteredCombatPostfixAsync(__result, combatState, card);
+    }
+
+    private static async Task AfterCardEnteredCombatPostfixAsync(Task original, ICombatState combatState, CardModel card)
+    {
+        await original;
         // Fires OnCombatStart for cards that join combat AFTER BeforeCombatStart's initial
         // sweep (relic-copies, Madness-generated cards, etc.). The scope support method gates
         // on whether the sweep has completed, so deck-setup additions stay handled by the
@@ -200,8 +223,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
     [HarmonyPostfix]
-    private static void AfterTurnEndPostfix(ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
+    private static void AfterTurnEndPostfix(ref Task __result, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
     {
+        __result = AfterTurnEndPostfixAsync(__result, combatState, side, participants);
+    }
+
+    private static async Task AfterTurnEndPostfixAsync(Task original, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
+    {
+        await original;
         // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
         // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
         // just Side. The file's `using Godot;` makes the unqualified name resolve to
@@ -229,8 +258,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardPlayed))]
     [HarmonyPostfix]
-    private static void HookAfterCardPlayedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    private static void HookAfterCardPlayedPostfix(ref Task __result, ICombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
+        __result = HookAfterCardPlayedPostfixAsync(__result, combatState, choiceContext, cardPlay);
+    }
+
+    private static async Task HookAfterCardPlayedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay)
+    {
+        await original;
         // Goopy already drives its own AfterCardPlayed counter via HandleGoopyAfterCardPlayed.
         // For the general v2 surface, fan the AfterCardPlayed activation trigger out to every
         // enchantment on the played card so MaxActivations(N, AfterCardPlayed) / RemoveWhen
@@ -250,8 +285,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
     [HarmonyPostfix]
-    private static void HookAfterCardDrawnPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
+    private static void HookAfterCardDrawnPostfix(ref Task __result, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
     {
+        __result = HookAfterCardDrawnPostfixAsync(__result, combatState, choiceContext, card, fromHandDraw);
+    }
+
+    private static async Task HookAfterCardDrawnPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
+    {
+        await original;
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardDrawn);
 
@@ -265,22 +306,38 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
-    private static async Task HookAfterCardDrawnStackedPostfix(
-        Task __result,
+    private static void HookAfterCardDrawnStackedPostfix(
+        ref Task __result,
         ICombatState combatState,
         PlayerChoiceContext choiceContext,
         CardModel card,
         bool fromHandDraw)
     {
-        await __result;
+        __result = HookAfterCardDrawnStackedPostfixAsync(__result, combatState, choiceContext, card, fromHandDraw);
+    }
+
+    private static async Task HookAfterCardDrawnStackedPostfixAsync(
+        Task original,
+        ICombatState combatState,
+        PlayerChoiceContext choiceContext,
+        CardModel card,
+        bool fromHandDraw)
+    {
+        await original;
         await MultiEnchantmentSupport.DispatchAfterCardDrawnStacked(choiceContext, card, fromHandDraw);
         await MultiEnchantmentSupport.DispatchAfterAnyCardDrawnStacked(choiceContext, combatState, card, fromHandDraw);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardExhausted))]
     [HarmonyPostfix]
-    private static void HookAfterCardExhaustedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
+    private static void HookAfterCardExhaustedPostfix(ref Task __result, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
     {
+        __result = HookAfterCardExhaustedPostfixAsync(__result, combatState, choiceContext, card, causedByEthereal);
+    }
+
+    private static async Task HookAfterCardExhaustedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
+    {
+        await original;
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardExhausted);
 
@@ -293,8 +350,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDiscarded))]
     [HarmonyPostfix]
-    private static void HookAfterCardDiscardedPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card)
+    private static void HookAfterCardDiscardedPostfix(ref Task __result, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card)
     {
+        __result = HookAfterCardDiscardedPostfixAsync(__result, combatState, choiceContext, card);
+    }
+
+    private static async Task HookAfterCardDiscardedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card)
+    {
+        await original;
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
             card, ActivationTrigger.AfterCardDiscarded);
 
@@ -307,8 +370,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterPlayerTurnStart))]
     [HarmonyPostfix]
-    private static void HookAfterPlayerTurnStartPostfix(ICombatState combatState, PlayerChoiceContext choiceContext, Player player)
+    private static void HookAfterPlayerTurnStartPostfix(ref Task __result, ICombatState combatState, PlayerChoiceContext choiceContext, Player player)
     {
+        __result = HookAfterPlayerTurnStartPostfixAsync(__result, combatState, choiceContext, player);
+    }
+
+    private static async Task HookAfterPlayerTurnStartPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, Player player)
+    {
+        await original;
         MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
             player, ActivationTrigger.AfterPlayerTurnStart);
     }
@@ -317,8 +386,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardChangedPiles))]
     [HarmonyPostfix]
-    private static void HookAfterCardChangedPilesPostfix(IRunState runState, ICombatState? combatState, CardModel card, PileType oldPile, AbstractModel? clonedBy)
+    private static void HookAfterCardChangedPilesPostfix(ref Task __result, IRunState runState, ICombatState? combatState, CardModel card, PileType oldPile, AbstractModel? clonedBy)
     {
+        __result = HookAfterCardChangedPilesPostfixAsync(__result, runState, combatState, card, oldPile, clonedBy);
+    }
+
+    private static async Task HookAfterCardChangedPilesPostfixAsync(Task original, IRunState runState, ICombatState? combatState, CardModel card, PileType oldPile, AbstractModel? clonedBy)
+    {
+        await original;
         MultiEnchantmentScopeSupport.DispatchOnCardChangedPilesForCard(card, oldPile, clonedBy);
     }
 
@@ -327,12 +402,25 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterFlush))]
     [HarmonyPostfix]
     private static void HookAfterFlushRetainedPostfix(
+        ref Task __result,
         ICombatState combatState,
         Player player,
         PlayerChoiceContext playerChoiceContext,
         IReadOnlyCollection<CardModel> flushedCards,
         IReadOnlyCollection<CardModel> retainedCards)
     {
+        __result = HookAfterFlushRetainedPostfixAsync(__result, combatState, player, playerChoiceContext, flushedCards, retainedCards);
+    }
+
+    private static async Task HookAfterFlushRetainedPostfixAsync(
+        Task original,
+        ICombatState combatState,
+        Player player,
+        PlayerChoiceContext playerChoiceContext,
+        IReadOnlyCollection<CardModel> flushedCards,
+        IReadOnlyCollection<CardModel> retainedCards)
+    {
+        await original;
         if (retainedCards == null)
         {
             return;
@@ -345,23 +433,35 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeBlockGained))]
     [HarmonyPostfix]
-    private static void HookBeforeBlockGainedPostfix(ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    private static void HookBeforeBlockGainedPostfix(ref Task __result, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
     {
+        __result = HookBeforeBlockGainedPostfixAsync(__result, combatState, creature, amount, props, cardSource);
+    }
+
+    private static async Task HookBeforeBlockGainedPostfixAsync(Task original, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    {
+        await original;
         BlockGainContext context = new(creature, amount, cardSource);
         MultiEnchantmentScopeSupport.DispatchOnBeforeBlockGainedForPlayer(context);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterBlockGained))]
     [HarmonyPostfix]
-    private static void HookAfterBlockGainedPostfix(ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    private static void HookAfterBlockGainedPostfix(ref Task __result, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
     {
+        __result = HookAfterBlockGainedPostfixAsync(__result, combatState, creature, amount, props, cardSource);
+    }
+
+    private static async Task HookAfterBlockGainedPostfixAsync(Task original, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
+    {
+        await original;
         BlockGainContext context = new(creature, amount, cardSource);
         MultiEnchantmentScopeSupport.DispatchOnBlockGainedForPlayer(context);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.ShouldDie))]
     [HarmonyPostfix]
-    private static void HookShouldDiePostfix(Creature creature, ref bool __result)
+    private static void HookShouldDiePostfix(Creature creature, ref bool __result, ref AbstractModel? preventer)
     {
         // Guard semantics: vanilla returns true when nothing prevented death. If it already
         // returned false (some other listener vetoed), don't second-guess. Otherwise, ask the
@@ -370,9 +470,10 @@ internal static class MultiEnchantmentPatches
         {
             return;
         }
-        if (!MultiEnchantmentScopeSupport.DispatchOnShouldDieForCreature(creature))
+        if (!MultiEnchantmentScopeSupport.DispatchOnShouldDieForCreature(creature, out AbstractModel? modPreventer))
         {
             __result = false;
+            preventer = modPreventer;
         }
     }
 
@@ -380,8 +481,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterSideTurnStart))]
     [HarmonyPostfix]
-    private static void HookAfterSideTurnStartPostfix(ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    private static void HookAfterSideTurnStartPostfix(ref Task __result, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
     {
+        __result = HookAfterSideTurnStartPostfixAsync(__result, combatState, side, participants);
+    }
+
+    private static async Task HookAfterSideTurnStartPostfixAsync(Task original, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    {
+        await original;
         // Phase 3b T3b.1: bridge to OnSideTurnStart lifecycle. Vanilla fires both for player and
         // enemy turns; handlers can branch on the side parameter. The existing OnTurnStart
         // lifecycle remains player-only for backward compatibility.
@@ -390,16 +497,28 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeSideTurnStart))]
     [HarmonyPostfix]
-    private static void HookBeforeSideTurnStartPostfix(ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    private static void HookBeforeSideTurnStartPostfix(ref Task __result, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
     {
+        __result = HookBeforeSideTurnStartPostfixAsync(__result, combatState, side, participants);
+    }
+
+    private static async Task HookBeforeSideTurnStartPostfixAsync(Task original, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
+    {
+        await original;
         // Phase 3b T3b.2: bridge to OnBeforeSideTurnStart lifecycle.
         MultiEnchantmentScopeSupport.DispatchOnBeforeSideTurnStart(combatState, side);
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeAttack))]
     [HarmonyPostfix]
-    private static void HookBeforeAttackPostfix(CombatState combatState, AttackCommand command)
+    private static void HookBeforeAttackPostfix(ref Task __result, ICombatState combatState, AttackCommand command)
     {
+        __result = HookBeforeAttackPostfixAsync(__result, combatState, command);
+    }
+
+    private static async Task HookBeforeAttackPostfixAsync(Task original, ICombatState combatState, AttackCommand command)
+    {
+        await original;
         // Phase 3b T3b.3: bridge to OnBeforeAttack lifecycle. AttackCommand exposes Attacker,
         // CardSource, Results — handlers filter as needed.
         MultiEnchantmentScopeSupport.DispatchOnBeforeAttack(combatState, command);
@@ -407,8 +526,14 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterAttack))]
     [HarmonyPostfix]
-    private static void HookAfterAttackPostfix(CombatState combatState, AttackCommand command)
+    private static void HookAfterAttackPostfix(ref Task __result, ICombatState combatState, AttackCommand command)
     {
+        __result = HookAfterAttackPostfixAsync(__result, combatState, command);
+    }
+
+    private static async Task HookAfterAttackPostfixAsync(Task original, ICombatState combatState, AttackCommand command)
+    {
+        await original;
         // Phase 3b T3b.4: bridge to OnAfterAttack lifecycle.
         MultiEnchantmentScopeSupport.DispatchOnAfterAttack(combatState, command);
     }
@@ -416,6 +541,7 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageReceived))]
     [HarmonyPostfix]
     private static void HookAfterDamageReceivedPostfix(
+        ref Task __result,
         PlayerChoiceContext choiceContext,
         IRunState runState,
         ICombatState? combatState,
@@ -425,6 +551,21 @@ internal static class MultiEnchantmentPatches
         Creature? dealer,
         CardModel? cardSource)
     {
+        __result = HookAfterDamageReceivedPostfixAsync(__result, choiceContext, runState, combatState, target, result, props, dealer, cardSource);
+    }
+
+    private static async Task HookAfterDamageReceivedPostfixAsync(
+        Task original,
+        PlayerChoiceContext choiceContext,
+        IRunState runState,
+        ICombatState? combatState,
+        Creature target,
+        DamageResult result,
+        ValueProp props,
+        Creature? dealer,
+        CardModel? cardSource)
+    {
+        await original;
         // Trigger fires when the OWNER of an enchanted card takes damage. Filter to player
         // owners so an enemy taking damage from an attack doesn't burn through MaxActivations
         // counters on player-side enchantments.
@@ -446,8 +587,8 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageGiven))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
-    private static async Task HookAfterDamageGivenStackedPostfix(
-        Task __result,
+    private static void HookAfterDamageGivenStackedPostfix(
+        ref Task __result,
         PlayerChoiceContext choiceContext,
         ICombatState combatState,
         Creature? dealer,
@@ -456,7 +597,20 @@ internal static class MultiEnchantmentPatches
         Creature target,
         CardModel? cardSource)
     {
-        await __result;
+        __result = HookAfterDamageGivenStackedPostfixAsync(__result, choiceContext, combatState, dealer, results, props, target, cardSource);
+    }
+
+    private static async Task HookAfterDamageGivenStackedPostfixAsync(
+        Task original,
+        PlayerChoiceContext choiceContext,
+        ICombatState combatState,
+        Creature? dealer,
+        DamageResult results,
+        ValueProp props,
+        Creature target,
+        CardModel? cardSource)
+    {
+        await original;
         await MultiEnchantmentSupport.DispatchAfterDamageGivenStacked(
             choiceContext,
             cardSource,
@@ -477,9 +631,14 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeFlush))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
-    private static async Task HookBeforeFlushStackedPostfix(Task __result, ICombatState combatState, Player player)
+    private static void HookBeforeFlushStackedPostfix(ref Task __result, ICombatState combatState, Player player)
     {
-        await __result;
+        __result = HookBeforeFlushStackedPostfixAsync(__result, combatState, player);
+    }
+
+    private static async Task HookBeforeFlushStackedPostfixAsync(Task original, ICombatState combatState, Player player)
+    {
+        await original;
         if (player.Creature?.CombatState == null)
         {
             return;
@@ -540,15 +699,12 @@ internal static class MultiEnchantmentPatches
     private static void ToSerializablePostfix(CardModel __instance, ref SerializableCard __result)
     {
         MultiEnchantmentSupport.SerializeAdditionalEnchantments(__instance, __result);
-        MultiEnchantmentSaveSidecar.CaptureCard(__instance, __result);
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.FromSerializable))]
     [HarmonyPostfix]
     private static void FromSerializablePostfix(SerializableCard save, ref CardModel __result)
     {
-        MultiEnchantmentSaveSidecar.RestoreInto(save, __result);
-        MultiEnchantmentSaveSidecar.CaptureCard(__result, save);
         MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
         if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
         {
@@ -574,15 +730,12 @@ internal static class MultiEnchantmentPatches
         // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
         // for why the Scope kind itself is NOT serialized.
         MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
-        MultiEnchantmentSaveSidecar.CaptureEnchantment(__instance, __result);
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable))]
     [HarmonyPostfix]
     private static void EnchantmentFromSerializablePostfix(SerializableEnchantment save, ref EnchantmentModel __result)
     {
-        MultiEnchantmentSaveSidecar.RestoreInto(save);
-        MultiEnchantmentSaveSidecar.CaptureSerializableEnchantment(save);
         MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
     }
 
@@ -600,7 +753,7 @@ internal static class MultiEnchantmentPatches
         if (__result is { Success: true, SaveData: { } save })
         {
             MultiEnchantmentSaveSidecar.Reload();
-            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, clearStaleEntries: false);
+            MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
         }
     }
 
@@ -611,7 +764,7 @@ internal static class MultiEnchantmentPatches
         if (__result is { Success: true, SaveData: { } save })
         {
             MultiEnchantmentSaveSidecar.Reload();
-            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, clearStaleEntries: false);
+            MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
         }
     }
 

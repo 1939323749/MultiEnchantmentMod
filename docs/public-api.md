@@ -208,10 +208,10 @@ All under `Api/Attributes/`.
   - `int MaxActivations { get; init; }`
   - `int LingerTurns { get; init; }`
   - `string Activation { get; init; }`
-- `[AttributeUsage(Class)] sealed class EnchantmentDefinitionAttribute : Attribute` — marker.
+- `[AttributeUsage(Class)] sealed class EnchantmentDefinitionAttribute : Attribute` — optional marker with analyzer-only `Stack` / `Status` hints.
 - `[AttributeUsage(Class)] sealed class EnchantmentExecutionAttribute : Attribute`
   - `HookExecutionMode All { get; init; }` plus one per hook kind.
-- `[AttributeUsage(Method, AllowMultiple=true)] sealed class EnchantmentKeywordAttribute : Attribute`
+- `[AttributeUsage(Class, AllowMultiple=true)] sealed class EnchantmentKeywordAttribute : Attribute`
   - `CardKeyword Keyword`, `KeywordEvalMode Mode`, `int Constant`.
 - `[AttributeUsage(Class)] sealed class EnchantmentPresentationAttribute : Attribute`
   - `bool HasExtraText { get; init; }`, `bool HasVisualSliceOverride { get; init; }`.

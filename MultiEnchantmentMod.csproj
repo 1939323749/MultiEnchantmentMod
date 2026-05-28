@@ -61,11 +61,11 @@
     <ItemGroup Condition="Exists('$(Sts2DataDir)')">
         <Reference Include="0Harmony">
             <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
-            <Private>false</Private>
+            <Private>true</Private>
         </Reference>
         <Reference Include="sts2">
             <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
-            <Private>false</Private>
+            <Private>true</Private>
             <Publicize>True</Publicize> <!--Allows private/protected field references but may cause errors.-->
         </Reference>
     </ItemGroup>
@@ -112,10 +112,16 @@
     </Target>
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
+        <PropertyGroup>
+            <_ModOutputDir>$(ModsPath)$(MSBuildProjectName)/</_ModOutputDir>
+            <_PublishedPck>$(_ModOutputDir)$(MSBuildProjectName).pck</_PublishedPck>
+        </PropertyGroup>
+        <MakeDir Directories="$(_ModOutputDir)" Condition="!Exists('$(_ModOutputDir)')"/>
         <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
-        <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(ModsPath)$(MSBuildProjectName)/$(MSBuildProjectName).pck&quot;"
-              EnvironmentVariables="IsInnerGodotExport=true;MSBUILDDISABLENODEREUSE=1"
-              ContinueOnError="WarnAndContinue"/>
+        <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(_PublishedPck)&quot;"
+              EnvironmentVariables="IsInnerGodotExport=true;MSBUILDDISABLENODEREUSE=1"/>
+        <Error Text="Godot export did not create expected pack '$(_PublishedPck)'."
+               Condition="!Exists('$(_PublishedPck)')"/>
     </Target>
 
     <Target Name="GodotPublishSkipped" AfterTargets="Publish" Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')">

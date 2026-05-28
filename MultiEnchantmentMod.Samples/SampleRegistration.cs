@@ -54,13 +54,12 @@ public partial class SampleRegistration : Node
         SampleChargedSharpenRegistration.Install();
         SampleHandOnlySharpenRegistration.Install();
         SamplePhoenixRegistration.Install();
-        SampleFullHpShieldRegistration.Install();
         SampleChargedSurgeRegistration.Install();
         SampleBerserkRegistration.Install();
         SampleBoundedQueueRegistration.Install();
         SampleFlexibleScopeRegistration.Install();
         SampleNumericContributionRegistration.Install();
         SampleHandStatusSharpenRegistration.Install();
-        Logger.Info($"[{ModId}] Installed 12 fluent (Tier C) sample registration(s).");
+        Logger.Info($"[{ModId}] Installed 11 fluent (Tier C) sample registration(s).");
     }
 }

@@ -73,7 +73,7 @@ internal static class MultiEnchantmentStackPatches
     {
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting Imbued.AfterAutoPrePlayPhaseEntered. " +
-            $"Player={player.NetId} ImbuedCard={__instance.Card?.Id} Round={__instance.Card?.CombatState?.RoundNumber}");
+            $"Player={player.NetId} ImbuedCard={__instance.Card?.Id} Turn={player.PlayerCombatState?.TurnNumber}");
         try
         {
             __result = HandleStackedImbuedAfterAutoPrePlayPhaseEntered(__instance, choiceContext, player);
@@ -138,7 +138,7 @@ internal static class MultiEnchantmentStackPatches
 
     private static async Task HandleStackedImbuedAfterAutoPrePlayPhaseEntered(Imbued imbued, PlayerChoiceContext choiceContext, Player player)
     {
-        if (player != imbued.Card.Owner || imbued.Card.CombatState!.RoundNumber != 1)
+        if (player != imbued.Card.Owner || player.PlayerCombatState?.TurnNumber > 1)
         {
             return;
         }

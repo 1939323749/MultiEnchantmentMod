@@ -94,12 +94,12 @@ internal static partial class MultiEnchantmentSupport
         return changed;
     }
 
-    public static EnchantmentModel ApplyEnchantment(EnchantmentModel enchantment, CardModel card, decimal amount)
+    public static EnchantmentModel? ApplyEnchantment(EnchantmentModel enchantment, CardModel card, decimal amount)
     {
         return ApplyEnchantmentWithScopeOverride(enchantment, card, amount, scopeOverride: null);
     }
 
-    internal static EnchantmentModel ApplyEnchantmentWithScopeOverride(
+    internal static EnchantmentModel? ApplyEnchantmentWithScopeOverride(
         EnchantmentModel enchantment,
         CardModel card,
         decimal amount,
@@ -108,12 +108,11 @@ internal static partial class MultiEnchantmentSupport
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
 
-        // CanEnchant now strictly matches vanilla's "no existing same-type" semantics (see
-        // the CanApply comment), so relic / external UI calls are blocked at the gate before
-        // reaching here. Internal merge calls must still go through, so probe CanStackOnto
-        // and skip the CanEnchant gate when a legitimate merge is in progress.
         bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
-        if (!isStackingExisting && !enchantment.CanEnchant(card))
+        bool canApply = isStackingExisting
+            ? MultiEnchantmentStackSupport.PassesCanEnchantRulesIgnoringDuplicate(enchantment, card)
+            : enchantment.CanEnchant(card);
+        if (!canApply)
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
@@ -146,17 +145,22 @@ internal static partial class MultiEnchantmentSupport
             return existing;
         }
 
-        EnchantmentModel applied = AttachNewEnchantmentStacks(
+        EnchantmentModel? applied = AttachNewEnchantmentStacks(
             card,
             enchantment,
             appliedAmount,
             modifyCard: true,
             triggerChanged: false,
+            out int appliedStackCount,
             scopeOverride);
+        if (applied == null)
+        {
+            return null;
+        }
 
         if (IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
         {
-            SyncDeckVersionEnchantment(card, applied.GetType(), appliedAmount, behavior);
+            SyncDeckVersionEnchantment(card, applied.GetType(), appliedStackCount, behavior);
         }
 
         card.FinalizeUpgradeInternal();
@@ -166,7 +170,7 @@ internal static partial class MultiEnchantmentSupport
         return applied;
     }
 
-    public static EnchantmentModel AddAdditionalEnchantment(CardModel card, EnchantmentModel enchantment, decimal amount, bool modifyCard, bool triggerChanged)
+    public static EnchantmentModel? AddAdditionalEnchantment(CardModel card, EnchantmentModel enchantment, decimal amount, bool modifyCard, bool triggerChanged)
     {
         // Public "add extra enchantment" API means "apply new stacks now", not "restore a saved
         // instance state". Restores must go through RestoreAdditionalEnchantmentState().
@@ -178,14 +182,17 @@ internal static partial class MultiEnchantmentSupport
             triggerChanged);
     }
 
-    private static EnchantmentModel AttachNewEnchantmentStacks(
+    private static EnchantmentModel? AttachNewEnchantmentStacks(
         CardModel card,
         EnchantmentModel enchantment,
         int stackCount,
         bool modifyCard,
         bool triggerChanged,
+        out int appliedStackCount,
         EnchantmentScope? scopeOverride = null)
     {
+        appliedStackCount = 0;
+
         // New applications may need to fan out one requested stack count into multiple concrete
         // enchantment instances when the behavior is DuplicateInstance/ExistenceStack.
         enchantment.AssertMutable();
@@ -195,9 +202,15 @@ internal static partial class MultiEnchantmentSupport
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
 
         // Phase 4-9: enforce MaxInstances overflow policy before attaching new instances.
-        EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+        int allowedStackCount = EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+        if (allowedStackCount <= 0)
+        {
+            return null;
+        }
 
-        if (ShouldFanOutAppliedStacks(behavior) && stackCount > 1)
+        appliedStackCount = allowedStackCount;
+
+        if (ShouldFanOutAppliedStacks(behavior) && allowedStackCount > 1)
         {
             EnchantmentModel firstApplied = AttachEnchantmentState(
                 card,
@@ -207,7 +220,7 @@ internal static partial class MultiEnchantmentSupport
                 triggerChanged: false,
                 scopeOverride);
             AppendApplicationOrder(card, enchantment.Id);
-            for (int i = 1; i < stackCount; i++)
+            for (int i = 1; i < allowedStackCount; i++)
             {
                 EnchantmentModel extra = (EnchantmentModel)enchantment.ClonePreservingMutability();
                 AttachEnchantmentState(card, extra, 1, modifyCard, triggerChanged: false, scopeOverride);
@@ -222,12 +235,12 @@ internal static partial class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged, scopeOverride);
+        EnchantmentModel applied = AttachEnchantmentState(card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
     }
 
-    private static EnchantmentModel AttachNewAdditionalEnchantmentStacks(
+    private static EnchantmentModel? AttachNewAdditionalEnchantmentStacks(
         CardModel card,
         EnchantmentModel enchantment,
         int stackCount,
@@ -241,9 +254,13 @@ internal static partial class MultiEnchantmentSupport
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
 
         // Phase 4-9: enforce MaxInstances overflow policy before attaching new instances.
-        EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+        int allowedStackCount = EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+        if (allowedStackCount <= 0)
+        {
+            return null;
+        }
 
-        if (ShouldFanOutAppliedStacks(behavior) && stackCount > 1)
+        if (ShouldFanOutAppliedStacks(behavior) && allowedStackCount > 1)
         {
             EnchantmentModel firstApplied = AttachAdditionalEnchantmentState(
                 card,
@@ -253,7 +270,7 @@ internal static partial class MultiEnchantmentSupport
                 triggerChanged: false,
                 scopeOverride);
             AppendApplicationOrder(card, enchantment.Id);
-            for (int i = 1; i < stackCount; i++)
+            for (int i = 1; i < allowedStackCount; i++)
             {
                 EnchantmentModel clone = (EnchantmentModel)enchantment.ClonePreservingMutability();
                 AttachAdditionalEnchantmentState(
@@ -274,7 +291,7 @@ internal static partial class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachAdditionalEnchantmentState(card, enchantment, stackCount, modifyCard, triggerChanged, scopeOverride);
+        EnchantmentModel applied = AttachAdditionalEnchantmentState(card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
     }
@@ -339,9 +356,9 @@ internal static partial class MultiEnchantmentSupport
     /// Phase 4-9: enforces the configured <see cref="Api.StackOverflowPolicy"/> when attaching
     /// new instances would push the card past <see cref="Api.StackDefinition.MaxInstances"/>.
     /// For <c>ReplaceOldest</c> / <c>ReplaceNewest</c>, evicts existing instances in the right
-    /// direction. For <c>Reject</c>, this method is a no-op (CanStackOnto already rejected).
+    /// direction. For <c>Reject</c>, rejects the whole incoming batch if it would overflow.
     /// </summary>
-    private static void EnforceOverflowPolicy(
+    private static int EnforceOverflowPolicy(
         CardModel card,
         Type enchantmentType,
         int incomingCount,
@@ -349,14 +366,34 @@ internal static partial class MultiEnchantmentSupport
     {
         if (behavior is not (EnchantmentStackBehavior.DuplicateInstance or EnchantmentStackBehavior.ExistenceStack))
         {
-            return;
+            return incomingCount;
         }
 
         int? cap = Api.Internal.EnchantmentRegistry.GetMaxInstances(enchantmentType);
-        if (!cap.HasValue) return;
+        if (!cap.HasValue) return incomingCount;
+        if (cap.Value <= 0)
+        {
+            MultiEnchantmentStackSupport.LogMaxInstancesRejection(
+                enchantmentType,
+                MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantmentType),
+                cap.Value);
+            return 0;
+        }
 
         Api.StackOverflowPolicy policy = Api.Internal.EnchantmentRegistry.GetOverflowPolicy(enchantmentType);
-        if (policy == Api.StackOverflowPolicy.Reject) return;
+        if (policy == Api.StackOverflowPolicy.Reject)
+        {
+            List<EnchantmentModel> rejectedExisting = GetEnchantments(card)
+                .Where(e => e.GetType() == enchantmentType)
+                .ToList();
+            if (rejectedExisting.Count + incomingCount > cap.Value)
+            {
+                MultiEnchantmentStackSupport.LogMaxInstancesRejection(enchantmentType, rejectedExisting.Count, cap.Value);
+                return 0;
+            }
+
+            return incomingCount;
+        }
 
         // Snapshot current matching instances in card application order. ExtraEnchantments is
         // append-on-attach, so its order matches application order for that type.
@@ -365,15 +402,15 @@ internal static partial class MultiEnchantmentSupport
             .ToList();
         int totalAfter = existing.Count + incomingCount;
         int evictionsNeeded = totalAfter - cap.Value;
-        if (evictionsNeeded <= 0) return;
+        if (evictionsNeeded <= 0) return incomingCount;
 
-        evictionsNeeded = Math.Min(evictionsNeeded, existing.Count);
+        int evicted = 0;
 
         IEnumerable<EnchantmentModel> evictionOrder = policy == Api.StackOverflowPolicy.ReplaceOldest
             ? existing
             : ((IEnumerable<EnchantmentModel>)existing).Reverse();
 
-        foreach (EnchantmentModel victim in evictionOrder.Take(evictionsNeeded).ToList())
+        foreach (EnchantmentModel victim in evictionOrder)
         {
             // Skip the primary slot — vanilla `card.Enchantment` is owned by the upgrade pipeline
             // and shouldn't be removed here. ReplaceOldest/Newest applies only to the v2
@@ -383,7 +420,30 @@ internal static partial class MultiEnchantmentSupport
             RemoveEnchantmentInternal(
                 card, victim, Api.RemovalReason.OverflowEvicted,
                 bypassVeto: true, refreshCard: false, triggerChanged: false);
+            evicted++;
+            if (evicted >= evictionsNeeded)
+            {
+                break;
+            }
         }
+
+        int remainingOverflow = evictionsNeeded - evicted;
+        if (remainingOverflow <= 0)
+        {
+            return incomingCount;
+        }
+
+        int allowedIncoming = incomingCount - remainingOverflow;
+        if (allowedIncoming <= 0)
+        {
+            MultiEnchantmentStackSupport.LogMaxInstancesRejection(enchantmentType, existing.Count - evicted, cap.Value);
+            return 0;
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] Could only evict {evicted} {enchantmentType.FullName} instance(s) " +
+            $"before hitting primary-slot instances; applying {allowedIncoming} of {incomingCount} requested stack(s).");
+        return allowedIncoming;
     }
 
     private static bool RemoveAdditionalEnchantmentState(CardModel card, EnchantmentModel enchantment)
@@ -553,11 +613,6 @@ internal static partial class MultiEnchantmentSupport
             {
                 RebuildApplicationOrder(card);
             }
-            else
-            {
-                RemoveOneApplicationOrder(state, enchantment.Id);
-            }
-
             state.ScopeStates.Remove(enchantment);
             state.PendingRemovals.RemoveAll(entry => ReferenceEquals(entry.Enchantment, enchantment));
             if (ReferenceEquals(state.LastAppliedEnchantment, enchantment))
@@ -574,7 +629,12 @@ internal static partial class MultiEnchantmentSupport
         // version would silently destroy any permanent copy of the same type.
         if (IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope))
         {
-            SyncDeckVersionEnchantmentRemoval(card, enchantment.GetType(), behavior, deckSyncedInstanceOrdinal);
+            SyncDeckVersionEnchantmentRemoval(
+                card,
+                enchantment.GetType(),
+                behavior,
+                deckSyncedInstanceOrdinal,
+                Math.Max(1, enchantment.Amount));
         }
 
         if (refreshCard)

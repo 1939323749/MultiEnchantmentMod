@@ -6,7 +6,7 @@ namespace MultiEnchantmentMod.Api;
 /// Assembly-level declaration of the MultiEnchantmentMod public API version range the assembly
 /// was built against. The scanner consults this attribute before discovering any enchantment
 /// definitions:
-///   * Missing attribute → logs an informational warning, scans anyway (legacy / pre-v2 assemblies).
+///   * Missing attribute → scans anyway (legacy / pre-v2 assemblies).
 ///   * <see cref="MinVersion"/> &gt; <see cref="MultiEnchantmentApiVersion.Current"/> → scan is
 ///     refused and an error is logged; the assembly's enchantments will not register.
 ///   * Otherwise the assembly is scanned normally.

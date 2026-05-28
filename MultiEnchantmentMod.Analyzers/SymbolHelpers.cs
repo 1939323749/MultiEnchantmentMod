@@ -68,11 +68,49 @@ internal static class SymbolHelpers
         {
             if (pair.Key == name && pair.Value.Value != null)
             {
+                if (pair.Value.Kind == TypedConstantKind.Enum &&
+                    pair.Value.Type is INamedTypeSymbol enumType)
+                {
+                    foreach (ISymbol member in enumType.GetMembers())
+                    {
+                        if (member is IFieldSymbol { HasConstantValue: true } field &&
+                            Equals(field.ConstantValue, pair.Value.Value))
+                        {
+                            return field.Name;
+                        }
+                    }
+                }
+
                 return pair.Value.Value.ToString();
             }
         }
 
         return null;
+    }
+
+    public static string? GetOptionalNamedArgumentString(AttributeData? attribute, string name)
+    {
+        return attribute == null ? null : GetNamedArgumentString(attribute, name);
+    }
+
+    public static ImmutableArray<string> GetNamedArgumentStrings(AttributeData? attribute, params string[] names)
+    {
+        if (attribute == null)
+        {
+            return ImmutableArray<string>.Empty;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<string>();
+        foreach (string name in names)
+        {
+            string? value = GetNamedArgumentString(attribute, name);
+            if (value is { Length: > 0 } && value != "Default")
+            {
+                builder.Add(value);
+            }
+        }
+
+        return builder.ToImmutable();
     }
 
     public static bool HasAccessibleParameterlessConstructor(INamedTypeSymbol type)

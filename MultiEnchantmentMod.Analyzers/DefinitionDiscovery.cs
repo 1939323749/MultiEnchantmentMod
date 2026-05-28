@@ -11,18 +11,24 @@ internal sealed class DefinitionInfo
         INamedTypeSymbol definitionType,
         INamedTypeSymbol enchantmentType,
         AttributeData? definitionAttribute,
-        string? stack,
-        string? status,
-        string? execution,
+        AttributeData? enchantmentAttribute,
+        string stack,
+        string status,
+        string? declaredStack,
+        string? declaredStatus,
+        ImmutableArray<string> executionModes,
         ImmutableArray<AttributeData> keywordAttributes,
         bool hasPresentationAttribute)
     {
         DefinitionType = definitionType;
         EnchantmentType = enchantmentType;
         DefinitionAttribute = definitionAttribute;
+        EnchantmentAttribute = enchantmentAttribute;
         Stack = stack;
         Status = status;
-        Execution = execution;
+        DeclaredStack = declaredStack;
+        DeclaredStatus = declaredStatus;
+        ExecutionModes = executionModes;
         KeywordAttributes = keywordAttributes;
         HasPresentationAttribute = hasPresentationAttribute;
     }
@@ -30,9 +36,12 @@ internal sealed class DefinitionInfo
     public INamedTypeSymbol DefinitionType { get; }
     public INamedTypeSymbol EnchantmentType { get; }
     public AttributeData? DefinitionAttribute { get; }
-    public string? Stack { get; }
-    public string? Status { get; }
-    public string? Execution { get; }
+    public AttributeData? EnchantmentAttribute { get; }
+    public string Stack { get; }
+    public string Status { get; }
+    public string? DeclaredStack { get; }
+    public string? DeclaredStatus { get; }
+    public ImmutableArray<string> ExecutionModes { get; }
     public ImmutableArray<AttributeData> KeywordAttributes { get; }
     public bool HasPresentationAttribute { get; }
 }
@@ -66,23 +75,40 @@ internal sealed class DefinitionIndex
             }
 
             AttributeData? definitionAttribute = SymbolHelpers.GetAttribute(type, symbols.EnchantmentDefinitionAttribute);
+            AttributeData? enchantmentAttribute = SymbolHelpers.GetAttribute(enchantmentType, symbols.EnchantmentAttribute);
+            AttributeData? executionAttribute =
+                SymbolHelpers.GetAttribute(type, symbols.EnchantmentExecutionAttribute)
+                ?? SymbolHelpers.GetAttribute(enchantmentType, symbols.EnchantmentExecutionAttribute);
+            string modelStack = SymbolHelpers.GetOptionalNamedArgumentString(enchantmentAttribute, "Stack") ?? "DisallowDuplicate";
+            string modelStatus = SymbolHelpers.GetOptionalNamedArgumentString(enchantmentAttribute, "Status") ?? "AnyInstanceCountsAsOne";
+            string? declaredStack = SymbolHelpers.GetOptionalNamedArgumentString(definitionAttribute, "Stack");
+            string? declaredStatus = SymbolHelpers.GetOptionalNamedArgumentString(definitionAttribute, "Status");
             DefinitionInfo info = new(
                 type,
                 enchantmentType,
                 definitionAttribute,
-                SymbolHelpers.GetAttribute(enchantmentType, symbols.EnchantmentAttribute) is { } enchantmentAttribute
-                    ? SymbolHelpers.GetNamedArgumentString(enchantmentAttribute, "Stack")
-                    : null,
-                SymbolHelpers.GetAttribute(enchantmentType, symbols.EnchantmentAttribute) is { } statusAttribute
-                    ? SymbolHelpers.GetNamedArgumentString(statusAttribute, "Status")
-                    : null,
-                SymbolHelpers.GetAttribute(type, symbols.EnchantmentExecutionAttribute) is { } executionAttribute
-                    ? SymbolHelpers.GetNamedArgumentString(executionAttribute, "Mode")
-                    : null,
-                type.GetAttributes()
-                    .Where(attribute => symbols.EnchantmentKeywordAttribute != null && SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, symbols.EnchantmentKeywordAttribute))
+                enchantmentAttribute,
+                declaredStack ?? modelStack,
+                declaredStatus ?? modelStatus,
+                declaredStack,
+                declaredStatus,
+                SymbolHelpers.GetNamedArgumentStrings(
+                    executionAttribute,
+                    "All",
+                    "OnEnchant",
+                    "OnPlay",
+                    "AfterCardPlayed",
+                    "AfterCardDrawn",
+                    "AfterPlayerTurnStart",
+                    "BeforePlayPhaseStart",
+                    "BeforeFlush"),
+                enchantmentType.GetAttributes()
+                    .Concat(type.GetAttributes())
+                    .Where(attribute => symbols.EnchantmentKeywordAttribute != null &&
+                        SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, symbols.EnchantmentKeywordAttribute))
                     .ToImmutableArray(),
-                SymbolHelpers.HasAttribute(type, symbols.EnchantmentPresentationAttribute));
+                SymbolHelpers.HasAttribute(type, symbols.EnchantmentPresentationAttribute) ||
+                    SymbolHelpers.HasAttribute(enchantmentType, symbols.EnchantmentPresentationAttribute));
 
             if (!map.TryGetValue(enchantmentType, out List<DefinitionInfo>? list))
             {

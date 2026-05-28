@@ -248,7 +248,11 @@ internal static class AssemblyScanner
             return false;
         }
 
-        ConstructorInfo? ctor = type.GetConstructor(Type.EmptyTypes);
+        ConstructorInfo? ctor = type.GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            Type.EmptyTypes,
+            modifiers: null);
         if (ctor == null)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(

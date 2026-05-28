@@ -114,28 +114,11 @@ public sealed class SampleFullHpShield : EnchantmentModel
     }
 }
 
-public static class SampleFullHpShieldRegistration
+public sealed class SampleFullHpShieldDefinition : EnchantmentDefinition<SampleFullHpShield>
 {
-    private static IDisposable? _registration;
-
-    public static void Install()
+    protected override bool ShouldBeActive(CardModel card, SampleFullHpShield enchantment)
     {
-        _registration ??= MultiEnchantmentApi.Register<SampleFullHpShield>()
-            .WhenActive((card, enchantment) =>
-            {
-                _ = enchantment;
-                // Active only while the owner is at full HP. When this returns false,
-                // the enchantment is "dormant" — still attached but contributing nothing
-                // to damage/block and invisible in tooltips. It reactivates the moment
-                // HP is restored to maximum.
-                return (card.Owner?.Creature?.CurrentHp ?? 0) >= (card.Owner?.Creature?.MaxHp ?? 1);
-            })
-            .Commit();
-    }
-
-    public static void Uninstall()
-    {
-        _registration?.Dispose();
-        _registration = null;
+        _ = enchantment;
+        return (card.Owner?.Creature?.CurrentHp ?? 0) >= (card.Owner?.Creature?.MaxHp ?? 1);
     }
 }

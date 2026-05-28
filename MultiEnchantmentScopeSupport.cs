@@ -356,6 +356,9 @@ internal static class MultiEnchantmentScopeSupport
     private static void RefreshAfterUserCallbacks(CardModel? card)
     {
         if (card == null) return;
+        RefreshActiveStatuses(card);
+        card.DynamicVars.RecalculateForUpgradeOrEnchant();
+        card.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
         MultiEnchantmentSupport.TriggerEnchantmentChanged(card);
     }
@@ -797,8 +800,9 @@ internal static class MultiEnchantmentScopeSupport
     /// Per-enchantment exceptions are swallowed with a warn log and treated as "no objection"
     /// so a bug in one handler can't accidentally veto every death.
     /// </summary>
-    internal static bool DispatchOnShouldDieForCreature(Creature creature)
+    internal static bool DispatchOnShouldDieForCreature(Creature creature, out AbstractModel? preventer)
     {
+        preventer = null;
         Player? player = creature?.Player;
         if (player?.PlayerCombatState == null)
         {
@@ -822,6 +826,7 @@ internal static class MultiEnchantmentScopeSupport
                 if (!entry.RunOnShouldDie(card, enchantment, creature!))
                 {
                     shouldDie = false;
+                    preventer ??= enchantment;
                     // Do not break: let every veto handler observe the event for symmetry with vanilla.
                 }
             }

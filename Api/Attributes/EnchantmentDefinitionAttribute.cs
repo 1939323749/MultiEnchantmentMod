@@ -11,4 +11,6 @@ namespace MultiEnchantmentMod.Api;
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
 public sealed class EnchantmentDefinitionAttribute : Attribute
 {
+    public StackBehavior Stack { get; init; }
+    public StatusAggregation Status { get; init; }
 }

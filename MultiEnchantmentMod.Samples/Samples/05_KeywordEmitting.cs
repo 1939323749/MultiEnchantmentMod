@@ -44,6 +44,6 @@ public sealed class SampleConditionalExhaustDefinition : EnchantmentDefinition<S
         }
 
         // Only contribute Exhaust once the merged total reaches 3.
-        return snapshot.ActiveInstanceCount >= 3 ? 1 : 0;
+        return snapshot.ActiveTotalAmount >= 3 ? 1 : 0;
     }
 }

@@ -159,7 +159,13 @@ internal static partial class MultiEnchantmentSupport
         {
             EnchantmentModel mirrored =
                 ModelDb.GetById<EnchantmentModel>(ModelDb.GetId(enchantmentType)).ToMutable();
-            AttachNewEnchantmentStacks(deckVersion, mirrored, amount, modifyCard: true, triggerChanged: false);
+            AttachNewEnchantmentStacks(
+                deckVersion,
+                mirrored,
+                amount,
+                modifyCard: true,
+                triggerChanged: false,
+                out _);
         }
 
         deckVersion.DynamicVars.RecalculateForUpgradeOrEnchant();
@@ -222,13 +228,14 @@ internal static partial class MultiEnchantmentSupport
     /// <summary>
     /// Mirrors a removal from a combat card onto its <see cref="CardModel.DeckVersion"/> so the
     /// enchantment does not reappear in the next combat. For <see cref="EnchantmentStackBehavior.MergeAmount"/>
-    /// stacks, decrements Amount by 1; for instance-based stacks, removes one concrete instance.
+    /// stacks, decrements by the removed amount; for instance-based stacks, removes one concrete instance.
     /// </summary>
     private static void SyncDeckVersionEnchantmentRemoval(
         CardModel card,
         Type enchantmentType,
         EnchantmentStackBehavior behavior,
-        int? instanceOrdinal)
+        int? instanceOrdinal,
+        int removedAmount)
     {
         CardModel? deckVersion = card.DeckVersion;
         if (deckVersion == null || ReferenceEquals(deckVersion, card))
@@ -244,14 +251,16 @@ internal static partial class MultiEnchantmentSupport
 
         if (behavior == EnchantmentStackBehavior.MergeAmount)
         {
-            if (existing.Amount <= 1)
+            int amountToRemove = Math.Max(1, removedAmount);
+            if (existing.Amount <= amountToRemove)
             {
                 RemoveEnchantmentInternal(deckVersion, existing, RemovalReason.Manual,
                     bypassVeto: true, refreshCard: true, triggerChanged: false);
             }
             else
             {
-                existing.Amount -= 1;
+                existing.Amount -= amountToRemove;
+                MultiEnchantmentStackSupport.RemoveMergedStackAmount(existing, amountToRemove);
                 MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
                 deckVersion.DynamicVars.RecalculateForUpgradeOrEnchant();
                 deckVersion.FinalizeUpgradeInternal();

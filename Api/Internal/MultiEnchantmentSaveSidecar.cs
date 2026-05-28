@@ -54,6 +54,9 @@ internal static class MultiEnchantmentSaveSidecar
         IsMultiEnchantmentProperty(name) &&
         !IsLookupProperty(name);
 
+    private static bool IsRuntimeLookupProperty(string? name) =>
+        IsLookupProperty(name);
+
     internal static void Reload()
     {
         lock (Sync)
@@ -188,6 +191,14 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
+        RestoreSerializableCard(save, liveCard, allowSidecarMutations: true);
+    }
+
+    private static void RestoreSerializableCard(
+        SerializableCard save,
+        CardModel? liveCard,
+        bool allowSidecarMutations)
+    {
         SavedPropertiesPayload? payload = null;
         string? cardInstanceId = TryGetKnownCardInstanceId(save, liveCard);
         string v2Key = cardInstanceId == null ? string.Empty : BuildCardKey(cardInstanceId);
@@ -202,17 +213,20 @@ internal static class MultiEnchantmentSaveSidecar
             }
             else if (document.Cards.TryGetValue(legacyKey, out payload))
             {
-                // Legacy composite-key hit. Move it to a per-card instance key; do not read
-                // from or preserve the unsafe ModelId-only key because it leaks across runs.
-                cardInstanceId = EnsureCardInstanceId(save, liveCard);
-                v2Key = BuildCardKey(cardInstanceId);
-                document.Cards[v2Key] = payload;
-                document.Cards.Remove(legacyKey);
-                RemoveUnsafeModelIdCardKeyLocked(save);
-                dirty = true;
-                migratedFromLegacy = true;
+                if (allowSidecarMutations)
+                {
+                    // Legacy composite-key hit. Move it to a per-card instance key; do not read
+                    // from or preserve the unsafe ModelId-only key because it leaks across runs.
+                    cardInstanceId = EnsureCardInstanceId(save, liveCard);
+                    v2Key = BuildCardKey(cardInstanceId);
+                    document.Cards[v2Key] = payload;
+                    document.Cards.Remove(legacyKey);
+                    RemoveUnsafeModelIdCardKeyLocked(save);
+                    dirty = true;
+                    migratedFromLegacy = true;
+                }
             }
-            else if (RemoveUnsafeModelIdCardKeyLocked(save))
+            else if (allowSidecarMutations && RemoveUnsafeModelIdCardKeyLocked(save))
             {
                 dirty = true;
             }
@@ -223,7 +237,7 @@ internal static class MultiEnchantmentSaveSidecar
             SavedProperties? props = save.Props;
             ApplyPayload(ref props, payload);
             save.Props = props;
-            if (cardInstanceId != null)
+            if (allowSidecarMutations && cardInstanceId != null)
             {
                 UpsertCardInstanceId(save, cardInstanceId);
             }
@@ -235,10 +249,23 @@ internal static class MultiEnchantmentSaveSidecar
             }
         }
 
-        RestoreInto(save.Enchantment);
+        RestoreSerializableEnchantment(save.Enchantment, allowSidecarMutations);
+        RestoreNestedProperties(save.Props, allowSidecarMutations);
     }
 
     internal static void RestoreInto(SerializableEnchantment? save)
+    {
+        if (save == null)
+        {
+            return;
+        }
+
+        RestoreSerializableEnchantment(save, allowSidecarMutations: true);
+    }
+
+    private static void RestoreSerializableEnchantment(
+        SerializableEnchantment? save,
+        bool allowSidecarMutations)
     {
         if (save == null)
         {
@@ -261,10 +288,13 @@ internal static class MultiEnchantmentSaveSidecar
             {
                 // Legacy hit — assign an instance id now (if the save didn't carry one) and
                 // rewrite the payload under v2 so this enchantment migrates exactly once.
-                string instanceId = EnsureInstanceId(save);
-                document.Enchantments[$"{EnchantmentKeyPrefix}{instanceId}"] = payload;
-                dirty = true;
-                migratedFromLegacy = true;
+                if (allowSidecarMutations)
+                {
+                    string instanceId = EnsureInstanceId(save);
+                    document.Enchantments[$"{EnchantmentKeyPrefix}{instanceId}"] = payload;
+                    dirty = true;
+                    migratedFromLegacy = true;
+                }
             }
         }
 
@@ -282,7 +312,9 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-    internal static void PrepareRunForDisk(SerializableRun save, bool clearStaleEntries = true)
+    internal static void PrepareRunForDisk(
+        SerializableRun save,
+        bool clearStaleEntries = true)
     {
         if (save == null)
         {
@@ -298,6 +330,49 @@ internal static class MultiEnchantmentSaveSidecar
         Flush();
     }
 
+    internal static void RestoreRunFromDisk(SerializableRun save)
+    {
+        if (save == null)
+        {
+            return;
+        }
+
+        foreach (SerializableCard card in EnumerateCards(save))
+        {
+            RestoreSerializableCard(card, liveCard: null, allowSidecarMutations: false);
+            StripSidecarStorageProperties(card);
+        }
+    }
+
+    private static void RestoreNestedProperties(SavedProperties? props, bool allowSidecarMutations)
+    {
+        if (props == null)
+        {
+            return;
+        }
+
+        if (props.cards != null)
+        {
+            foreach (SavedProperties.SavedProperty<SerializableCard> property in props.cards)
+            {
+                RestoreSerializableCard(property.value, liveCard: null, allowSidecarMutations);
+            }
+        }
+
+        if (props.cardArrays == null)
+        {
+            return;
+        }
+
+        foreach (SavedProperties.SavedProperty<SerializableCard[]> property in props.cardArrays)
+        {
+            foreach (SerializableCard nested in property.value)
+            {
+                RestoreSerializableCard(nested, liveCard: null, allowSidecarMutations);
+            }
+        }
+    }
+
     internal static void StripForDisk(SerializableCard card)
     {
         if (card == null)
@@ -311,6 +386,82 @@ internal static class MultiEnchantmentSaveSidecar
         if (IsEmpty(card.Props))
         {
             card.Props = null;
+        }
+    }
+
+    private static void StripSidecarStorageProperties(SerializableCard card)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        StripProperties(card.Props, IsRuntimeLookupProperty);
+        StripSidecarStorageProperties(card.Enchantment);
+        StripEmbeddedExtraEnchantmentLookupProperties(card.Props);
+        StripNestedProperties(card.Props, StripSidecarStorageProperties);
+        if (IsEmpty(card.Props))
+        {
+            card.Props = null;
+        }
+    }
+
+    private static void StripSidecarStorageProperties(SerializableEnchantment? enchantment)
+    {
+        if (enchantment == null)
+        {
+            return;
+        }
+
+        StripProperties(enchantment.Props, IsRuntimeLookupProperty);
+        StripNestedProperties(enchantment.Props, StripSidecarStorageProperties);
+        if (IsEmpty(enchantment.Props))
+        {
+            enchantment.Props = null;
+        }
+    }
+
+    private static void StripEmbeddedExtraEnchantmentLookupProperties(SavedProperties? props)
+    {
+        if (props?.strings == null)
+        {
+            return;
+        }
+
+        int index = props.strings.FindIndex(property =>
+            string.Equals(property.name, MultiEnchantmentSupport.SavePropertyName, StringComparison.Ordinal));
+        if (index < 0)
+        {
+            return;
+        }
+
+        string payload = props.strings[index].value;
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return;
+        }
+
+        try
+        {
+            List<SerializableEnchantment>? extras = JsonSerializer.Deserialize<List<SerializableEnchantment>>(payload);
+            if (extras == null || extras.Count == 0)
+            {
+                return;
+            }
+
+            foreach (SerializableEnchantment extra in extras)
+            {
+                StripSidecarStorageProperties(extra);
+            }
+
+            props.strings[index] = new SavedProperties.SavedProperty<string>(
+                MultiEnchantmentSupport.SavePropertyName,
+                JsonSerializer.Serialize(extras));
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][SaveSidecar] Failed to sanitize embedded extra enchantments: {ex.GetBaseException().Message}");
         }
     }
 
@@ -398,13 +549,18 @@ internal static class MultiEnchantmentSaveSidecar
 
     private static void StripProperties(SavedProperties? props)
     {
+        StripProperties(props, ShouldStripFromMainSave);
+    }
+
+    private static void StripProperties(SavedProperties? props, Func<string?, bool> shouldStrip)
+    {
         if (props == null)
         {
             return;
         }
 
-        props.strings?.RemoveAll(property => ShouldStripFromMainSave(property.name));
-        props.intArrays?.RemoveAll(property => ShouldStripFromMainSave(property.name));
+        props.strings?.RemoveAll(property => shouldStrip(property.name));
+        props.intArrays?.RemoveAll(property => shouldStrip(property.name));
     }
 
     private static void CaptureNestedProperties(SavedProperties? props, bool clearStaleEntries)
@@ -436,6 +592,11 @@ internal static class MultiEnchantmentSaveSidecar
 
     private static void StripNestedProperties(SavedProperties? props)
     {
+        StripNestedProperties(props, StripForDisk);
+    }
+
+    private static void StripNestedProperties(SavedProperties? props, Action<SerializableCard> stripCard)
+    {
         if (props == null)
         {
             return;
@@ -445,7 +606,7 @@ internal static class MultiEnchantmentSaveSidecar
         {
             foreach (SavedProperties.SavedProperty<SerializableCard> property in props.cards)
             {
-                StripForDisk(property.value);
+                stripCard(property.value);
             }
         }
 
@@ -455,7 +616,7 @@ internal static class MultiEnchantmentSaveSidecar
             {
                 foreach (SerializableCard card in property.value)
                 {
-                    StripForDisk(card);
+                    stripCard(card);
                 }
             }
         }

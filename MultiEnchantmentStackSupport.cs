@@ -231,7 +231,7 @@ internal static class MultiEnchantmentStackSupport
     // per turn. We log full detail once per (type, cap) per process, and silently reject after.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, byte> MaxInstancesLogged = new();
 
-    private static void LogMaxInstancesRejection(Type enchantmentType, int existing, int cap)
+    internal static void LogMaxInstancesRejection(Type enchantmentType, int existing, int cap)
     {
         if (!MaxInstancesLogged.TryAdd(enchantmentType, 0))
         {
@@ -280,6 +280,16 @@ internal static class MultiEnchantmentStackSupport
         }
 
         return true;
+    }
+
+    public static bool PassesCanEnchantRulesIgnoringDuplicate(EnchantmentModel enchantment, CardModel card)
+    {
+        CardType type = card.Type;
+        if (type is CardType.Status or CardType.Curse or CardType.Quest) return false;
+        if (!enchantment.CanEnchantCardType(type)) return false;
+        CardPile? pile = card.Pile;
+        if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return false;
+        return PassesAdditionalCanEnchantRules(enchantment, card);
     }
 
     public static int GetEnchantmentCount(CardModel? card, Type enchantmentType)
@@ -359,6 +369,35 @@ internal static class MultiEnchantmentStackSupport
 
         stackAmounts.Add(addedAmount);
         SetMergedStackAmounts(enchantment, stackAmounts);
+    }
+
+    public static void RemoveMergedStackAmount(EnchantmentModel enchantment, int amountToRemove)
+    {
+        if (GetBehavior(enchantment.GetType()) != EnchantmentStackBehavior.MergeAmount || amountToRemove <= 0)
+        {
+            return;
+        }
+
+        List<int> stackAmounts = GetRawMergedStackAmounts(enchantment).ToList();
+        for (int i = stackAmounts.Count - 1; i >= 0 && amountToRemove > 0; i--)
+        {
+            int removedFromSlice = Math.Min(stackAmounts[i], amountToRemove);
+            stackAmounts[i] -= removedFromSlice;
+            amountToRemove -= removedFromSlice;
+            if (stackAmounts[i] <= 0)
+            {
+                stackAmounts.RemoveAt(i);
+            }
+        }
+
+        if (stackAmounts.Count == 0)
+        {
+            RemoveSavedIntArray(enchantment, MergedStackAmountsPropertyName);
+        }
+        else
+        {
+            SetMergedStackAmounts(enchantment, stackAmounts);
+        }
     }
 
     public static void CloneRuntimeProps(EnchantmentModel source, EnchantmentModel clone)
@@ -443,6 +482,8 @@ internal static class MultiEnchantmentStackSupport
     }
 
     private static readonly ConditionalWeakTable<CardModel, HashSet<CardKeyword>> RememberedTrackedKeywords = new();
+    private static readonly ConditionalWeakTable<CardModel, HashSet<CardKeyword>> ModAddedKeywords = new();
+    private static readonly ConditionalWeakTable<CardModel, HashSet<CardKeyword>> ModRemovedKeywords = new();
 
     public static void RefreshDerivedState(CardModel card)
     {
@@ -458,32 +499,90 @@ internal static class MultiEnchantmentStackSupport
             keywordsToRefresh.UnionWith(rememberedTrackedKeywords);
         }
 
+        HashSet<CardKeyword>? modAddedKeywords = ModAddedKeywords.TryGetValue(card, out HashSet<CardKeyword>? existingModAddedKeywords)
+            ? existingModAddedKeywords
+            : null;
+        HashSet<CardKeyword>? modRemovedKeywords = ModRemovedKeywords.TryGetValue(card, out HashSet<CardKeyword>? existingModRemovedKeywords)
+            ? existingModRemovedKeywords
+            : null;
+
         foreach (CardKeyword keyword in keywordsToRefresh)
         {
             int baselineCount = card.CanonicalKeywords.Contains(keyword) ? 1 : 0;
             int netKeywordSources = GetKeywordSourceAmount(card, keyword);
             bool shouldHaveKeyword = baselineCount + netKeywordSources > 0;
             bool hasKeyword = card.Keywords.Contains(keyword);
+            bool weAddedKeyword = modAddedKeywords?.Contains(keyword) ?? false;
+            bool weRemovedKeyword = modRemovedKeywords?.Contains(keyword) ?? false;
 
-            if (shouldHaveKeyword && !hasKeyword)
+            if (shouldHaveKeyword)
             {
-                card.AddKeyword(keyword);
+                if (!hasKeyword)
+                {
+                    card.AddKeyword(keyword);
+                    if (baselineCount == 0)
+                    {
+                        (modAddedKeywords ??= ModAddedKeywords.GetOrCreateValue(card)).Add(keyword);
+                    }
+                }
+
+                if (weRemovedKeyword)
+                {
+                    modRemovedKeywords!.Remove(keyword);
+                }
             }
-            else if (!shouldHaveKeyword && hasKeyword)
+            else
             {
-                card.RemoveKeyword(keyword);
+                if (hasKeyword)
+                {
+                    card.RemoveKeyword(keyword);
+                    if (baselineCount > 0)
+                    {
+                        (modRemovedKeywords ??= ModRemovedKeywords.GetOrCreateValue(card)).Add(keyword);
+                    }
+                }
+
+                if (weAddedKeyword)
+                {
+                    modAddedKeywords!.Remove(keyword);
+                }
+
+                if (weRemovedKeyword && baselineCount == 0)
+                {
+                    modRemovedKeywords!.Remove(keyword);
+                }
             }
         }
 
         if (currentTrackedKeywords.Count == 0)
         {
             RememberedTrackedKeywords.Remove(card);
+            if (modAddedKeywords is { Count: 0 })
+            {
+                ModAddedKeywords.Remove(card);
+            }
+
+            if (modRemovedKeywords is { Count: 0 })
+            {
+                ModRemovedKeywords.Remove(card);
+            }
+
             return;
         }
 
         HashSet<CardKeyword> trackedKeywords = RememberedTrackedKeywords.GetOrCreateValue(card);
         trackedKeywords.Clear();
         trackedKeywords.UnionWith(currentTrackedKeywords);
+
+        if (modAddedKeywords is { Count: 0 })
+        {
+            ModAddedKeywords.Remove(card);
+        }
+
+        if (modRemovedKeywords is { Count: 0 })
+        {
+            ModRemovedKeywords.Remove(card);
+        }
     }
 
     private static IEnumerable<CardKeyword> GetTrackedKeywords(CardModel card)
@@ -768,7 +867,7 @@ internal static class MultiEnchantmentStackSupport
             strings = CloneSavedPropertyList(source.strings),
             intArrays = CloneSavedIntArrayList(source.intArrays),
             modelIds = CloneSavedPropertyList(source.modelIds),
-            cards = CloneSavedPropertyList(source.cards),
+            cards = CloneSavedCardList(source.cards),
             cardArrays = CloneSavedCardArrayList(source.cardArrays),
         };
 
@@ -788,11 +887,47 @@ internal static class MultiEnchantmentStackSupport
             new SavedProperties.SavedProperty<int[]>(property.name, (int[])property.value.Clone())).ToList();
     }
 
+    private static List<SavedProperties.SavedProperty<SerializableCard>>? CloneSavedCardList(
+        List<SavedProperties.SavedProperty<SerializableCard>>? source)
+    {
+        return source?.Select(static property =>
+            new SavedProperties.SavedProperty<SerializableCard>(property.name, CloneSerializableCard(property.value))).ToList();
+    }
+
     private static List<SavedProperties.SavedProperty<SerializableCard[]>>? CloneSavedCardArrayList(
         List<SavedProperties.SavedProperty<SerializableCard[]>>? source)
     {
         return source?.Select(static property =>
-            new SavedProperties.SavedProperty<SerializableCard[]>(property.name, property.value.ToArray())).ToList();
+            new SavedProperties.SavedProperty<SerializableCard[]>(
+                property.name,
+                property.value.Select(CloneSerializableCard).ToArray())).ToList();
+    }
+
+    private static SerializableCard CloneSerializableCard(SerializableCard source)
+    {
+        return new SerializableCard
+        {
+            Id = source.Id,
+            CurrentUpgradeLevel = source.CurrentUpgradeLevel,
+            Enchantment = CloneSerializableEnchantment(source.Enchantment),
+            Props = CloneSavedProperties(source.Props),
+            FloorAddedToDeck = source.FloorAddedToDeck,
+        };
+    }
+
+    private static SerializableEnchantment? CloneSerializableEnchantment(SerializableEnchantment? source)
+    {
+        if (source == null)
+        {
+            return null;
+        }
+
+        return new SerializableEnchantment
+        {
+            Id = source.Id,
+            Amount = source.Amount,
+            Props = CloneSavedProperties(source.Props),
+        };
     }
 
     private static bool HasAnySavedProperties(SavedProperties properties)
