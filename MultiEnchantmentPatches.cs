@@ -105,9 +105,11 @@ internal static class MultiEnchantmentPatches
         if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return;
         if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card)) return;
 
-        // All other vanilla checks pass. The only remaining reason vanilla could have rejected is
-        // the "same enchantment already exists" clause — re-enable iff mod's stack policy permits.
-        bool relaxed = MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
+        // All other vanilla checks pass. The remaining vanilla failure is that the primary
+        // enchantment slot is already occupied. Re-enable when this is either a new extra
+        // enchantment type or a supported same-type stack.
+        bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) ||
+            MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
         if (relaxed)
         {
             __result = true;
