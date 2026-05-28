@@ -15,6 +15,7 @@ namespace MultiEnchantmentMod.Api.Internal;
 internal static class MultiEnchantmentSaveSidecar
 {
     private const string FileName = "multi_enchantment_save_sidecar.json";
+    private const string MultiplayerFileName = "multi_enchantment_save_sidecar_mp.json";
     private const string Prefix = "MultiEnchantment";
 
     // MultiEnchantment-prefixed lookup properties kept in the main save (NOT stripped to
@@ -38,6 +39,11 @@ internal static class MultiEnchantmentSaveSidecar
     private static bool loaded;
     private static bool dirty;
 
+    // Which on-disk file the current document maps to. SP and MP runs share the same static
+    // document slot but persist to separate files so a saved MP run can't bloat or collide with
+    // the SP sidecar. Set by Reload / PrepareRunForDisk before any load or flush.
+    private static bool currentScopeMultiplayer;
+
     internal static bool IsMultiEnchantmentProperty(string? name) =>
         name != null && name.StartsWith(Prefix, StringComparison.Ordinal);
 
@@ -57,10 +63,11 @@ internal static class MultiEnchantmentSaveSidecar
     private static bool IsRuntimeLookupProperty(string? name) =>
         IsLookupProperty(name);
 
-    internal static void Reload()
+    internal static void Reload(bool multiplayer)
     {
         lock (Sync)
         {
+            currentScopeMultiplayer = multiplayer;
             loaded = false;
             EnsureLoadedLocked();
         }
@@ -314,11 +321,24 @@ internal static class MultiEnchantmentSaveSidecar
 
     internal static void PrepareRunForDisk(
         SerializableRun save,
+        bool multiplayer,
         bool clearStaleEntries = true)
     {
         if (save == null)
         {
             return;
+        }
+
+        // Rebuild this scope's sidecar from an empty document on every save. Starting fresh means
+        // entries for cards/enchantments no longer in the run can't accumulate as orphans, and we
+        // never persist another profile's stale in-memory document after a profile switch. The
+        // capture+strip loop below repopulates it from the current run before the flush.
+        lock (Sync)
+        {
+            currentScopeMultiplayer = multiplayer;
+            document = new SidecarDocument();
+            loaded = true;
+            dirty = true;
         }
 
         foreach (SerializableCard card in EnumerateCards(save))
@@ -807,7 +827,7 @@ internal static class MultiEnchantmentSaveSidecar
         enchantment.Props ??= new SavedProperties();
         enchantment.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
         string id = Guid.NewGuid().ToString("N");
-        enchantment.Props.strings.Add(new SavedProperties.SavedProperty<string>(InstanceIdPropertyName, id));
+        Upsert(enchantment.Props.strings, InstanceIdPropertyName, id);
         return id;
     }
 
@@ -854,26 +874,50 @@ internal static class MultiEnchantmentSaveSidecar
         }
 
         loaded = true;
-        string path = GetGlobalPath();
-        if (!File.Exists(path))
+        string path = GetGlobalPath(currentScopeMultiplayer);
+        if (File.Exists(path))
         {
-            document = new SidecarDocument();
-            return;
-        }
-
-        try
-        {
-            document = JsonSerializer.Deserialize<SidecarDocument>(File.ReadAllText(path), JsonOptions) ?? new SidecarDocument();
-            if (RemoveMalformedCardInstanceKeysLocked())
+            bool parsed = TryLoadDocument(path, out SidecarDocument loadedDocument);
+            document = loadedDocument;
+            if (parsed && RemoveMalformedCardInstanceKeysLocked())
             {
                 dirty = true;
             }
+
+            return;
+        }
+
+        // MP file missing: one-time migration seed from the legacy shared single-player file so a
+        // multiplayer run that was in progress before the SP/MP file split doesn't lose its extra
+        // enchantments on the first post-upgrade load. Instance keys are GUIDs, so any mixed-in SP
+        // entries are harmless; the next MP save rebuilds the file as MP-only.
+        if (currentScopeMultiplayer)
+        {
+            string legacyPath = GetGlobalPath(multiplayer: false);
+            if (File.Exists(legacyPath) && TryLoadDocument(legacyPath, out SidecarDocument seeded))
+            {
+                document = seeded;
+                return;
+            }
+        }
+
+        document = new SidecarDocument();
+    }
+
+    private static bool TryLoadDocument(string path, out SidecarDocument result)
+    {
+        try
+        {
+            result = JsonSerializer.Deserialize<SidecarDocument>(File.ReadAllText(path), JsonOptions)
+                ?? new SidecarDocument();
+            return true;
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment][SaveSidecar] Failed to load sidecar; starting empty. {ex.GetBaseException().Message}");
-            document = new SidecarDocument();
+            result = new SidecarDocument();
+            return false;
         }
     }
 
@@ -884,7 +928,7 @@ internal static class MultiEnchantmentSaveSidecar
             return;
         }
 
-        string path = GetGlobalPath();
+        string path = GetGlobalPath(currentScopeMultiplayer);
         try
         {
             string? directory = Path.GetDirectoryName(path);
@@ -903,18 +947,19 @@ internal static class MultiEnchantmentSaveSidecar
         }
     }
 
-    private static string GetGlobalPath()
+    private static string GetGlobalPath(bool multiplayer)
     {
+        string fileName = multiplayer ? MultiplayerFileName : FileName;
         string localPath;
         try
         {
             localPath = SaveManager.Instance.IsProfileInitialized
-                ? $"{UserDataPathProvider.GetProfileScopedBasePath(SaveManager.Instance.CurrentProfileId)}/{FileName}"
-                : $"user://{FileName}";
+                ? $"{UserDataPathProvider.GetProfileScopedBasePath(SaveManager.Instance.CurrentProfileId)}/{fileName}"
+                : $"user://{fileName}";
         }
         catch
         {
-            localPath = $"user://{FileName}";
+            localPath = $"user://{fileName}";
         }
 
         return ProjectSettings.GlobalizePath(localPath);

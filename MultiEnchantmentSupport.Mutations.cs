@@ -132,7 +132,7 @@ internal static partial class MultiEnchantmentSupport
             MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, existing, scopeOverride);
             if (IsScopeEffectivelyPermanent(existing.GetType(), scopeOverride))
             {
-                SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior);
+                SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior, scopeOverride);
             }
             card.DynamicVars.RecalculateForUpgradeOrEnchant();
             card.FinalizeUpgradeInternal();
@@ -160,7 +160,7 @@ internal static partial class MultiEnchantmentSupport
 
         if (IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
         {
-            SyncDeckVersionEnchantment(card, applied.GetType(), appliedStackCount, behavior);
+            SyncDeckVersionEnchantment(card, applied.GetType(), appliedStackCount, behavior, scopeOverride);
         }
 
         card.FinalizeUpgradeInternal();

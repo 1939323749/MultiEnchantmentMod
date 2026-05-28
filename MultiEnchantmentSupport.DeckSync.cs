@@ -134,7 +134,8 @@ internal static partial class MultiEnchantmentSupport
         CardModel card,
         Type enchantmentType,
         int amount,
-        EnchantmentStackBehavior behavior)
+        EnchantmentStackBehavior behavior,
+        EnchantmentScope? scopeOverride)
     {
         CardModel? deckVersion = card.DeckVersion;
         if (deckVersion == null || ReferenceEquals(deckVersion, card) || amount == 0)
@@ -152,6 +153,10 @@ internal static partial class MultiEnchantmentSupport
             MultiEnchantmentStackSupport.AppendMergedStackAmount(existing, previousTotalAmount, amount);
             MultiEnchantmentStackSupport.ApplyMergedAmountDelta(existing, amount);
             MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
+            // Mirror the scope override so the deck instance's effective permanence matches the
+            // combat card's. Otherwise GetDeckSyncedInstances filters by the registry default and
+            // can desync from the combat-card ordinal during removal.
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(deckVersion, existing, scopeOverride);
             RememberLastAppliedEnchantment(deckVersion, existing);
             AppendApplicationOrder(deckVersion, existing.Id);
         }
@@ -165,7 +170,8 @@ internal static partial class MultiEnchantmentSupport
                 amount,
                 modifyCard: true,
                 triggerChanged: false,
-                out _);
+                out _,
+                scopeOverride);
         }
 
         deckVersion.DynamicVars.RecalculateForUpgradeOrEnchant();

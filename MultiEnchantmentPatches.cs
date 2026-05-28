@@ -105,6 +105,15 @@ internal static class MultiEnchantmentPatches
         if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return;
         if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card)) return;
 
+        // Vanilla's only remaining rejection reason is the occupied primary slot (clause ④ of
+        // EnchantmentModel.CanEnchant). If that clause does NOT hold, vanilla itself would have
+        // returned true — so this false came from another mod's patch for a reason we can't see.
+        // Leave it alone rather than relaxing it.
+        bool vanillaPrimarySlotRejection =
+            card.Enchantment != null &&
+            (!__instance.IsStackable || card.Enchantment.GetType() != __instance.GetType());
+        if (!vanillaPrimarySlotRejection) return;
+
         // All other vanilla checks pass. The remaining vanilla failure is that the primary
         // enchantment slot is already occupied. Re-enable when this is either a new extra
         // enchantment type or a supported same-type stack.
@@ -750,9 +759,9 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun), new[] { typeof(SerializableRun), typeof(bool) })]
     [HarmonyPrefix]
-    private static void SaveRunPrefix(SerializableRun save)
+    private static void SaveRunPrefix(SerializableRun save, bool isMultiplayer)
     {
-        MultiEnchantmentSaveSidecar.PrepareRunForDisk(save);
+        MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, isMultiplayer);
     }
 
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.LoadRunSave))]
@@ -761,7 +770,7 @@ internal static class MultiEnchantmentPatches
     {
         if (__result is { Success: true, SaveData: { } save })
         {
-            MultiEnchantmentSaveSidecar.Reload();
+            MultiEnchantmentSaveSidecar.Reload(multiplayer: false);
             MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
         }
     }
@@ -772,7 +781,7 @@ internal static class MultiEnchantmentPatches
     {
         if (__result is { Success: true, SaveData: { } save })
         {
-            MultiEnchantmentSaveSidecar.Reload();
+            MultiEnchantmentSaveSidecar.Reload(multiplayer: true);
             MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
         }
     }
