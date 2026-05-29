@@ -34,6 +34,7 @@ namespace MultiEnchantmentMod;
 
 internal static partial class MultiEnchantmentSupport
 {
+    // Diagnostic de-dupe bounded by the number of registered visual-slice type pairs.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Type AnchorType, Type IconType), byte> VisualSliceIconResolutionWarnings = new();
 
     public static EnchantmentModel? GetMostRecentlyAppliedEnchantment(CardModel? card)
@@ -173,18 +174,32 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        List<PendingRemovalEntry> pending = state.PendingRemovals.ToList();
-        state.PendingRemovals.Clear();
-        foreach (PendingRemovalEntry entry in pending)
+        const int maxFlushBatches = 16;
+        int batchCount = 0;
+        do
         {
-            RemoveEnchantmentInternal(
-                card,
-                entry.Enchantment,
-                entry.Reason,
-                bypassVeto: entry.Reason == RemovalReason.CardCleared,
-                refreshCard: false,
-                triggerChanged: false);
+            List<PendingRemovalEntry> pending = state.PendingRemovals.ToList();
+            state.PendingRemovals.Clear();
+            foreach (PendingRemovalEntry entry in pending)
+            {
+                RemoveEnchantmentInternal(
+                    card,
+                    entry.Enchantment,
+                    entry.Reason,
+                    bypassVeto: entry.Reason == RemovalReason.CardCleared,
+                    refreshCard: false,
+                    triggerChanged: false);
+            }
+
+            batchCount++;
+            if (batchCount >= maxFlushBatches && state.PendingRemovals.Count > 0)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Pending removal flush for Card={card.Id} exceeded {maxFlushBatches} batches; leaving {state.PendingRemovals.Count} queued removal(s) for the next flush.");
+                break;
+            }
         }
+        while (state.PendingRemovals.Count > 0);
 
         card.DynamicVars.RecalculateForUpgradeOrEnchant();
         card.FinalizeUpgradeInternal();
@@ -460,7 +475,7 @@ internal static partial class MultiEnchantmentSupport
         catch (Exception ex)
         {
             defaultIcon = null!;
-            failureReason = ex.GetBaseException().Message;
+            failureReason = ex.ToString();
             return false;
         }
     }
@@ -579,7 +594,10 @@ internal static partial class MultiEnchantmentSupport
     {
         if (enchantment is Glam or Spiral)
         {
-            enchantment.DynamicVars["Times"].BaseValue = enchantment.Amount;
+            if (enchantment.DynamicVars.TryGetValue("Times", out var times))
+            {
+                times.BaseValue = enchantment.Amount;
+            }
         }
     }
 

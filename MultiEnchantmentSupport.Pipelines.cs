@@ -42,7 +42,8 @@ internal static partial class MultiEnchantmentSupport
             // Match the IsActive gating that ApplyDamageEnchantments / ApplyBlockEnchantments do.
             // A WhenActive-false Glam / Spiral must not contribute extra plays — otherwise the
             // "is it active" surface is inconsistent across pipelines.
-            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            CardModel? ownerCard = entry.Enchantment.Card;
+            if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
             {
                 continue;
             }
@@ -69,7 +70,8 @@ internal static partial class MultiEnchantmentSupport
         decimal result = damage;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
-            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            CardModel? ownerCard = entry.Enchantment.Card;
+            if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
             {
                 continue;
             }
@@ -93,7 +95,8 @@ internal static partial class MultiEnchantmentSupport
         decimal result = block;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
-            if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+            CardModel? ownerCard = entry.Enchantment.Card;
+            if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
             {
                 continue;
             }
@@ -144,7 +147,8 @@ internal static partial class MultiEnchantmentSupport
             foreach (OrderedDynamicVarEnchantmentEntry entry in GetOrderedDynamicVarEnchantmentEntries(card))
             {
                 Type enchantmentType = entry.Enchantment.GetType();
-                if (!MultiEnchantmentScopeSupport.IsActive(entry.Enchantment.Card!, entry.Enchantment))
+                CardModel? ownerCard = entry.Enchantment.Card;
+                if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
                 {
                     continue;
                 }
@@ -166,7 +170,7 @@ internal static partial class MultiEnchantmentSupport
                     {
                         MultiEnchantmentMod.Logger.Warn(
                             $"[MultiEnchantment] ModifyDynamicVar({varKey}) contribution from " +
-                            $"{enchantmentType.FullName} threw; skipping. Error: {ex.GetBaseException().Message}");
+                            $"{enchantmentType.FullName} threw; skipping. Error: {ex}");
                     }
                 }
             }

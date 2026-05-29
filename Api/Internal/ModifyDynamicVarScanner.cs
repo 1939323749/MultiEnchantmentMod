@@ -156,8 +156,10 @@ internal static class ModifyDynamicVarScanner
             // marked obsolete in .NET 8).
             return System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
         }
-        catch
+        catch (Exception ex)
         {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to create scanner receiver for {type.FullName ?? type.Name}; instance ModifyDynamicVar methods on this type will be invoked with null receiver. Error: {ex}");
             return null;
         }
     }

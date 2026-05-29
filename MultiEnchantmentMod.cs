@@ -69,7 +69,7 @@ public partial class MultiEnchantmentMod : Node
         }
         catch (Exception ex)
         {
-            LogThievingHopperReflectionFallback($"Reading _stealPriorities threw: {ex.GetBaseException().Message}");
+            LogThievingHopperReflectionFallback($"Reading _stealPriorities threw: {ex}");
             return;
         }
 

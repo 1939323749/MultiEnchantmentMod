@@ -258,7 +258,15 @@ internal static partial class MultiEnchantmentSupport
         }
         else
         {
-            mirroredGoopy = (Goopy)ModelDb.GetById<EnchantmentModel>(goopy.Id).ToMutable();
+            EnchantmentModel? model = ModelDb.GetById<EnchantmentModel>(goopy.Id);
+            if (model == null)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Could not mirror Goopy {goopy.Id} to DeckVersion because ModelDb.GetById returned null.");
+                return Task.CompletedTask;
+            }
+
+            mirroredGoopy = (Goopy)model.ToMutable();
             AttachEnchantmentState(deckVersion, mirroredGoopy, 1, modifyCard: true, triggerChanged: false);
         }
 

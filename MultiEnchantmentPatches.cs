@@ -1181,7 +1181,16 @@ internal static class MultiEnchantmentPatches
             // Hook.ModifyDamage's prefix applies legacy damage enchantments and
             // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
             // passing the already-enchanted local value would apply card damage twice.
-            value = Hook.ModifyDamage(card.Owner.RunState, card.CombatState, target, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+            if (TryGetPreviewOwner(card, out Player? owner) &&
+                TryGetPreviewRunState(owner, out IRunState? runState) &&
+                TryGetPreviewCreature(owner, out Creature? ownerCreature))
+            {
+                value = Hook.ModifyDamage(runState, card.CombatState, target, ownerCreature, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+            }
+            else
+            {
+                value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+            }
         }
         else
         {
@@ -1219,7 +1228,16 @@ internal static class MultiEnchantmentPatches
         {
             // Hook.ModifyBlock's prefix already chains ApplyDynamicVarEnchantments — see the
             // matching comment on DamageVar above.
-            value = Hook.ModifyBlock(card.CombatState!, card.Owner.Creature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
+            if (TryGetPreviewOwner(card, out Player? owner) &&
+                TryGetPreviewCreature(owner, out Creature? ownerCreature) &&
+                TryGetPreviewCombatState(card, ownerCreature, out ICombatState? combatState))
+            {
+                value = Hook.ModifyBlock(combatState, ownerCreature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
+            }
+            else
+            {
+                value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+            }
         }
         else
         {
@@ -1273,18 +1291,23 @@ internal static class MultiEnchantmentPatches
             decimal value = __instance.Calculate(target);
             if (runGlobalHooks)
             {
-                ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
-                List<AbstractModel> modifiers = new();
-                value = ModifyDamageInternal(
-                    card.Owner.RunState,
-                    combatState,
-                    target,
-                    __instance.IsFromOsty ? card.Owner.Osty : card.Owner.Creature,
-                    value,
-                    __instance.Props,
-                    card,
-                    ModifyDamageHookType.All,
-                    modifiers);
+                if (TryGetPreviewOwner(card, out Player? owner) &&
+                    TryGetPreviewRunState(owner, out IRunState? runState) &&
+                    TryGetPreviewCreature(owner, out Creature? ownerCreature))
+                {
+                    ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
+                    List<AbstractModel> modifiers = new();
+                    value = ModifyDamageInternal(
+                        runState,
+                        combatState,
+                        target,
+                        __instance.IsFromOsty ? owner.Osty : ownerCreature,
+                        value,
+                        __instance.Props,
+                        card,
+                        ModifyDamageHookType.All,
+                        modifiers);
+                }
             }
 
             value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
@@ -1338,8 +1361,12 @@ internal static class MultiEnchantmentPatches
             decimal value = __instance.Calculate(target);
             if (runGlobalHooks)
             {
-                ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
-                value = ModifyBlockInternal(combatState, card.Owner.Creature, value, __instance.Props, card, null, new List<AbstractModel>());
+                if (TryGetPreviewOwner(card, out Player? owner) &&
+                    TryGetPreviewCreature(owner, out Creature? ownerCreature))
+                {
+                    ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
+                    value = ModifyBlockInternal(combatState, ownerCreature, value, __instance.Props, card, null, new List<AbstractModel>());
+                }
             }
 
             value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
@@ -1416,8 +1443,17 @@ internal static class MultiEnchantmentPatches
             // Hook.ModifyDamage's prefix applies legacy damage enchantments and
             // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
             // passing the already-enchanted local value would apply card damage twice.
-            ICombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
-            value = Hook.ModifyDamage(card.Owner.RunState, combatState, target, card.Owner.Osty, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+            if (TryGetPreviewOwner(card, out Player? owner) &&
+                TryGetPreviewRunState(owner, out IRunState? runState) &&
+                TryGetPreviewCreature(owner, out Creature? ownerCreature))
+            {
+                ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
+                value = Hook.ModifyDamage(runState, combatState, target, owner.Osty, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+            }
+            else
+            {
+                value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+            }
         }
         else
         {
@@ -1468,7 +1504,7 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] DynamicVar.UpdateCardPreview postfix for Var={__instance.Name} " +
-                $"Card={card.Id} failed: {ex.GetBaseException().Message}");
+                $"Card={card.Id} failed: {ex}");
         }
     }
 
@@ -1490,7 +1526,7 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Failed to preserve compatible enchantments during transform. " +
-                $"Original={__instance.Original.Id} Replacement={__result.Id}: {ex.GetBaseException().Message}");
+                $"Original={__instance.Original.Id} Replacement={__result.Id}: {ex}");
         }
     }
 
@@ -1825,6 +1861,33 @@ internal static class MultiEnchantmentPatches
         return calculatedVar;
     }
 
+    private static bool TryGetPreviewOwner(CardModel card, [NotNullWhen(true)] out Player? owner)
+    {
+        owner = card.Owner;
+        return owner != null;
+    }
+
+    private static bool TryGetPreviewRunState(Player owner, [NotNullWhen(true)] out IRunState? runState)
+    {
+        runState = owner.RunState;
+        return runState != null;
+    }
+
+    private static bool TryGetPreviewCreature(Player owner, [NotNullWhen(true)] out Creature? creature)
+    {
+        creature = owner.Creature;
+        return creature != null;
+    }
+
+    private static bool TryGetPreviewCombatState(
+        CardModel card,
+        Creature ownerCreature,
+        [NotNullWhen(true)] out ICombatState? combatState)
+    {
+        combatState = card.CombatState ?? ownerCreature.CombatState;
+        return combatState != null;
+    }
+
     private static CardTransformation CreateTransformPreviewTransformation(CardTransformation transformation)
     {
         try
@@ -1847,7 +1910,7 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Failed to build multi-enchantment transform preview for " +
-                $"{transformation.Original.Id}. Falling back to vanilla preview. {ex.GetBaseException().Message}");
+                $"{transformation.Original.Id}. Falling back to vanilla preview. {ex}");
             return transformation;
         }
     }

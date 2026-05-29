@@ -255,7 +255,7 @@ public static class MultiEnchantmentApi
     {
         ArgumentNullException.ThrowIfNull(enchantment);
         CardModel? card = enchantment.Card;
-        if (card == null) return true;
+        if (card == null) return false;
         return global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.IsActive(card, enchantment);
     }
 

@@ -33,7 +33,7 @@ public interface IStackingRegistration
     IEnchantmentRegistration LingerForTurns(int turns);
     IEnchantmentRegistration MaxActivations(int n, ActivationTrigger? t = null);
 
-    /// <summary>Legacy scope-gating predicate; does not mutate <c>enchantment.Status</c>.</summary>
+    /// <summary>Active-status predicate that drives <c>enchantment.Status</c>; composes with scope.</summary>
     IEnchantmentRegistration WhenActive(Func<CardModel, EnchantmentModel, bool> predicate);
 
     /// <summary>

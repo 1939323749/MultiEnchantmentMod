@@ -562,7 +562,7 @@ internal static class EnchantmentRegistry
                 {
                     global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
                         $"[MultiEnchantment] auto-register attempt for {enchantmentType.FullName} failed: " +
-                        $"{ex.GetBaseException().Message}");
+                        $"{ex}");
                 }
                 return;
             }

@@ -104,7 +104,7 @@ internal static class VanillaCopyGuard
             {
                 global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
                     $"[VanillaCopyGuard] Internal failure while checking {tracked.FullName}: " +
-                    $"{ex.GetBaseException().Message}");
+                    $"{ex}");
             }
         }
     }

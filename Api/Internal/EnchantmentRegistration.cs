@@ -97,7 +97,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(predicate);
-        _entry.GetScope = () => EnchantmentScope.ConditionalActive(predicate);
+        _entry.GetActiveStatus = predicate;
         return this;
     }
 

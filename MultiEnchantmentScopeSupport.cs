@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -47,7 +48,7 @@ internal static class MultiEnchantmentScopeSupport
         // If the save tagged a scope kind, compare it against the now-resolved Scope and warn on
         // drift. Pending entries are one-shot — removed after the first compare so subsequent
         // EnsureScopeState calls for the same enchantment don't keep logging.
-        if (PendingScopeKindMismatchCheck.TryRemove(enchantment, out string? savedKind))
+        if (TryConsumePendingScopeKindMismatchCheck(enchantment, out string? savedKind))
         {
             string currentKind = GetScopeKind(state.Scope);
             if (!string.Equals(savedKind, currentKind, StringComparison.Ordinal))
@@ -394,7 +395,7 @@ internal static class MultiEnchantmentScopeSupport
             catch (Exception ex)
             {
                 MultiEnchantmentMod.Logger.Warn(
-                    $"[MultiEnchantment][Scope] RemoveWhen predicate failed for {enchantment.Id} on {card.Id}: {ex.GetBaseException().Message}");
+                    $"[MultiEnchantment][Scope] RemoveWhen predicate failed for {enchantment.Id} on {card.Id}: {ex}");
                 return;
             }
 
@@ -882,7 +883,7 @@ internal static class MultiEnchantmentScopeSupport
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Active predicate failed for {enchantment.Id} on {card.Id}: {ex.GetBaseException().Message}");
+                $"[MultiEnchantment][Scope] Active predicate failed for {enchantment.Id} on {card.Id}: {ex}");
             return true;
         }
     }
@@ -1068,8 +1069,14 @@ internal static class MultiEnchantmentScopeSupport
     // EnsureScopeState (upper level) after ResolveScope so the warning fires against the freshly
     // resolved Scope. The entry is removed after the first comparison; subsequent EnsureScopeState
     // calls for the same enchantment don't re-log.
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<EnchantmentModel, string>
-        PendingScopeKindMismatchCheck = new(ReferenceEqualityComparer.Instance);
+    private static readonly object PendingScopeKindMismatchCheckSync = new();
+    private static readonly ConditionalWeakTable<EnchantmentModel, PendingScopeKindMismatchEntry>
+        PendingScopeKindMismatchCheck = new();
+
+    private sealed class PendingScopeKindMismatchEntry
+    {
+        public required string ScopeKind { get; init; }
+    }
 
     private sealed record ScopeStatePayload(
         [property: JsonPropertyName("activation_count")] int ActivationCount,
@@ -1121,10 +1128,11 @@ internal static class MultiEnchantmentScopeSupport
             nameof(EnchantmentScope.PermanentScope) => EnchantmentScope.Permanent,
             nameof(EnchantmentScope.UntilCombatEndsScope) => EnchantmentScope.UntilCombatEnds,
             nameof(EnchantmentScope.UntilTurnEndsScope) => EnchantmentScope.UntilTurnEnds,
-            nameof(EnchantmentScope.LingerForTurnsScope) => EnchantmentScope.LingerForTurns(payload.OverrideParamInt ?? 0),
-            nameof(EnchantmentScope.MaxActivationsScope) => EnchantmentScope.MaxActivations(
-                payload.OverrideParamInt ?? 0,
-                DecodeActivationTrigger(payload.OverrideParamTrigger, enchantment)),
+            nameof(EnchantmentScope.LingerForTurnsScope) => DecodeLingerForTurnsOverride(payload.OverrideParamInt, enchantment),
+            nameof(EnchantmentScope.MaxActivationsScope) => DecodeMaxActivationsOverride(
+                payload.OverrideParamInt,
+                payload.OverrideParamTrigger,
+                enchantment),
             _ => WarnUnknownScopeOverride(payload.OverrideScopeKind!, enchantment),
         };
     }
@@ -1134,6 +1142,33 @@ internal static class MultiEnchantmentScopeSupport
         MultiEnchantmentMod.Logger.Warn(
             $"[MultiEnchantment][Scope] Ignoring unknown scope override kind '{kind}' for {enchantment.Id}.");
         return null;
+    }
+
+    private static EnchantmentScope? DecodeLingerForTurnsOverride(int? turns, EnchantmentModel enchantment)
+    {
+        if (turns is not > 0)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][Scope] Ignoring invalid LingerForTurns override for {enchantment.Id}: turns={turns?.ToString() ?? "<missing>"}.");
+            return null;
+        }
+
+        return EnchantmentScope.LingerForTurns(turns.Value);
+    }
+
+    private static EnchantmentScope? DecodeMaxActivationsOverride(
+        int? max,
+        string? trigger,
+        EnchantmentModel enchantment)
+    {
+        if (max is not > 0)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][Scope] Ignoring invalid MaxActivations override for {enchantment.Id}: max={max?.ToString() ?? "<missing>"}.");
+            return null;
+        }
+
+        return EnchantmentScope.MaxActivations(max.Value, DecodeActivationTrigger(trigger, enchantment));
     }
 
     private static ActivationTrigger DecodeActivationTrigger(string? name, EnchantmentModel enchantment)
@@ -1210,7 +1245,7 @@ internal static class MultiEnchantmentScopeSupport
             // because state.Scope is still the default at this layer.
             if (!string.IsNullOrEmpty(payload.ScopeKind))
             {
-                PendingScopeKindMismatchCheck.AddOrUpdate(enchantment, payload.ScopeKind!, static (_, v) => v);
+                SetPendingScopeKindMismatchCheck(enchantment, payload.ScopeKind!);
             }
 
             return true;
@@ -1218,9 +1253,36 @@ internal static class MultiEnchantmentScopeSupport
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Failed to deserialize scope state for {enchantment.Id}: {ex.GetBaseException().Message}");
+                $"[MultiEnchantment][Scope] Failed to deserialize scope state for {enchantment.Id}: {ex}");
             return false;
         }
+    }
+
+    private static void SetPendingScopeKindMismatchCheck(EnchantmentModel enchantment, string scopeKind)
+    {
+        lock (PendingScopeKindMismatchCheckSync)
+        {
+            PendingScopeKindMismatchCheck.Remove(enchantment);
+            PendingScopeKindMismatchCheck.Add(enchantment, new PendingScopeKindMismatchEntry { ScopeKind = scopeKind });
+        }
+    }
+
+    private static bool TryConsumePendingScopeKindMismatchCheck(
+        EnchantmentModel enchantment,
+        [NotNullWhen(true)] out string? scopeKind)
+    {
+        lock (PendingScopeKindMismatchCheckSync)
+        {
+            if (PendingScopeKindMismatchCheck.TryGetValue(enchantment, out PendingScopeKindMismatchEntry? entry))
+            {
+                PendingScopeKindMismatchCheck.Remove(enchantment);
+                scopeKind = entry.ScopeKind;
+                return true;
+            }
+        }
+
+        scopeKind = null;
+        return false;
     }
 
     /// <summary>

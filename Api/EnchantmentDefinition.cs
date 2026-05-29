@@ -241,22 +241,14 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
                 return EnchantmentScope.Permanent;
             }
 
-            if (attribute.MaxActivations > 0)
-            {
-                return EnchantmentScope.MaxActivations(attribute.MaxActivations, attribute.Activation);
-            }
-
-            if (attribute.LingerTurns > 0)
-            {
-                return EnchantmentScope.LingerForTurns(attribute.LingerTurns);
-            }
-
             return attribute.Scope switch
             {
                 ScopeKind.UntilCombatEnds => EnchantmentScope.UntilCombatEnds,
                 ScopeKind.UntilTurnEnds => EnchantmentScope.UntilTurnEnds,
                 ScopeKind.LingerForTurns => EnchantmentScope.LingerForTurns(attribute.LingerTurns),
                 ScopeKind.MaxActivations => EnchantmentScope.MaxActivations(attribute.MaxActivations, attribute.Activation),
+                _ when attribute.MaxActivations > 0 => EnchantmentScope.MaxActivations(attribute.MaxActivations, attribute.Activation),
+                _ when attribute.LingerTurns > 0 => EnchantmentScope.LingerForTurns(attribute.LingerTurns),
                 _ => EnchantmentScope.Permanent,
             };
         }

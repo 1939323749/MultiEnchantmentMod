@@ -12,5 +12,5 @@ namespace MultiEnchantmentMod.Api;
 public sealed class EnchantmentDefinitionAttribute : Attribute
 {
     public StackBehavior Stack { get; init; }
-    public StatusAggregation Status { get; init; }
+    public StatusAggregation Status { get; init; } = StatusAggregation.AnyInstanceCountsAsOne;
 }

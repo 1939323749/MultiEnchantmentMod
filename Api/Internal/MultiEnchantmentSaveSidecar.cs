@@ -486,7 +486,7 @@ internal static class MultiEnchantmentSaveSidecar
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][SaveSidecar] Failed to sanitize embedded extra enchantments: {ex.GetBaseException().Message}");
+                $"[MultiEnchantment][SaveSidecar] Failed to sanitize embedded extra enchantments: {ex}");
         }
     }
 
@@ -920,7 +920,7 @@ internal static class MultiEnchantmentSaveSidecar
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][SaveSidecar] Failed to load sidecar; starting empty. {ex.GetBaseException().Message}");
+                $"[MultiEnchantment][SaveSidecar] Failed to load sidecar; starting empty. {ex}");
             result = new SidecarDocument();
             return false;
         }
@@ -948,7 +948,7 @@ internal static class MultiEnchantmentSaveSidecar
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][SaveSidecar] Failed to flush sidecar. {ex.GetBaseException().Message}");
+                $"[MultiEnchantment][SaveSidecar] Failed to flush sidecar. {ex}");
         }
     }
 
@@ -962,8 +962,10 @@ internal static class MultiEnchantmentSaveSidecar
                 ? $"{UserDataPathProvider.GetProfileScopedBasePath(SaveManager.Instance.CurrentProfileId)}/{fileName}"
                 : $"user://{fileName}";
         }
-        catch
+        catch (Exception ex)
         {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment][SaveSidecar] Failed to resolve profile-scoped sidecar path; falling back to user://{fileName}. Error: {ex}");
             localPath = $"user://{fileName}";
         }
 

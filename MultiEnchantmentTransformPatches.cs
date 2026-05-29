@@ -26,14 +26,24 @@ internal static class MultiEnchantmentTransformPatches
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting ArchaicTooth.GetTranscendenceTransformedCard. " +
             $"StarterCard={starterCard.Id}");
-        if (!TryGetTranscendenceTransformedCardWithMultiEnchantments(__instance, starterCard, out CardModel? result))
+        try
         {
-            LogArchaicToothReflectionFallback();
+            if (!TryGetTranscendenceTransformedCardWithMultiEnchantments(__instance, starterCard, out CardModel? result))
+            {
+                LogArchaicToothReflectionFallback();
+                return true;
+            }
+
+            __result = result;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] ArchaicTooth.GetTranscendenceTransformedCard failed for StarterCard={starterCard.Id}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
-
-        __result = result;
-        return false;
     }
 
     [HarmonyPatch(typeof(Claws), "CreateMaulFromOriginal")]
@@ -128,7 +138,7 @@ internal static class MultiEnchantmentTransformPatches
         }
 
         _loggedArchaicToothReflectionFallback = true;
-        string suffix = ex == null ? string.Empty : $" Reason: {ex.GetBaseException().Message}";
+        string suffix = ex == null ? string.Empty : $" Reason: {ex}";
         MultiEnchantmentMod.Logger.Warn(
             "[TransformApi] Failed to mirror ArchaicTooth.GetTranscendenceTransformedCard via reflection. Falling back to the base-game implementation, which may only preserve the primary enchantment." +
             suffix);

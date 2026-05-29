@@ -200,7 +200,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to enumerate types in {assembly.GetName().Name}: {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to enumerate types in {assembly.GetName().Name}: {ex}");
             return 0;
         }
 
@@ -268,7 +268,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to instantiate {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to instantiate {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex}");
             return false;
         }
 
@@ -279,7 +279,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to register {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to register {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex}");
             return false;
         }
 
@@ -313,25 +313,30 @@ internal static class AssemblyScanner
             IEnchantmentRegistration registration = MultiEnchantmentApi.Register(type)
                 .Stack(attribute.Stack, attribute.Status);
 
-            if (attribute.MaxActivations > 0)
+            switch (attribute.Scope)
             {
-                registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
-            }
-            else if (attribute.LingerTurns > 0)
-            {
-                registration.LingerForTurns(attribute.LingerTurns);
-            }
-            else
-            {
-                switch (attribute.Scope)
-                {
-                    case ScopeKind.UntilCombatEnds:
-                        registration.WithScope(EnchantmentScope.UntilCombatEnds);
-                        break;
-                    case ScopeKind.UntilTurnEnds:
-                        registration.WithScope(EnchantmentScope.UntilTurnEnds);
-                        break;
-                }
+                case ScopeKind.UntilCombatEnds:
+                    registration.WithScope(EnchantmentScope.UntilCombatEnds);
+                    break;
+                case ScopeKind.UntilTurnEnds:
+                    registration.WithScope(EnchantmentScope.UntilTurnEnds);
+                    break;
+                case ScopeKind.LingerForTurns:
+                    registration.LingerForTurns(attribute.LingerTurns);
+                    break;
+                case ScopeKind.MaxActivations:
+                    registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
+                    break;
+                default:
+                    if (attribute.MaxActivations > 0)
+                    {
+                        registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
+                    }
+                    else if (attribute.LingerTurns > 0)
+                    {
+                        registration.LingerForTurns(attribute.LingerTurns);
+                    }
+                    break;
             }
 
             EnchantmentExecutionAttribute? executionAttribute =
@@ -385,7 +390,7 @@ internal static class AssemblyScanner
         catch (Exception ex)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[StackApi] Failed to register attribute-only enchantment {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex.GetBaseException().Message}");
+                $"[StackApi] Failed to register attribute-only enchantment {type.FullName} (assembly={type.Assembly.GetName().Name}): {ex}");
             return false;
         }
     }
@@ -469,8 +474,10 @@ internal static class AssemblyScanner
                     apiAssembly.GetName().Name,
                     StringComparison.Ordinal));
         }
-        catch
+        catch (Exception ex)
         {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[StackApi] Failed to inspect assembly references for {assembly.GetName().Name}; skipping scan candidate. Error: {ex}");
             return false;
         }
     }

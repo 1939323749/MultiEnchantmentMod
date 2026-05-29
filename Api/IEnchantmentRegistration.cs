@@ -54,10 +54,11 @@ public interface IEnchantmentRegistration
     /// Sets the full <see cref="StackDefinition"/> in one call. Use this overload when you need
     /// to configure <see cref="StackDefinition.MaxInstances"/> or
     /// <see cref="StackDefinition.OnOverflow"/> alongside the basic
-    /// <see cref="StackBehavior"/> / <see cref="StatusAggregation"/> pair. Default
-    /// implementation falls back to <see cref="IStackingRegistration.Stack(StackBehavior, StatusAggregation)"/>
-    /// for implementations that pre-date the overload (cap / overflow are silently dropped on
-    /// those).
+    /// <see cref="StackBehavior"/> / <see cref="StatusAggregation"/> pair. The built-in
+    /// registration builder preserves the full definition. The default interface
+    /// implementation exists only for older third-party implementations and falls back to
+    /// <see cref="IStackingRegistration.Stack(StackBehavior, StatusAggregation)"/>, dropping cap
+    /// and overflow settings.
     /// </summary>
     IEnchantmentRegistration Stack(StackDefinition definition)
     {

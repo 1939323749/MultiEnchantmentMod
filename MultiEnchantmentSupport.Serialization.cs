@@ -335,8 +335,15 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        card.Owner.RunState.CurrentMapPointHistoryEntry?
-            .GetEntry(card.Owner.NetId)
+        Player? owner = card.Owner;
+        IRunState? runState = owner?.RunState;
+        if (owner == null || runState == null)
+        {
+            return;
+        }
+
+        runState.CurrentMapPointHistoryEntry?
+            .GetEntry(owner.NetId)?
             .CardsEnchanted
             .Add(new CardEnchantmentHistoryEntry(card, enchantment.Id));
     }

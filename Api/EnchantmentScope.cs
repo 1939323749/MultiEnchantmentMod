@@ -11,10 +11,25 @@ public abstract record EnchantmentScope
     public static EnchantmentScope UntilCombatEnds { get; } = new UntilCombatEndsScope();
     public static EnchantmentScope UntilTurnEnds { get; } = new UntilTurnEndsScope();
 
-    public static EnchantmentScope LingerForTurns(int turns) => new LingerForTurnsScope(turns);
+    public static EnchantmentScope LingerForTurns(int turns)
+    {
+        if (turns <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(turns), turns, "LingerForTurns requires a positive turn count.");
+        }
 
-    public static EnchantmentScope MaxActivations(int n, ActivationTrigger? t = null) =>
-        new MaxActivationsScope(n, t ?? ActivationTrigger.OnPlay);
+        return new LingerForTurnsScope(turns);
+    }
+
+    public static EnchantmentScope MaxActivations(int n, ActivationTrigger? t = null)
+    {
+        if (n <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(n), n, "MaxActivations requires a positive activation count.");
+        }
+
+        return new MaxActivationsScope(n, t ?? ActivationTrigger.OnPlay);
+    }
 
     public static EnchantmentScope ConditionalActive(Func<CardModel, EnchantmentModel, bool> predicate) =>
         new ConditionalActiveScope(predicate);

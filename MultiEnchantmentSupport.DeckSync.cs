@@ -162,8 +162,16 @@ internal static partial class MultiEnchantmentSupport
         }
         else
         {
-            EnchantmentModel mirrored =
-                ModelDb.GetById<EnchantmentModel>(ModelDb.GetId(enchantmentType)).ToMutable();
+            ModelId modelId = ModelDb.GetId(enchantmentType);
+            EnchantmentModel? model = ModelDb.GetById<EnchantmentModel>(modelId);
+            if (model == null)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Could not mirror {enchantmentType.FullName ?? enchantmentType.Name} to DeckVersion because ModelDb.GetById({modelId}) returned null.");
+                return;
+            }
+
+            EnchantmentModel mirrored = model.ToMutable();
             AttachNewEnchantmentStacks(
                 deckVersion,
                 mirrored,

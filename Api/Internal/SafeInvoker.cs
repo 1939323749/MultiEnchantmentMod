@@ -74,7 +74,7 @@ internal static class SafeInvoker
         else if (count <= SilencedAfterFailures)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName} again (#{count}): {ex.GetBaseException().Message}");
+                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName} again (#{count}): {ex}");
         }
         else if (count == SilencedAfterFailures + 1)
         {

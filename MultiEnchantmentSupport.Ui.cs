@@ -554,15 +554,10 @@ internal static partial class MultiEnchantmentSupport
             .Where(tab => GodotObject.IsInstanceValid(tab) && tab.GetParent() == badgeRoot)
             .ToList();
 
-        foreach (Control tab in validTabs)
-        {
-            badgeRoot.MoveChild(tab, Math.Max(0, badgeRoot.GetChildCount() - 1));
-        }
-
-        for (int i = validTabs.Count - 1; i >= 0; i--)
+        for (int i = 0; i < validTabs.Count; i++)
         {
             Control tab = validTabs[i];
-            int targetIndex = Math.Min(primaryTab.GetIndex() + 1, Math.Max(0, badgeRoot.GetChildCount() - 1));
+            int targetIndex = Math.Min(primaryTab.GetIndex() + 1 + i, Math.Max(0, badgeRoot.GetChildCount() - 1));
             if (tab.GetIndex() != targetIndex)
             {
                 badgeRoot.MoveChild(tab, targetIndex);
