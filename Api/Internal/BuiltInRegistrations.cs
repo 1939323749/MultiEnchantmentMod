@@ -12,7 +12,7 @@ namespace MultiEnchantmentMod.Api.Internal;
 /// <remarks>
 /// Built-in enchantments are vanilla MegaCrit types, so we can't decorate them with attributes.
 /// Use the fluent <see cref="MultiEnchantmentApi.Register(Type)"/> builder for each one.
-/// Special cases (Instinct's per-merge energy delta, Glam/Spiral's <c>Times</c> resync,
+/// Special cases (Glam/Spiral's <c>Times</c> resync,
 /// Goopy/SoulsPower/Steady/RoyallyApproved/TezcatarasEmber's keyword sources) get explicit
 /// per-type registrations; everything else stays definition-only.
 /// </remarks>
@@ -66,8 +66,7 @@ internal static class BuiltInRegistrations
             // Special cases get fluent OnMergedDelta / OnMergedRefresh / Execution overrides
             // applied below before Commit, so skip the plain definition-only registration for
             // those types.
-            if (mergeType == typeof(Instinct) ||
-                mergeType == typeof(Glam) ||
+            if (mergeType == typeof(Glam) ||
                 mergeType == typeof(Spiral) ||
                 mergeType == typeof(SoulsPower) ||
                 mergeType == typeof(Momentum) ||
@@ -98,20 +97,6 @@ internal static class BuiltInRegistrations
         }
 
         // === Special cases ===================================================================
-
-        // Instinct's merge delta lowers the card's energy cost once per added amount. v1 lived
-        // in MultiEnchantmentStackSupport.ApplyMergedAmountDelta as a hardcoded `is Instinct`
-        // branch; v2 expresses it as an explicit OnMergedDelta.
-        MultiEnchantmentApi.Register<Instinct>()
-            .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
-            .OnMergedDelta((Instinct e, int added) =>
-            {
-                for (int i = 0; i < added; i++)
-                {
-                    e.Card.EnergyCost.UpgradeBy(-1);
-                }
-            })
-            .Commit();
 
         // Glam / Spiral keep their {Times} dynamic var in sync with merged Amount via two pieces:
         //   1. OnMergedRefresh: re-run RecalculateValues and seed DynamicVars["Times"].BaseValue =

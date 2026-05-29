@@ -255,13 +255,6 @@ internal static class MultiEnchantmentStackSupport
             return card.GainsBlock;
         }
 
-        if (enchantmentType == typeof(Instinct))
-        {
-            return !card.Keywords.Contains(CardKeyword.Unplayable) &&
-                   !card.EnergyCost.CostsX &&
-                   card.EnergyCost.GetWithModifiers(CostModifiers.None) > 0;
-        }
-
         if (enchantmentType == typeof(Slither))
         {
             return !card.Keywords.Contains(CardKeyword.Unplayable) &&
@@ -446,9 +439,9 @@ internal static class MultiEnchantmentStackSupport
         }
 
         // Fallback for enchantment types that haven't registered an OnMergedDelta. The v2
-        // BuiltInRegistrations covers every built-in type that needs special behavior (Instinct
-        // gets its -1 energy cost via OnMergedDelta); unknown third-party types reach this
-        // branch and do nothing, which matches v1 behavior for non-Instinct merge-amount types.
+        // BuiltInRegistrations covers every built-in type that needs special behavior; unknown
+        // third-party types reach this branch and do nothing, which matches v1 behavior for
+        // non-special merge-amount types.
     }
 
     public static void RefreshMergedEnchantmentState(EnchantmentModel enchantment)

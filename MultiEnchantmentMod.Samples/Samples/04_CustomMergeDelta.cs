@@ -7,7 +7,7 @@ namespace MultiEnchantmentMod.Samples;
 //
 // Goal: show how to react to merge applications with custom side effects.
 //
-// The vanilla Instinct enchantment lowers the card's energy cost by 1 every time it's merged
+// This sample lowers the card's energy cost by 1 every time it's merged
 // again. Without a custom OnMergedDelta, the merge would just bump Amount and never replay
 // OnEnchant — so the energy cost wouldn't keep dropping. We override OnMergedDelta to apply
 // the per-application side effect directly.
