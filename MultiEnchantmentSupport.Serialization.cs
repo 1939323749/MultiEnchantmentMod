@@ -34,6 +34,11 @@ namespace MultiEnchantmentMod;
 
 internal static partial class MultiEnchantmentSupport
 {
+    private static readonly JsonSerializerOptions ExtraEnchantmentJsonOptions = new()
+    {
+        IncludeFields = true,
+    };
+
     public static void SerializeAdditionalEnchantments(CardModel card, SerializableCard save)
     {
         // Base-game source: CardModel.ToSerializable only persists the primary enchantment.
@@ -52,7 +57,7 @@ internal static partial class MultiEnchantmentSupport
         save.Props ??= new SavedProperties();
         save.Props.strings ??= new List<SavedProperties.SavedProperty<string>>();
 
-        string payload = JsonSerializer.Serialize(extras);
+        string payload = JsonSerializer.Serialize(extras, ExtraEnchantmentJsonOptions);
         SavedProperties.SavedProperty<string> property = new(SavePropertyName, payload);
         int existingIndex = save.Props.strings.FindIndex(saved => saved.name == SavePropertyName);
         if (existingIndex >= 0)
@@ -81,7 +86,7 @@ internal static partial class MultiEnchantmentSupport
         List<SerializableEnchantment>? extras;
         try
         {
-            extras = JsonSerializer.Deserialize<List<SerializableEnchantment>>(payload);
+            extras = JsonSerializer.Deserialize<List<SerializableEnchantment>>(payload, ExtraEnchantmentJsonOptions);
         }
         catch (Exception ex)
         {
@@ -103,7 +108,12 @@ internal static partial class MultiEnchantmentSupport
             try
             {
                 EnchantmentModel enchantment = EnchantmentModel.FromSerializable(serializable);
-                RestoreAdditionalEnchantmentState(card, enchantment, modifyCard: true, triggerChanged: false);
+                RestoreAdditionalEnchantmentState(
+                    card,
+                    enchantment,
+                    modifyCard: true,
+                    triggerChanged: false,
+                    dispatchAppliedLifecycle: false);
                 changed = true;
             }
             catch (Exception ex)

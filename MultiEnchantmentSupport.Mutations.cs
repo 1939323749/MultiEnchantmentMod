@@ -302,7 +302,8 @@ internal static partial class MultiEnchantmentSupport
         int amount,
         bool modifyCard,
         bool triggerChanged,
-        EnchantmentScope? scopeOverride = null)
+        EnchantmentScope? scopeOverride = null,
+        bool dispatchAppliedLifecycle = true)
     {
         // Low-level exact-state attach. This method never interprets Amount as "how many more
         // stacks to create"; it attaches one concrete enchantment instance with the given state.
@@ -318,10 +319,13 @@ internal static partial class MultiEnchantmentSupport
         {
             bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
             ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
-            MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+            if (dispatchAppliedLifecycle)
+            {
+                MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
 
-            // Phase 5: notify siblings that a new enchantment joined the card.
-            MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                // Phase 5: notify siblings that a new enchantment joined the card.
+                MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+            }
         }
 
         // Sync active-status predicate immediately so the enchantment dims on first appearance.
@@ -339,7 +343,8 @@ internal static partial class MultiEnchantmentSupport
         CardModel card,
         EnchantmentModel enchantment,
         bool modifyCard,
-        bool triggerChanged)
+        bool triggerChanged,
+        bool dispatchAppliedLifecycle = true)
     {
         // Mod source: cloning/loading an existing extra enchantment must preserve that instance's
         // live Amount. Duplicate-instance enchantments like Goopy use Amount as runtime state, not
@@ -349,7 +354,9 @@ internal static partial class MultiEnchantmentSupport
             enchantment,
             enchantment.Amount,
             modifyCard,
-            triggerChanged);
+            triggerChanged,
+            scopeOverride: null,
+            dispatchAppliedLifecycle);
     }
 
     /// <summary>

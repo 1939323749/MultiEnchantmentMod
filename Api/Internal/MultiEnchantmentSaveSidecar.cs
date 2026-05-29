@@ -34,6 +34,10 @@ internal static class MultiEnchantmentSaveSidecar
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+    private static readonly JsonSerializerOptions EmbeddedExtraEnchantmentJsonOptions = new()
+    {
+        IncludeFields = true,
+    };
 
     private static SidecarDocument document = new();
     private static bool loaded;
@@ -463,7 +467,8 @@ internal static class MultiEnchantmentSaveSidecar
 
         try
         {
-            List<SerializableEnchantment>? extras = JsonSerializer.Deserialize<List<SerializableEnchantment>>(payload);
+            List<SerializableEnchantment>? extras =
+                JsonSerializer.Deserialize<List<SerializableEnchantment>>(payload, EmbeddedExtraEnchantmentJsonOptions);
             if (extras == null || extras.Count == 0)
             {
                 return;
@@ -476,7 +481,7 @@ internal static class MultiEnchantmentSaveSidecar
 
             props.strings[index] = new SavedProperties.SavedProperty<string>(
                 MultiEnchantmentSupport.SavePropertyName,
-                JsonSerializer.Serialize(extras));
+                JsonSerializer.Serialize(extras, EmbeddedExtraEnchantmentJsonOptions));
         }
         catch (Exception ex)
         {
