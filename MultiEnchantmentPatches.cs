@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
+using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Commands.Builders;
@@ -24,12 +25,14 @@ using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Enchantments;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
+using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
@@ -55,6 +58,11 @@ internal static class MultiEnchantmentPatches
         AccessTools.Field(typeof(NCardEnchantVfx), "_cardNode");
     private static readonly FieldInfo? NCardEnchantVfxIconField =
         AccessTools.Field(typeof(NCardEnchantVfx), "_enchantmentIcon");
+    private static readonly FieldInfo? NDeckHistoryEntryTitleLabelField =
+        AccessTools.Field(typeof(NDeckHistoryEntry), "_titleLabel");
+    private static readonly FieldInfo? NDeckHistoryEntryEnchantmentImageField =
+        AccessTools.Field(typeof(NDeckHistoryEntry), "_enchantmentImage");
+
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
@@ -637,6 +645,31 @@ internal static class MultiEnchantmentPatches
     private static void HookModifyEnergyCostInCombatPostfix(ICombatState combatState, CardModel card, ref decimal __result)
     {
         __result = MultiEnchantmentSupport.ApplyEnergyCostContributions(card, __result);
+    }
+
+    [HarmonyPatch(typeof(MysticLighter), nameof(MysticLighter.ModifyDamageAdditive))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void MysticLighterModifyDamageAdditivePostfix(
+        MysticLighter __instance,
+        ValueProp props,
+        CardModel? cardSource,
+        ref decimal __result)
+    {
+        // Base-game source: MysticLighter.ModifyDamageAdditive.
+        // Vanilla checks only cardSource.Enchantment. Re-enable the same bonus when the card's
+        // only enchantments live in the mod's extra slots.
+        if (__result != 0m ||
+            !props.IsPoweredAttack() ||
+            cardSource == null ||
+            cardSource.Enchantment != null ||
+            !MultiEnchantmentSupport.HasAnyEnchantments(cardSource) ||
+            cardSource.Owner != __instance.Owner)
+        {
+            return;
+        }
+
+        __result = __instance.DynamicVars.Damage.IntValue;
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeFlush))]
@@ -1729,6 +1762,34 @@ internal static class MultiEnchantmentPatches
         // Snapshot the visible enchantment stack at VFX creation time so the animation does not
         // depend on later UI refreshes or card-node state during _Ready.
         MultiEnchantmentSupport.CaptureEnchantVfxSnapshot(__result, card);
+    }
+
+    [HarmonyPatch(typeof(NDeckHistoryEntry), "Reload")]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void DeckHistoryEntryReloadPostfix(NDeckHistoryEntry __instance)
+    {
+        // Base-game source: NDeckHistoryEntry.Reload.
+        // Vanilla uses only Card.Enchantment for the purple title and icon. If the primary slot is
+        // empty but the sidecar restored extra enchantments, mirror the same one-icon treatment.
+        CardModel? card = __instance.Card;
+        if (card == null ||
+            card.Enchantment != null ||
+            !MultiEnchantmentSupport.TryGetFirstVisualState(card, out MultiEnchantmentSupport.EnchantmentVisualState? visualState))
+        {
+            return;
+        }
+
+        if (NDeckHistoryEntryTitleLabelField?.GetValue(__instance) is Label titleLabel)
+        {
+            titleLabel.AddThemeColorOverride(ThemeConstants.Label.FontColor, StsColors.purple);
+        }
+
+        if (NDeckHistoryEntryEnchantmentImageField?.GetValue(__instance) is TextureRect enchantmentImage)
+        {
+            enchantmentImage.Texture = visualState.Icon;
+            enchantmentImage.Visible = true;
+        }
     }
 
     [HarmonyPatch(typeof(RestSiteOption), nameof(RestSiteOption.Generate))]

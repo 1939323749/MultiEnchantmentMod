@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -177,6 +178,12 @@ internal static partial class MultiEnchantmentSupport
         {
             yield return entry.VisualState;
         }
+    }
+
+    internal static bool TryGetFirstVisualState(CardModel? card, [NotNullWhen(true)] out EnchantmentVisualState? visualState)
+    {
+        visualState = GetOrderedVisualStates(card).FirstOrDefault();
+        return visualState != null;
     }
 
     public static IReadOnlyList<EnchantmentModel> GetAdditionalEnchantments(CardModel? card)
