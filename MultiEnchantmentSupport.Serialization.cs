@@ -240,9 +240,10 @@ internal static partial class MultiEnchantmentSupport
         // should appear absent in the UI. Skip their hover tips so authors get the "doesn't exist"
         // semantic they expect — consistent with the IsActive gating already applied to damage /
         // block / dynamic-var pipelines.
-        return original.Concat(GetAdditionalEnchantments(card)
+        return original.ToList().Concat(GetAdditionalEnchantments(card)
+            .ToList()
             .Where(enchantment => MultiEnchantmentScopeSupport.IsActive(card, enchantment))
-            .SelectMany(static enchantment => enchantment.HoverTips)).Distinct();
+            .SelectMany(static enchantment => enchantment.HoverTips.ToList())).Distinct().ToList();
     }
 
     private static bool TryGetSavedString(SavedProperties? properties, string propertyName, out string value)

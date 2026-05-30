@@ -360,14 +360,14 @@ internal static partial class MultiEnchantmentSupport
 
     public static IEnumerable<AbstractModel> AppendRunStateExtraEnchantments(RunState runState, IEnumerable<AbstractModel> original)
     {
-        foreach (AbstractModel model in original)
+        foreach (AbstractModel model in original.ToList())
         {
             yield return model;
         }
 
-        foreach (Player player in runState.Players.Where(static player => player.IsActiveForHooks))
+        foreach (Player player in runState.Players.Where(static player => player.IsActiveForHooks).ToList())
         {
-            foreach (CardModel card in player.Deck.Cards.Where(static card => !card.HasBeenRemovedFromState))
+            foreach (CardModel card in player.Deck.Cards.Where(static card => !card.HasBeenRemovedFromState).ToList())
             {
                 // Snapshot the extra enchantment list: a downstream virtual (e.g.
                 // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the
@@ -393,14 +393,14 @@ internal static partial class MultiEnchantmentSupport
 
     public static IEnumerable<AbstractModel> AppendCombatStateExtraEnchantments(CombatState combatState, IEnumerable<AbstractModel> original)
     {
-        foreach (AbstractModel model in original)
+        foreach (AbstractModel model in original.ToList())
         {
             yield return model;
         }
 
-        foreach (Player player in combatState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null))
+        foreach (Player player in combatState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null).ToList())
         {
-            foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static card => !card.HasBeenRemovedFromState))
+            foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static card => !card.HasBeenRemovedFromState).ToList())
             {
                 // Snapshot the extra enchantment list: a downstream virtual (e.g.
                 // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the

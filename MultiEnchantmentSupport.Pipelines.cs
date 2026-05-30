@@ -408,7 +408,7 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null))
+        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null).ToList())
         {
             await DispatchStackedHookForPlayer(player, hasHandler, invoke, refreshAfterEachCard: false);
         }

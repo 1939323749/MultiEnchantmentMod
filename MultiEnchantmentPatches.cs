@@ -263,8 +263,8 @@ internal static class MultiEnchantmentPatches
             // Fan the player-scoped AfterPlayerTurnEnd activation trigger out to every card-owned
             // enchantment in PlayerCombatState. Combined with the v2 MaxActivations / RemoveWhen
             // surface this lets authors express "expire after 2 turn endings" cleanly.
-            foreach (Player player in (combatState as CombatState)?.Players
-                ?? Enumerable.Empty<Player>())
+            foreach (Player player in ((combatState as CombatState)?.Players
+                         ?? Enumerable.Empty<Player>()).ToList())
             {
                 if (player.IsActiveForHooks && player.PlayerCombatState != null)
                 {
@@ -913,7 +913,7 @@ internal static class MultiEnchantmentPatches
             List<AbstractModel> modifyingModels = new();
             decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(cardSource, block, props);
 
-            foreach (AbstractModel model in combatState.IterateHookListeners())
+            foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
             {
                 decimal add = model.ModifyBlockAdditive(target, value, props, cardSource, cardPlay);
                 value += add;
@@ -923,7 +923,7 @@ internal static class MultiEnchantmentPatches
                 }
             }
 
-            foreach (AbstractModel model in combatState.IterateHookListeners())
+            foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
             {
                 decimal multiply = model.ModifyBlockMultiplicative(target, value, props, cardSource, cardPlay);
                 value *= multiply;
@@ -1993,7 +1993,7 @@ internal static class MultiEnchantmentPatches
 
         if (modifyDamageHookType.HasFlag(ModifyDamageHookType.Additive))
         {
-            foreach (AbstractModel model in runState.IterateHookListeners(combatState))
+            foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
             {
                 decimal add = model.ModifyDamageAdditive(target, value, props, dealer, cardSource);
                 value += add;
@@ -2006,7 +2006,7 @@ internal static class MultiEnchantmentPatches
 
         if (modifyDamageHookType.HasFlag(ModifyDamageHookType.Multiplicative))
         {
-            foreach (AbstractModel model in runState.IterateHookListeners(combatState))
+            foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
             {
                 decimal multiply = model.ModifyDamageMultiplicative(target, value, props, dealer, cardSource);
                 value *= multiply;
@@ -2018,7 +2018,7 @@ internal static class MultiEnchantmentPatches
         }
 
         decimal damageCap = decimal.MaxValue;
-        foreach (AbstractModel model in runState.IterateHookListeners(combatState))
+        foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
         {
             decimal cap = model.ModifyDamageCap(target, props, dealer, cardSource);
             if (cap < damageCap)
@@ -2052,7 +2052,7 @@ internal static class MultiEnchantmentPatches
             return Math.Max(0m, value);
         }
 
-        foreach (AbstractModel model in combatState.IterateHookListeners())
+        foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
         {
             decimal add = model.ModifyBlockAdditive(target, value, props, cardSource, cardPlay);
             value += add;
@@ -2062,7 +2062,7 @@ internal static class MultiEnchantmentPatches
             }
         }
 
-        foreach (AbstractModel model in combatState.IterateHookListeners())
+        foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
         {
             decimal multiply = model.ModifyBlockMultiplicative(target, value, props, cardSource, cardPlay);
             value *= multiply;

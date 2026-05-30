@@ -279,9 +279,9 @@ internal static class MultiEnchantmentScopeSupport
 
         if (runState is RunState concreteRunState)
         {
-            foreach (Player player in concreteRunState.Players)
+            foreach (Player player in concreteRunState.Players.ToList())
             {
-                foreach (CardModel card in player.Deck.Cards)
+                foreach (CardModel card in player.Deck.Cards.ToList())
                 {
                     if (visited.Add(card))
                     {
@@ -550,7 +550,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null))
+        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null).ToList())
         {
             foreach (CardModel selfCard in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
@@ -664,7 +664,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null))
+        foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null).ToList())
         {
             foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
@@ -1029,7 +1029,7 @@ internal static class MultiEnchantmentScopeSupport
         }
 
         HashSet<CardModel> seen = new(ReferenceEqualityComparer.Instance);
-        foreach (Player player in concreteState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null))
+        foreach (Player player in concreteState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null).ToList())
         {
             // Snapshot AllCards: callers like OnCombatEnded / OnPlayerTurnEnded invoke user
             // OnTurnEnd / OnCombatEnd handlers in the loop body. A handler that calls
