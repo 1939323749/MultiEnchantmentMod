@@ -561,10 +561,13 @@ internal static class EnchantmentRegistry
                         .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
                         .Commit();
 
-                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
-                        $"[MultiEnchantment] auto-registered {enchantmentType.FullName} as MergeAmount " +
-                        $"(overrides EnchantDamage*/EnchantBlock*). Authors: call " +
-                        $"MultiEnchantmentApi.Register<{enchantmentType.Name}>() to opt out.");
+                    if (EntriesByType.ContainsKey(enchantmentType))
+                    {
+                        global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+                            $"[MultiEnchantment] auto-registered {enchantmentType.FullName} as MergeAmount " +
+                            $"(overrides EnchantDamage*/EnchantBlock*). Authors: call " +
+                            $"MultiEnchantmentApi.Register<{enchantmentType.Name}>() to opt out.");
+                    }
                 }
                 catch (Exception ex)
                 {
