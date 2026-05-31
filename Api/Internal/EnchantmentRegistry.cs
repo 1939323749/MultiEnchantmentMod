@@ -606,7 +606,7 @@ internal static class EnchantmentRegistry
         return false;
     }
 
-    private static bool DeclaresSavedProperties(Type enchantmentType)
+    internal static bool DeclaresSavedProperties(Type enchantmentType)
     {
         foreach (PropertyInfo property in enchantmentType.GetProperties(
                      BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |

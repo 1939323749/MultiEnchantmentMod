@@ -55,7 +55,8 @@ internal static partial class MultiEnchantmentSupport
                     continue;
                 }
 
-                if (enchantment.Amount > 1)
+                if (enchantment.Amount > 1 &&
+                    !EnchantmentRegistry.DeclaresSavedProperties(enchantment.GetType()))
                 {
                     enchantment.Amount = 1;
                     MultiEnchantmentStackSupport.ClearMergedStackMetadata(enchantment);
