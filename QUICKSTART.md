@@ -27,7 +27,7 @@ Add the manifest dependency in your mod's `.json`:
   "name": "My Enchantments",
   "version": "1.0.0",
   "dependencies": [
-    { "id": "MultiEnchantmentMod", "min_version": "v2.0.0" }
+    "MultiEnchantmentMod"
   ]
 }
 ```
