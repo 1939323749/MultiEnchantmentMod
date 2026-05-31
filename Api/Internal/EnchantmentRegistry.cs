@@ -545,6 +545,14 @@ internal static class EnchantmentRegistry
                 return;
             }
 
+            if (DeclaresSavedProperties(enchantmentType))
+            {
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] {enchantmentType.FullName} declares saved properties; " +
+                    "defaulting to DisallowDuplicate so the source mod owns its Amount semantics.");
+                return;
+            }
+
             if (OverridesValueModifierVirtual(enchantmentType))
             {
                 try
@@ -592,6 +600,26 @@ internal static class EnchantmentRegistry
             if (method != null && method.DeclaringType == enchantmentType)
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool DeclaresSavedProperties(Type enchantmentType)
+    {
+        foreach (PropertyInfo property in enchantmentType.GetProperties(
+                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |
+                     BindingFlags.DeclaredOnly))
+        {
+            foreach (Attribute attribute in property.GetCustomAttributes(inherit: false))
+            {
+                Type attributeType = attribute.GetType();
+                if (string.Equals(attributeType.Name, "SavedPropertyAttribute", StringComparison.Ordinal) ||
+                    string.Equals(attributeType.FullName, "MegaCrit.Sts2.Core.Saves.SavedPropertyAttribute", StringComparison.Ordinal))
+                {
+                    return true;
+                }
             }
         }
 
