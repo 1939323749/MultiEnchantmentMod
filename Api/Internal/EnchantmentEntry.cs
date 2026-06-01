@@ -33,6 +33,7 @@ internal sealed class EnchantmentEntry
     public PresentationTextFormatter? FormatExtraText { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<int>?>? GetVisualSliceAmounts { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?>? GetVisualSlices { get; set; }
+    public EnchantmentPresentationStyle? PresentationStyle { get; set; }
     public Func<EnchantmentScope>? GetScope { get; set; }
 
     public HistoryDisplayMode HistoryDisplay { get; set; } = HistoryDisplayMode.Auto;
@@ -112,6 +113,7 @@ internal sealed class EnchantmentEntry
     public StackedOnPlayHandler? OnPlayStacked { get; set; }
     public StackedBeforeCardPlayedHandler? BeforeCardPlayedStacked { get; set; }
     public StackedAfterCardPlayedHandler? AfterCardPlayedStacked { get; set; }
+    public StackedAfterSiblingAppliedHandler? AfterSiblingAppliedStacked { get; set; }
     public StackedAfterCardDrawnHandler? AfterCardDrawnStacked { get; set; }
     public StackedAfterAnyCardDrawnHandler? AfterAnyCardDrawnStacked { get; set; }
     public StackedBeforeFlushHandler? BeforeFlushStacked { get; set; }
@@ -257,6 +259,11 @@ internal sealed class EnchantmentEntry
             ? Task.CompletedTask
             : RunAsync(nameof(AfterCardPlayedStacked), c => AfterCardPlayedStacked(c), context);
 
+    public Task RunAfterSiblingAppliedStacked(StackedAfterSiblingAppliedContext context) =>
+        AfterSiblingAppliedStacked == null
+            ? Task.CompletedTask
+            : RunAsync(nameof(AfterSiblingAppliedStacked), c => AfterSiblingAppliedStacked(c), context);
+
     public Task RunAfterCardDrawnStacked(StackedAfterCardDrawnContext context) =>
         AfterCardDrawnStacked == null
             ? Task.CompletedTask
@@ -334,6 +341,7 @@ internal sealed class EnchantmentEntry
         || OnPlayStacked != null
         || BeforeCardPlayedStacked != null
         || AfterCardPlayedStacked != null
+        || AfterSiblingAppliedStacked != null
         || AfterCardDrawnStacked != null
         || AfterAnyCardDrawnStacked != null
         || BeforeFlushStacked != null

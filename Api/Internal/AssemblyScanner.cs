@@ -250,24 +250,40 @@ internal static class AssemblyScanner
         // Pass 1: EnchantmentDefinition<T> subclasses (preferred — they bring full virtual-method bag).
         foreach (Type type in types)
         {
-            if (TryRegisterDefinitionClass(type, out Type? enchantmentType) && enchantmentType != null)
+            try
             {
-                coveredByDefinition.Add(enchantmentType);
-                registeredCount++;
+                if (TryRegisterDefinitionClass(type, out Type? enchantmentType) && enchantmentType != null)
+                {
+                    coveredByDefinition.Add(enchantmentType);
+                    registeredCount++;
+                }
+            }
+            catch (TypeLoadException ex)
+            {
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                    $"[StackApi] Skipping type {type.FullName} from {assembly.GetName().Name}: {ex}");
             }
         }
 
         // Pass 2: [Enchantment] attribute on enchantment models that no Definition class covers.
         foreach (Type type in types)
         {
-            if (coveredByDefinition.Contains(type))
+            try
             {
-                continue;
-            }
+                if (coveredByDefinition.Contains(type))
+                {
+                    continue;
+                }
 
-            if (TryRegisterAttributeOnly(type))
+                if (TryRegisterAttributeOnly(type))
+                {
+                    registeredCount++;
+                }
+            }
+            catch (TypeLoadException ex)
             {
-                registeredCount++;
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                    $"[StackApi] Skipping type {type.FullName} from {assembly.GetName().Name}: {ex}");
             }
         }
 
@@ -355,6 +371,8 @@ internal static class AssemblyScanner
 
             switch (attribute.Scope)
             {
+                case ScopeKind.Permanent:
+                    break;
                 case ScopeKind.UntilCombatEnds:
                     registration.WithScope(EnchantmentScope.UntilCombatEnds);
                     break;
@@ -367,15 +385,9 @@ internal static class AssemblyScanner
                 case ScopeKind.MaxActivations:
                     registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
                     break;
+                case ScopeKind.RemoveWhen:
+                    break;
                 default:
-                    if (attribute.MaxActivations > 0)
-                    {
-                        registration.MaxActivations(attribute.MaxActivations, attribute.Activation);
-                    }
-                    else if (attribute.LingerTurns > 0)
-                    {
-                        registration.LingerForTurns(attribute.LingerTurns);
-                    }
                     break;
             }
 

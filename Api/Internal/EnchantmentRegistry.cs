@@ -400,7 +400,7 @@ internal static class EnchantmentRegistry
         {
             if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
             {
-                return HistoryDisplayMode.Auto;
+                return GetDefaultHistoryDisplayMode(enchantmentType);
             }
 
             for (int i = entries.Count - 1; i >= 0; i--)
@@ -411,7 +411,7 @@ internal static class EnchantmentRegistry
                 }
             }
 
-            return HistoryDisplayMode.Auto;
+            return GetDefaultHistoryDisplayMode(enchantmentType);
         }
     }
 
@@ -462,6 +462,44 @@ internal static class EnchantmentRegistry
 
             return null;
         }
+    }
+
+    internal static EnchantmentPresentationStyle GetPresentationStyle(Type enchantmentType)
+    {
+        AssemblyScanner.EnsureScanned();
+
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return GetDefaultPresentationStyle(enchantmentType);
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                EnchantmentPresentationStyle? style = entries[i].PresentationStyle;
+                if (style != null)
+                {
+                    return style;
+                }
+            }
+
+            return GetDefaultPresentationStyle(enchantmentType);
+        }
+    }
+
+    private static HistoryDisplayMode GetDefaultHistoryDisplayMode(Type enchantmentType)
+    {
+        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
+            ? HistoryDisplayMode.Hidden
+            : HistoryDisplayMode.Auto;
+    }
+
+    internal static EnchantmentPresentationStyle GetDefaultPresentationStyle(Type enchantmentType)
+    {
+        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
+            ? ExtraIconPresentation.Default
+            : new EnchantmentPresentationStyle();
     }
 
     /// <summary>

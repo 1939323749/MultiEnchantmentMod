@@ -54,6 +54,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(action);
+        EnsureUnset(_entry.OnMergedDelta, nameof(OnMergedDelta));
         _entry.OnMergedDelta = action;
         return this;
     }
@@ -62,6 +63,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(action);
+        EnsureUnset(_entry.OnMergedRefresh, nameof(OnMergedRefresh));
         _entry.OnMergedRefresh = action;
         return this;
     }
@@ -70,6 +72,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(scope);
+        EnsureUnset(_entry.GetScope, nameof(WithScope));
         _entry.GetScope = () => scope;
         return this;
     }
@@ -88,6 +91,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         Func<CardModel, EnchantmentModel, bool> predicate,
         params ActivationTrigger[] checkOn)
     {
+        EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(predicate);
         ArgumentNullException.ThrowIfNull(checkOn);
         return WithScope(EnchantmentScope.RemoveWhen(predicate, checkOn));
@@ -97,14 +101,17 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(predicate);
+        EnsureUnset(_entry.GetActiveStatus, nameof(WhenActive));
         _entry.GetActiveStatus = predicate;
         return this;
     }
 
+    [Obsolete("Use WhenActive. This alias targets the same active-status slot and will be removed in a future release.")]
     public IEnchantmentRegistration WhenActiveStatus(Func<CardModel, EnchantmentModel, bool> predicate)
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(predicate);
+        EnsureUnset(_entry.GetActiveStatus, nameof(WhenActiveStatus));
         _entry.GetActiveStatus = predicate;
         return this;
     }
@@ -113,6 +120,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnApplied, nameof(OnApplied));
         _entry.OnApplied = handler;
         return this;
     }
@@ -121,6 +129,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnRemoved, nameof(OnRemoved));
         _entry.OnRemoved = handler;
         return this;
     }
@@ -129,6 +138,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnSiblingApplied, nameof(OnSiblingApplied));
         _entry.OnSiblingApplied = handler;
         return this;
     }
@@ -137,6 +147,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnSiblingRemoved, nameof(OnSiblingRemoved));
         _entry.OnSiblingRemoved = handler;
         return this;
     }
@@ -145,6 +156,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCombatStart, nameof(OnCombatStart));
         _entry.OnCombatStart = handler;
         return this;
     }
@@ -153,6 +165,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCombatEnd, nameof(OnCombatEnd));
         _entry.OnCombatEnd = handler;
         return this;
     }
@@ -161,6 +174,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnTurnStart, nameof(OnTurnStart));
         _entry.OnTurnStart = handler;
         return this;
     }
@@ -169,6 +183,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnTurnEnd, nameof(OnTurnEnd));
         _entry.OnTurnEnd = handler;
         return this;
     }
@@ -177,6 +192,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnRestored, nameof(OnRestored));
         _entry.OnRestored = handler;
         return this;
     }
@@ -185,6 +201,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardPlayed, nameof(OnCardPlayed));
         _entry.OnCardPlayed = handler;
         return this;
     }
@@ -193,6 +210,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardDrawn, nameof(OnCardDrawn));
         _entry.OnCardDrawn = handler;
         return this;
     }
@@ -201,6 +219,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardExhausted, nameof(OnCardExhausted));
         _entry.OnCardExhausted = handler;
         return this;
     }
@@ -209,6 +228,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardDiscarded, nameof(OnCardDiscarded));
         _entry.OnCardDiscarded = handler;
         return this;
     }
@@ -217,6 +237,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardEnteredCombat, nameof(OnCardEnteredCombat));
         _entry.OnCardEnteredCombat = handler;
         return this;
     }
@@ -225,6 +246,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAnyCardPlayed, nameof(OnAnyCardPlayed));
         _entry.OnAnyCardPlayed = handler;
         return this;
     }
@@ -233,6 +255,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAnyCardDrawn, nameof(OnAnyCardDrawn));
         _entry.OnAnyCardDrawn = handler;
         return this;
     }
@@ -241,6 +264,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAnyCardExhausted, nameof(OnAnyCardExhausted));
         _entry.OnAnyCardExhausted = handler;
         return this;
     }
@@ -249,6 +273,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAnyCardDiscarded, nameof(OnAnyCardDiscarded));
         _entry.OnAnyCardDiscarded = handler;
         return this;
     }
@@ -257,6 +282,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAfterDamageReceived, nameof(OnAfterDamageReceived));
         _entry.OnAfterDamageReceived = handler;
         return this;
     }
@@ -265,6 +291,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnSideTurnStart, nameof(OnSideTurnStart));
         _entry.OnSideTurnStart = handler;
         return this;
     }
@@ -273,6 +300,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnBeforeSideTurnStart, nameof(OnBeforeSideTurnStart));
         _entry.OnBeforeSideTurnStart = handler;
         return this;
     }
@@ -281,6 +309,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnBeforeAttack, nameof(OnBeforeAttack));
         _entry.OnBeforeAttack = handler;
         return this;
     }
@@ -289,6 +318,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnAfterAttack, nameof(OnAfterAttack));
         _entry.OnAfterAttack = handler;
         return this;
     }
@@ -297,6 +327,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardChangedPiles, nameof(OnCardChangedPiles));
         _entry.OnCardChangedPiles = handler;
         return this;
     }
@@ -305,6 +336,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardRetained, nameof(OnCardRetained));
         _entry.OnCardRetained = handler;
         return this;
     }
@@ -313,6 +345,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnBeforeBlockGained, nameof(OnBeforeBlockGained));
         _entry.OnBeforeBlockGained = handler;
         return this;
     }
@@ -321,6 +354,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnBlockGained, nameof(OnBlockGained));
         _entry.OnBlockGained = handler;
         return this;
     }
@@ -329,6 +363,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnShouldDie, nameof(OnShouldDie));
         _entry.OnShouldDie = handler;
         return this;
     }
@@ -345,7 +380,17 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(formatter);
+        EnsureUnset(_entry.FormatExtraText, nameof(FormatExtraText));
         _entry.FormatExtraText = formatter;
+        return this;
+    }
+
+    public IEnchantmentRegistration PresentationStyle(EnchantmentPresentationStyle style)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(style);
+        EnsureUnset(_entry.PresentationStyle, nameof(PresentationStyle));
+        _entry.PresentationStyle = style;
         return this;
     }
 
@@ -353,6 +398,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(compute);
+        EnsureUnset(_entry.GetVisualSliceAmounts, nameof(VisualSlices));
         _entry.GetVisualSliceAmounts = compute;
         return this;
     }
@@ -362,6 +408,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(compute);
+        EnsureUnset(_entry.GetVisualSlices, nameof(VisualSlicesWithStatus));
         _entry.GetVisualSlices = compute;
         return this;
     }
@@ -400,6 +447,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnPlayStacked, nameof(OnPlayStacked));
         _entry.OnPlayStacked = handler;
         return this;
     }
@@ -408,6 +456,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.BeforeCardPlayedStacked, nameof(BeforeCardPlayedStacked));
         _entry.BeforeCardPlayedStacked = handler;
         return this;
     }
@@ -416,7 +465,17 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.AfterCardPlayedStacked, nameof(AfterCardPlayedStacked));
         _entry.AfterCardPlayedStacked = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration AfterSiblingAppliedStacked(StackedAfterSiblingAppliedHandler handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.AfterSiblingAppliedStacked, nameof(AfterSiblingAppliedStacked));
+        _entry.AfterSiblingAppliedStacked = handler;
         return this;
     }
 
@@ -424,6 +483,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.AfterCardDrawnStacked, nameof(AfterCardDrawnStacked));
         _entry.AfterCardDrawnStacked = handler;
         return this;
     }
@@ -432,6 +492,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.AfterAnyCardDrawnStacked, nameof(AfterAnyCardDrawnStacked));
         _entry.AfterAnyCardDrawnStacked = handler;
         return this;
     }
@@ -440,6 +501,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.BeforeFlushStacked, nameof(BeforeFlushStacked));
         _entry.BeforeFlushStacked = handler;
         return this;
     }
@@ -448,6 +510,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.AfterDamageGivenStacked, nameof(AfterDamageGivenStacked));
         _entry.AfterDamageGivenStacked = handler;
         return this;
     }
@@ -464,7 +527,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(groupHeader);
         _entry.HistoryDisplay = mode;
-        _entry.HistoryGroupHeader = groupHeader;
+        _entry.HistoryGroupHeader = mode == HistoryDisplayMode.CustomGroup ? groupHeader : null;
         return this;
     }
 
@@ -472,6 +535,7 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
     {
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(formatter);
+        EnsureUnset(_entry.HistoryTextFormatter, nameof(HistoryText));
         _entry.HistoryTextFormatter = formatter;
         return this;
     }
@@ -489,6 +553,15 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         {
             throw new InvalidOperationException(
                 "This registration has already been committed; create a new MultiEnchantmentApi.Register<T>() builder if you need to add more.");
+        }
+    }
+
+    private static void EnsureUnset(object? existingValue, string memberName)
+    {
+        if (existingValue != null)
+        {
+            throw new InvalidOperationException(
+                $"{memberName} has already been set on this builder; fluent setters are not idempotent.");
         }
     }
 }

@@ -18,6 +18,8 @@ public interface IPresentationRegistration
 
     IEnchantmentRegistration FormatExtraText(PresentationTextFormatter formatter);
 
+    IEnchantmentRegistration PresentationStyle(EnchantmentPresentationStyle style);
+
     IEnchantmentRegistration VisualSlices(Func<EnchantmentStackSnapshot, IReadOnlyList<int>?> compute);
 
     IEnchantmentRegistration VisualSlicesWithStatus(

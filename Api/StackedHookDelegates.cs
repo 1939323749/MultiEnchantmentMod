@@ -6,6 +6,7 @@ namespace MultiEnchantmentMod.Api;
 public delegate Task StackedOnPlayHandler(StackedOnPlayContext context);
 public delegate Task StackedBeforeCardPlayedHandler(StackedBeforeCardPlayedContext context);
 public delegate Task StackedAfterCardPlayedHandler(StackedAfterCardPlayedContext context);
+public delegate Task StackedAfterSiblingAppliedHandler(StackedAfterSiblingAppliedContext context);
 public delegate Task StackedAfterCardDrawnHandler(StackedAfterCardDrawnContext context);
 public delegate Task StackedAfterAnyCardDrawnHandler(StackedAfterCardDrawnContext context);
 public delegate Task StackedBeforeFlushHandler(StackedBeforeFlushContext context);

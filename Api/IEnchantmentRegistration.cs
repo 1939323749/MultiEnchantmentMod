@@ -436,6 +436,15 @@ public static class EnchantmentRegistrationExtensions
         return registration.AfterCardPlayedStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
     }
 
+    public static IEnchantmentRegistration AfterSiblingAppliedStacked<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<StackedAfterSiblingAppliedContext, TEnchantment, Task> handler)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return registration.AfterSiblingAppliedStacked(ctx => handler(ctx, (TEnchantment)ctx.Snapshot.AnchorInstance));
+    }
+
     public static IEnchantmentRegistration AfterCardDrawnStacked<TEnchantment>(
         this IEnchantmentRegistration registration,
         Func<StackedAfterCardDrawnContext, TEnchantment, Task> handler)

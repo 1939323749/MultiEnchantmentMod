@@ -139,6 +139,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         entry.HistoryDisplay = HistoryDisplay;
         entry.HistoryGroupHeader = HistoryGroupHeader;
 
+        if (Overrides("get_" + nameof(PresentationStyle)))
+        {
+            entry.PresentationStyle = PresentationStyle;
+        }
+
         if (Overrides(nameof(OnPlayStacked), typeof(StackedOnPlayContext)))
         {
             entry.OnPlayStacked = InvokeOnPlayStacked;
@@ -152,6 +157,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         if (Overrides(nameof(AfterCardPlayedStacked), typeof(StackedAfterCardPlayedContext)))
         {
             entry.AfterCardPlayedStacked = InvokeAfterCardPlayedStacked;
+        }
+
+        if (Overrides(nameof(AfterSiblingAppliedStacked), typeof(StackedAfterSiblingAppliedContext)))
+        {
+            entry.AfterSiblingAppliedStacked = InvokeAfterSiblingAppliedStacked;
         }
 
         if (Overrides(nameof(AfterCardDrawnStacked), typeof(StackedAfterCardDrawnContext)))
@@ -262,6 +272,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     {
         get
         {
+            if (typeof(ExtraIconEnchantmentModel).IsAssignableFrom(typeof(TEnchantment)))
+            {
+                return HistoryDisplayMode.Hidden;
+            }
+
             EnchantmentAttribute? attribute = (EnchantmentAttribute?)Attribute.GetCustomAttribute(
                 typeof(TEnchantment), typeof(EnchantmentAttribute));
             return attribute?.HistoryDisplay ?? HistoryDisplayMode.Auto;
@@ -281,6 +296,15 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             return attribute?.HistoryGroupHeader;
         }
     }
+
+    /// <summary>
+    /// Controls card-UI presentation details such as badge backing, extra-text BBCode wrapping,
+    /// and icon scale.
+    /// </summary>
+    public virtual EnchantmentPresentationStyle PresentationStyle =>
+        typeof(ExtraIconEnchantmentModel).IsAssignableFrom(typeof(TEnchantment))
+            ? ExtraIconPresentation.Default
+            : new EnchantmentPresentationStyle();
 
     /// <summary>
     /// Optional custom text formatter for battle history display. Return <c>null</c> to use
@@ -543,6 +567,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     protected virtual Task OnPlayStacked(StackedOnPlayContext context) => Task.CompletedTask;
     protected virtual Task BeforeCardPlayedStacked(StackedBeforeCardPlayedContext context) => Task.CompletedTask;
     protected virtual Task AfterCardPlayedStacked(StackedAfterCardPlayedContext context) => Task.CompletedTask;
+    protected virtual Task AfterSiblingAppliedStacked(StackedAfterSiblingAppliedContext context) => Task.CompletedTask;
     protected virtual Task AfterCardDrawnStacked(StackedAfterCardDrawnContext context) => Task.CompletedTask;
     protected virtual Task AfterAnyCardDrawnStacked(StackedAfterCardDrawnContext context) => Task.CompletedTask;
     protected virtual Task BeforeFlushStacked(StackedBeforeFlushContext context) => Task.CompletedTask;
@@ -676,6 +701,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal Task InvokeOnPlayStacked(StackedOnPlayContext context) => OnPlayStacked(context);
     internal Task InvokeBeforeCardPlayedStacked(StackedBeforeCardPlayedContext context) => BeforeCardPlayedStacked(context);
     internal Task InvokeAfterCardPlayedStacked(StackedAfterCardPlayedContext context) => AfterCardPlayedStacked(context);
+    internal Task InvokeAfterSiblingAppliedStacked(StackedAfterSiblingAppliedContext context) => AfterSiblingAppliedStacked(context);
     internal Task InvokeAfterCardDrawnStacked(StackedAfterCardDrawnContext context) => AfterCardDrawnStacked(context);
     internal Task InvokeAfterAnyCardDrawnStacked(StackedAfterCardDrawnContext context) => AfterAnyCardDrawnStacked(context);
     internal Task InvokeBeforeFlushStacked(StackedBeforeFlushContext context) => BeforeFlushStacked(context);

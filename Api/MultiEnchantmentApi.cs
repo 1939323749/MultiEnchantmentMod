@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MultiEnchantmentMod.Api.Internal;
 
 namespace MultiEnchantmentMod.Api;
@@ -27,6 +29,14 @@ namespace MultiEnchantmentMod.Api;
 /// </remarks>
 public static class MultiEnchantmentApi
 {
+    private static readonly List<AfterCardEnchantedHandler> AfterCardEnchantedHandlers = new();
+
+    // Cascade-depth guard for AfterCardEnchanted dispatch. Incremented around handler invocation so
+    // that an enchant triggered from inside a handler reports CascadeDepth > 0. Single-threaded by
+    // the game's synchronization context, mirroring the ModifyDynamicVar reentrancy guard.
+    [ThreadStatic]
+    private static int _afterCardEnchantedDepth;
+
     /// <summary>The currently shipped API version. Re-export of <see cref="MultiEnchantmentApiVersion.Current"/>.</summary>
     public static int CurrentVersion => MultiEnchantmentApiVersion.Current;
 
@@ -80,6 +90,14 @@ public static class MultiEnchantmentApi
     /// registration-time scope for this concrete application only. Predicate-bearing scopes
     /// (<c>ConditionalActive</c> / <c>RemoveWhen</c>) are rejected because they cannot be persisted.
     /// </summary>
+    /// <remarks>
+    /// This synchronous path does <b>not</b> dispatch the card-level
+    /// <see cref="AfterCardEnchanted"/> notification — only <see cref="EnchantAsync"/> does. Marker
+    /// systems that must react immediately (for example "when this card is enchanted, auto-play it")
+    /// must enchant via <see cref="EnchantAsync"/>. The per-enchantment
+    /// <see cref="StackedAfterSiblingAppliedContext">AfterSiblingAppliedStacked</see> hook still
+    /// fires from this path, but it is dispatched synchronously (see that type's remarks).
+    /// </remarks>
     public static EnchantmentModel? Enchant(
         CardModel card,
         EnchantmentModel enchantment,
@@ -94,10 +112,148 @@ public static class MultiEnchantmentApi
         }
 
         return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverride(
+            choiceContext: null,
             enchantment,
             card,
             amount,
             scopeOverride);
+    }
+
+    /// <summary>
+    /// Async variant of <see cref="Enchant"/> that forwards an optional
+    /// <see cref="PlayerChoiceContext"/> into stacked post-application hooks. Use this when
+    /// downstream "after sibling applied" handlers need to run commands immediately.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="Enchant"/>, this path dispatches the card-level
+    /// <see cref="AfterCardEnchanted"/> notification once application completes, and awaits handlers
+    /// so they may safely run commands / auto-play the card while the freshly applied enchantment is
+    /// already live. Prefer this overload for "enchant then act" (autoplay-on-enchant) flows.
+    /// </remarks>
+    public static Task<EnchantmentModel?> EnchantAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        decimal amount = 1,
+        EnchantmentScope? scopeOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(card);
+        ArgumentNullException.ThrowIfNull(enchantment);
+        if (scopeOverride != null && global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.RejectNonPersistableScopeOverride(scopeOverride, nameof(EnchantAsync), enchantment))
+        {
+            return Task.FromResult<EnchantmentModel?>(null);
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverrideAsync(
+            choiceContext,
+            enchantment,
+            card,
+            amount,
+            scopeOverride);
+    }
+
+    /// <summary>
+    /// Subscribes to a card-level notification fired after an enchantment has been successfully
+    /// applied through an async fresh application pipeline. Use this for card keyword / marker
+    /// systems such as "when this card is enchanted, autoplay it" without modelling the marker as
+    /// an enchantment. Dispose the returned handle to unsubscribe.
+    /// </summary>
+    /// <remarks>
+    /// Only the async application paths (<see cref="EnchantAsync"/> and
+    /// <see cref="CopyEnchantmentAsync"/>) raise this notification. The synchronous
+    /// <see cref="Enchant"/> / <see cref="CopyEnchantment"/> overloads and vanilla enchant paths do
+    /// <b>not</b>, because the handler is awaited and may issue game commands. Enchant through the
+    /// async overloads when this notification must fire.
+    /// </remarks>
+    public static IDisposable AfterCardEnchanted(AfterCardEnchantedHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        AfterCardEnchantedHandlers.Add(handler);
+        return new AfterCardEnchantedSubscription(handler);
+    }
+
+    /// <summary>
+    /// Registers a provider for display-only extra icons. Providers run when card UI refreshes,
+    /// including card-library / preview cards that do not have live combat enchantment instances.
+    /// </summary>
+    public static IDisposable RegisterExtraIconDisplayProvider(ExtraIconDisplayProvider provider)
+    {
+        return ExtraIconDisplayRegistry.RegisterProvider(provider);
+    }
+
+    /// <summary>
+    /// Convenience overload for static extra icons keyed by a card predicate.
+    /// </summary>
+    public static IDisposable RegisterExtraIcon<TEnchantment>(
+        Func<CardModel, bool> appliesTo,
+        EnchantmentPresentationStyle? presentationStyle = null,
+        ExtraIconDisplayPredicate? shouldDisplay = null)
+        where TEnchantment : ExtraIconEnchantmentModel, new()
+    {
+        return RegisterExtraIcon<TEnchantment>(appliesTo, icon: null, presentationStyle, shouldDisplay);
+    }
+
+    /// <summary>
+    /// Overload that supplies an explicit <paramref name="icon"/> texture. Use this to draw custom
+    /// art: <c>EnchantmentModel.Icon</c> is not overridable (non-virtual; it resolves from a
+    /// convention path), so passing a texture here — or shipping a file at the model's icon path — is
+    /// how a marker gets its image. Pass <c>null</c> to fall back to
+    /// <typeparamref name="TEnchantment"/>'s canonical model icon.
+    /// </summary>
+    public static IDisposable RegisterExtraIcon<TEnchantment>(
+        Func<CardModel, bool> appliesTo,
+        Godot.Texture2D? icon,
+        EnchantmentPresentationStyle? presentationStyle = null,
+        ExtraIconDisplayPredicate? shouldDisplay = null)
+        where TEnchantment : ExtraIconEnchantmentModel, new()
+    {
+        ArgumentNullException.ThrowIfNull(appliesTo);
+        return RegisterExtraIconDisplayProvider(card =>
+            appliesTo(card)
+                ? new[]
+                {
+                    new ExtraIconDisplay
+                    {
+                        EnchantmentType = typeof(TEnchantment),
+                        Icon = icon,
+                        PresentationStyle = presentationStyle,
+                        ShouldDisplay = shouldDisplay,
+                    },
+                }
+                : Array.Empty<ExtraIconDisplay>());
+    }
+
+    /// <summary>
+    /// Forces <paramref name="card"/> to re-evaluate its extra icons immediately — re-runs every
+    /// display provider for the card and redraws its badges. Call this after you change state a
+    /// provider's predicate reads, or after disposing a provider, so a card already on screen (for
+    /// example in the compendium, which does not refresh on its own) updates now instead of on the
+    /// next vanilla visual pass. No-op when <paramref name="card"/> is null.
+    /// </summary>
+    /// <remarks>
+    /// Display-only icons are predicate-driven, so there is no "edit a registration in place" call:
+    /// to change what shows, change the state your provider reads (or dispose + re-register), then
+    /// call this to make it visible now. Stored marker instances already refresh on
+    /// <see cref="RemoveEnchantment"/> / <see cref="NotifyPropsChanged"/>.
+    /// </remarks>
+    public static void RefreshExtraIcons(CardModel? card)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshExtraIcons(card);
+    }
+
+    /// <summary>
+    /// Forces every currently-rendered card to re-evaluate its extra icons. Use after changing a
+    /// global condition many providers read; prefer the per-card overload when you know which card
+    /// changed.
+    /// </summary>
+    public static void RefreshExtraIcons()
+    {
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshAllExtraIcons();
     }
 
     /// <summary>
@@ -150,7 +306,7 @@ public static class MultiEnchantmentApi
                 nameof(enchantmentType));
         }
 
-        foreach (EnchantmentModel enchantment in global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantmentsForType(card, enchantmentType))
         {
             if (enchantmentType.IsInstanceOfType(enchantment))
             {
@@ -159,6 +315,195 @@ public static class MultiEnchantmentApi
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="card"/> carries any gameplay enchantment,
+    /// excluding <see cref="ExtraIconEnchantmentModel"/> marker icons by default.
+    /// </summary>
+    public static bool HasAnyEnchantment(CardModel? card) =>
+        HasAnyEnchantment(card, includeExtraIcons: false);
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="card"/> carries any enchantment. Pass
+    /// <paramref name="includeExtraIcons"/> = <c>true</c> to count lightweight marker icons too.
+    /// </summary>
+    public static bool HasAnyEnchantment(CardModel? card, bool includeExtraIcons) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.HasAnyEnchantments(card, includeExtraIcons);
+
+    /// <summary>
+    /// Total number of gameplay enchantment instances on <paramref name="card"/>, excluding
+    /// <see cref="ExtraIconEnchantmentModel"/> marker icons by default. Counts instances, not
+    /// distinct types.
+    /// </summary>
+    public static int GetEnchantmentCount(CardModel? card) =>
+        GetEnchantmentCount(card, includeExtraIcons: false);
+
+    /// <summary>
+    /// Total number of enchantment instances on <paramref name="card"/>. Pass
+    /// <paramref name="includeExtraIcons"/> = <c>true</c> to count lightweight marker icons too.
+    /// </summary>
+    public static int GetEnchantmentCount(CardModel? card, bool includeExtraIcons) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantmentTotalCount(card, includeExtraIcons);
+
+    /// <summary>
+    /// Returns the current live enchantment instance most recently applied or merged onto
+    /// <paramref name="card"/>. For <c>MergeAmount</c>, repeated applications continue to return
+    /// the anchor instance that received the latest merge delta. Returns <c>null</c> when the
+    /// card currently has no enchantments.
+    /// </summary>
+    public static EnchantmentModel? GetMostRecentlyAppliedEnchantment(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMostRecentlyAppliedEnchantment(card);
+
+    /// <summary>
+    /// Returns the enchantment most recently applied to <paramref name="card"/> during the current
+    /// player turn, or <c>null</c> when nothing has been applied since the turn started. The pointer
+    /// resets at the start of every player turn, so this answers "the enchantment I last injected
+    /// <em>this turn</em>" for downstream re-injection cards. Unlike
+    /// <see cref="GetMostRecentlyAppliedEnchantment"/> it does not fall back to pre-existing
+    /// enchantments. This is transient runtime state and is never persisted to the save sidecar.
+    /// </summary>
+    public static EnchantmentModel? GetMostRecentlyAppliedEnchantmentThisTurn(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMostRecentlyAppliedEnchantmentThisTurn(card);
+
+    /// <summary>
+    /// Clones <paramref name="source"/> and reapplies the clone onto <paramref name="target"/>
+    /// through the normal v2 application pipeline. This preserves the source instance's mutable
+    /// state (<c>Amount</c>, <c>Props</c>, custom fields). By default it resets runtime scope
+    /// counters (remaining turns / activation counts) so the copy starts a fresh lifetime; pass
+    /// <paramref name="preserveScopeProgress"/> = <c>true</c> to carry the source's live counters
+    /// over instead (used by "move" semantics — see <see cref="MoveEnchantment"/>).
+    /// Returns <c>null</c> when rejected by a gameplay/scope guard. As with <see cref="Enchant"/>, a
+    /// target that fails its <c>CanEnchant</c> rules throws <see cref="InvalidOperationException"/>
+    /// rather than returning <c>null</c>.
+    /// </summary>
+    public static EnchantmentModel? CopyEnchantment(
+        CardModel target,
+        EnchantmentModel source,
+        EnchantmentScope? scopeOverride = null,
+        bool preserveScopeProgress = false)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(source);
+        if (!global::MultiEnchantmentMod.MultiEnchantmentSupport.IsGameplayEnchantment(source))
+        {
+            return null;
+        }
+
+        if (scopeOverride != null && global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.RejectNonPersistableScopeOverride(scopeOverride, nameof(CopyEnchantment), source))
+        {
+            return null;
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport.CopyEnchantment(
+            choiceContext: null,
+            target,
+            source,
+            scopeOverride,
+            preserveScopeProgress);
+    }
+
+    /// <summary>
+    /// Async variant of <see cref="CopyEnchantment"/> that forwards an optional
+    /// <see cref="PlayerChoiceContext"/> into post-application notifications.
+    /// </summary>
+    public static Task<EnchantmentModel?> CopyEnchantmentAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel target,
+        EnchantmentModel source,
+        EnchantmentScope? scopeOverride = null,
+        bool preserveScopeProgress = false)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(source);
+        if (!global::MultiEnchantmentMod.MultiEnchantmentSupport.IsGameplayEnchantment(source))
+        {
+            return Task.FromResult<EnchantmentModel?>(null);
+        }
+
+        if (scopeOverride != null && global::MultiEnchantmentMod.MultiEnchantmentScopeSupport.RejectNonPersistableScopeOverride(scopeOverride, nameof(CopyEnchantmentAsync), source))
+        {
+            return Task.FromResult<EnchantmentModel?>(null);
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport.CopyEnchantmentAsync(
+            choiceContext,
+            target,
+            source,
+            scopeOverride,
+            preserveScopeProgress);
+    }
+
+    /// <summary>
+    /// Moves <paramref name="enchantment"/> from <paramref name="source"/> to
+    /// <paramref name="target"/>: copies it (preserving its live scope progress — remaining turns /
+    /// activations) and then removes the original from <paramref name="source"/>. Returns the new
+    /// instance on <paramref name="target"/>, or <c>null</c> when the move is rejected by a
+    /// gameplay/scope guard (in which case the source is left untouched). When
+    /// <paramref name="source"/> and <paramref name="target"/> are the same card this is a no-op and
+    /// returns <paramref name="enchantment"/> unchanged. As with <see cref="Enchant"/>, a target that
+    /// fails its <c>CanEnchant</c> rules surfaces as an <see cref="InvalidOperationException"/> rather
+    /// than <c>null</c>; the source is left untouched in that case. Use for
+    /// "将其附魔移动到另一张手牌" effects.
+    /// </summary>
+    public static EnchantmentModel? MoveEnchantment(
+        CardModel source,
+        CardModel target,
+        EnchantmentModel enchantment,
+        EnchantmentScope? scopeOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(enchantment);
+        if (!global::MultiEnchantmentMod.MultiEnchantmentSupport.IsGameplayEnchantment(enchantment))
+        {
+            return null;
+        }
+
+        // Same-card "move" would copy the enchantment onto itself (merging/doubling its amount for
+        // MergeAmount behaviors) and then remove it — losing it entirely. It is already where it
+        // belongs, so leave it in place.
+        if (ReferenceEquals(source, target))
+        {
+            return enchantment;
+        }
+
+        EnchantmentModel? applied = CopyEnchantment(target, enchantment, scopeOverride, preserveScopeProgress: true);
+        if (applied == null)
+        {
+            return null;
+        }
+
+        RemoveEnchantment(source, enchantment, RemovalReason.Manual);
+        return applied;
+    }
+
+    internal static async Task DispatchAfterCardEnchanted(AfterCardEnchantedContext context)
+    {
+        // Stamp the current nesting depth so cascade-style handlers can bail out instead of
+        // recursing forever, then increment for any enchant the handlers themselves trigger.
+        AfterCardEnchantedContext scoped = context with { CascadeDepth = _afterCardEnchantedDepth };
+        _afterCardEnchantedDepth++;
+        try
+        {
+            foreach (AfterCardEnchantedHandler handler in AfterCardEnchantedHandlers.ToList())
+            {
+                try
+                {
+                    await handler(scoped);
+                }
+                catch (Exception ex)
+                {
+                    string targetName = handler.Target?.GetType().FullName ?? "<static>";
+                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Error(
+                        $"[MultiEnchantment] AfterCardEnchanted handler {targetName} threw: {ex}");
+                }
+            }
+        }
+        finally
+        {
+            _afterCardEnchantedDepth--;
+        }
     }
 
     /// <summary>
@@ -178,6 +523,29 @@ public static class MultiEnchantmentApi
             $"[StackApi] Caller requires MultiEnchantmentMod API v{minimum} but runtime is v{CurrentVersion}. " +
             "The dependent mod's enchantment registrations will not run; update MultiEnchantmentMod.");
         return false;
+    }
+
+    private sealed class AfterCardEnchantedSubscription : IDisposable
+    {
+        private AfterCardEnchantedHandler? _handler;
+
+        public AfterCardEnchantedSubscription(AfterCardEnchantedHandler handler)
+        {
+            _handler = handler;
+        }
+
+        public void Dispose()
+        {
+            if (_handler is not { } handler)
+            {
+                return;
+            }
+
+            _handler = null;
+            while (AfterCardEnchantedHandlers.Remove(handler))
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -268,7 +636,7 @@ public static class MultiEnchantmentApi
     public static IReadOnlyList<EnchantmentModel> GetSiblings(CardModel? card, EnchantmentModel? excludingSelf = null)
     {
         if (card == null) return Array.Empty<EnchantmentModel>();
-        IEnumerable<EnchantmentModel> all = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card);
+        IEnumerable<EnchantmentModel> all = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetGameplayEnchantments(card);
         if (excludingSelf != null)
         {
             all = all.Where(e => !ReferenceEquals(e, excludingSelf));

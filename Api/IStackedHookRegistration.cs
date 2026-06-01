@@ -12,6 +12,7 @@ public interface IStackedHookRegistration
     IEnchantmentRegistration OnPlayStacked(StackedOnPlayHandler handler);
     IEnchantmentRegistration BeforeCardPlayedStacked(StackedBeforeCardPlayedHandler handler);
     IEnchantmentRegistration AfterCardPlayedStacked(StackedAfterCardPlayedHandler handler);
+    IEnchantmentRegistration AfterSiblingAppliedStacked(StackedAfterSiblingAppliedHandler handler);
     IEnchantmentRegistration AfterCardDrawnStacked(StackedAfterCardDrawnHandler handler);
     IEnchantmentRegistration AfterAnyCardDrawnStacked(StackedAfterAnyCardDrawnHandler handler);
     IEnchantmentRegistration BeforeFlushStacked(StackedBeforeFlushHandler handler);

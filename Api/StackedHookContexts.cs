@@ -28,6 +28,27 @@ public sealed record StackedAfterCardPlayedContext(
     PlayerChoiceContext ChoiceContext,
     CardPlay CardPlay);
 
+/// <summary>
+/// Context passed to a stack-aware "another enchantment was just attached to this card" hook.
+/// <see cref="ChoiceContext"/> is null for synchronous application paths such as
+/// <see cref="MultiEnchantmentApi.Enchant(CardModel, EnchantmentModel, decimal, EnchantmentScope?)"/>.
+/// Use <see cref="MultiEnchantmentApi.EnchantAsync(PlayerChoiceContext?, CardModel, EnchantmentModel, decimal, EnchantmentScope?)"/>
+/// when the downstream handler needs to run commands or auto-play cards immediately.
+/// </summary>
+/// <remarks>
+/// On synchronous enchant paths this hook is dispatched by blocking on the returned task
+/// (<c>.GetAwaiter().GetResult()</c>), so handlers <b>must not</b> await real game commands
+/// (auto-play, card selection, power application) — doing so can stall or deadlock the game thread.
+/// Keep handlers to pure state updates here; route imperative / command-issuing logic through
+/// <see cref="MultiEnchantmentApi.AfterCardEnchanted"/> together with
+/// <see cref="MultiEnchantmentApi.EnchantAsync"/> instead.
+/// </remarks>
+public sealed record StackedAfterSiblingAppliedContext(
+    EnchantmentStackSnapshot Snapshot,
+    PlayerChoiceContext? ChoiceContext,
+    CardModel Card,
+    EnchantmentModel NewSibling);
+
 public sealed record StackedAfterCardDrawnContext(
     EnchantmentStackSnapshot Snapshot,
     PlayerChoiceContext ChoiceContext,
