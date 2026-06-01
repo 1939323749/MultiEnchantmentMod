@@ -59,7 +59,9 @@ internal static partial class MultiEnchantmentSupport
         // Snapshot the extra enchantment list: a user-overridden RecalculateValues could call
         // mod APIs (RemoveEnchantment, Enchant, etc.) that mutate state.ExtraEnchantments.
         // Defensive snapshot keeps this loop safe even when called from vanilla recalc paths.
-        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card)
+                     .Where(IsGameplayEnchantment)
+                     .ToList())
         {
             enchantment.RecalculateValues();
         }
@@ -253,6 +255,22 @@ internal static partial class MultiEnchantmentSupport
                 cardPlay)));
     }
 
+    public static Task DispatchAfterSiblingAppliedStacked(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel newcomer)
+    {
+        return DispatchStackedHook(
+            card,
+            static entry => entry.AfterSiblingAppliedStacked != null,
+            (entry, snapshot) => entry.RunAfterSiblingAppliedStacked(new Api.StackedAfterSiblingAppliedContext(
+                snapshot,
+                choiceContext,
+                card,
+                newcomer)),
+            shouldInvoke: snapshot => !ReferenceEquals(snapshot.AnchorInstance, newcomer));
+    }
+
     public static Task DispatchAfterCardDrawnStacked(PlayerChoiceContext choiceContext, CardModel drawnCard, bool fromHandDraw)
     {
         return DispatchStackedHook(
@@ -317,7 +335,8 @@ internal static partial class MultiEnchantmentSupport
     private static async Task DispatchStackedHook(
         CardModel? card,
         Func<EnchantmentEntry, bool> hasHandler,
-        Func<EnchantmentEntry, EnchantmentStackSnapshot, Task> invoke)
+        Func<EnchantmentEntry, EnchantmentStackSnapshot, Task> invoke,
+        Func<EnchantmentStackSnapshot, bool>? shouldInvoke = null)
     {
         if (card == null)
         {
@@ -330,6 +349,11 @@ internal static partial class MultiEnchantmentSupport
                 snapshot.EnchantmentType,
                 hasHandler);
             if (entry == null)
+            {
+                continue;
+            }
+
+            if (shouldInvoke != null && !shouldInvoke(snapshot))
             {
                 continue;
             }

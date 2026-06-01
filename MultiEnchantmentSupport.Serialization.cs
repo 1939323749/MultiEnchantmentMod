@@ -199,15 +199,15 @@ internal static partial class MultiEnchantmentSupport
         bool hasPrimaryText = TryGetFormattedExtraCardTextForDescription(card, card.Enchantment, out string primaryText);
         if (hasPrimaryText && card.Enchantment != null)
         {
-            if (hasRawPrimaryText && rawPrimaryText != primaryText)
+            string rawPrimaryLine = WrapExtraCardText(rawPrimaryText, preserveBbCode: false);
+            string primaryLine = FormatExtraCardTextLine(card.Enchantment, primaryText);
+            if (hasRawPrimaryText && rawPrimaryLine != primaryLine)
             {
-                description = description.Replace(
-                    "[purple]" + rawPrimaryText + "[/purple]",
-                    "[purple]" + primaryText + "[/purple]");
+                description = description.Replace(rawPrimaryLine, primaryLine);
             }
             else if (!hasRawPrimaryText)
             {
-                lines.Add("[purple]" + primaryText + "[/purple]");
+                lines.Add(primaryLine);
             }
 
             seenLines.Add((card.Enchantment.GetType(), primaryText));
@@ -225,7 +225,7 @@ internal static partial class MultiEnchantmentSupport
                 continue;
             }
 
-            lines.Add("[purple]" + text + "[/purple]");
+            lines.Add(FormatExtraCardTextLine(enchantment, text));
         }
 
         if (lines.Count > 0)
@@ -240,10 +240,17 @@ internal static partial class MultiEnchantmentSupport
         // should appear absent in the UI. Skip their hover tips so authors get the "doesn't exist"
         // semantic they expect — consistent with the IsActive gating already applied to damage /
         // block / dynamic-var pipelines.
-        return original.ToList().Concat(GetAdditionalEnchantments(card)
-            .ToList()
+        List<IHoverTip> tips = original.ToList();
+        tips.AddRange(GetAdditionalEnchantments(card)
             .Where(enchantment => MultiEnchantmentScopeSupport.IsActive(card, enchantment))
-            .SelectMany(static enchantment => enchantment.HoverTips.ToList())).Distinct().ToList();
+            .SelectMany(static enchantment => enchantment.HoverTips));
+
+        // Display-only provider markers are not stored enchantments, so surface their hover tips
+        // here too — mirroring how vanilla shows Enchantment.HoverTips at the card level — so a
+        // marker icon can explain itself instead of being a mystery glyph.
+        tips.AddRange(GetDisplayOnlyMarkerHoverTips(card));
+
+        return tips.Distinct().ToList();
     }
 
     private static bool TryGetSavedString(SavedProperties? properties, string propertyName, out string value)
@@ -278,6 +285,16 @@ internal static partial class MultiEnchantmentSupport
         text = formatted;
         return true;
     }
+
+    private static string FormatExtraCardTextLine(EnchantmentModel enchantment, string text) =>
+        WrapExtraCardText(
+            text,
+            EnchantmentRegistry.GetPresentationStyle(enchantment.GetType()).PreserveExtraTextBbCode);
+
+    private static string WrapExtraCardText(string text, bool preserveBbCode) =>
+        preserveBbCode
+            ? text
+            : "[purple]" + text + "[/purple]";
 
     private static bool TryGetFormattedExtraCardTextForDescription(CardModel card, EnchantmentModel? enchantment, out string text)
     {

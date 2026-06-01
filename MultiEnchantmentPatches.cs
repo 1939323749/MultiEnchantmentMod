@@ -702,19 +702,28 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void MutableClonePostfix(AbstractModel __instance, AbstractModel __result)
     {
-        if (__instance is EnchantmentModel sourceEnchantment && __result is EnchantmentModel cloneEnchantment)
+        try
         {
-            MultiEnchantmentStackSupport.CloneRuntimeProps(sourceEnchantment, cloneEnchantment);
-        }
-
-        if (__instance is CardModel source && __result is CardModel clone)
-        {
-            MultiEnchantmentSupport.CloneAdditionalEnchantments(source, clone);
-            if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(clone))
+            if (__instance is EnchantmentModel sourceEnchantment && __result is EnchantmentModel cloneEnchantment)
             {
-                clone.FinalizeUpgradeInternal();
-                MultiEnchantmentStackSupport.RefreshDerivedState(clone);
+                MultiEnchantmentStackSupport.CloneRuntimeProps(sourceEnchantment, cloneEnchantment);
             }
+
+            if (__instance is CardModel source && __result is CardModel clone)
+            {
+                MultiEnchantmentSupport.CloneAdditionalEnchantments(source, clone);
+                if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(clone))
+                {
+                    clone.FinalizeUpgradeInternal();
+                    MultiEnchantmentStackSupport.RefreshDerivedState(clone);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] MutableClone postfix failed for {__instance.GetType().FullName}. " +
+                $"Clone will keep vanilla state only. Error: {ex}");
         }
     }
 
@@ -736,6 +745,63 @@ internal static class MultiEnchantmentPatches
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
             $"Card={__instance.Id} Result={__result}");
+    }
+
+    [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
+    [HarmonyPrefix]
+    private static void UpgradePrefix(ref IEnumerable<CardModel> cards, out List<(CardModel Card, int UpgradeLevel)> __state)
+    {
+        List<CardModel> snapshot = cards.ToList();
+        cards = snapshot;
+        __state = snapshot
+            .Where(MultiEnchantmentSupport.RequiresMultiEnchantmentLogic)
+            .Select(static card => (card, card.CurrentUpgradeLevel))
+            .ToList();
+    }
+
+    [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
+    [HarmonyPostfix]
+    private static void UpgradePostfix(List<(CardModel Card, int UpgradeLevel)> __state)
+    {
+        foreach ((CardModel card, int upgradeLevel) in __state)
+        {
+            if (card.CurrentUpgradeLevel <= upgradeLevel)
+            {
+                continue;
+            }
+
+            try
+            {
+                MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(card);
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Error(
+                    $"[MultiEnchantment] Failed to refresh extra enchantments after upgrade for Card={card.Id}. " +
+                    $"Card may temporarily show vanilla-only upgraded state. Error: {ex}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(CardModel), nameof(CardModel.DowngradeInternal))]
+    [HarmonyPostfix]
+    private static void DowngradeInternalPostfix(CardModel __instance)
+    {
+        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentSupport.ReapplyMultiEnchantmentsAfterDowngrade(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Failed to reapply extra enchantments after downgrade for Card={__instance.Id}. " +
+                $"Card may temporarily show vanilla-only downgraded state. Error: {ex}");
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.ToSerializable))]
@@ -1572,6 +1638,16 @@ internal static class MultiEnchantmentPatches
     private static void CardVisualsPrefix(NCard __instance, PileType pileType, CardPreviewMode previewMode)
     {
         MultiEnchantmentSupport.UpdateAdditionalEnchantmentPreviews(__instance, previewMode);
+    }
+
+    [HarmonyPatch(typeof(NCard), nameof(NCard.UpdateVisuals))]
+    [HarmonyPostfix]
+    private static void CardVisualsPostfix(NCard __instance)
+    {
+        // Display-only extra icons must also work on card-library / encyclopedia cards that have
+        // no live enchantment instance. Sync after the full visual pass so the marker is present
+        // even if vanilla skipped UpdateEnchantmentVisuals for an unenchanted card.
+        MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
     }
 
     [HarmonyPatch(typeof(NCard), "OnEnchantmentChanged")]

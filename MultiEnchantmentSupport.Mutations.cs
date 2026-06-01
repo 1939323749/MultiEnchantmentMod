@@ -38,7 +38,7 @@ internal static partial class MultiEnchantmentSupport
     {
         bool changed = false;
         HashSet<Type> seenDisallowDuplicateTypes = new();
-        foreach (EnchantmentModel enchantment in GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card).ToList())
         {
             EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
             if (behavior == EnchantmentStackBehavior.MergeAmount)
@@ -81,7 +81,7 @@ internal static partial class MultiEnchantmentSupport
             for (int i = 0; i < extraInstanceCount; i++)
             {
                 EnchantmentModel clone = (EnchantmentModel)enchantment.ClonePreservingMutability();
-                AttachAdditionalEnchantmentState(card, clone, 1, modifyCard: true, triggerChanged: false);
+                AttachAdditionalEnchantmentState(choiceContext: null, card, clone, 1, modifyCard: true, triggerChanged: false);
             }
 
             changed = true;
@@ -97,10 +97,122 @@ internal static partial class MultiEnchantmentSupport
 
     public static EnchantmentModel? ApplyEnchantment(EnchantmentModel enchantment, CardModel card, decimal amount)
     {
-        return ApplyEnchantmentWithScopeOverride(enchantment, card, amount, scopeOverride: null);
+        return ApplyEnchantmentWithScopeOverride(choiceContext: null, enchantment, card, amount, scopeOverride: null);
     }
 
     internal static EnchantmentModel? ApplyEnchantmentWithScopeOverride(
+        PlayerChoiceContext? choiceContext,
+        EnchantmentModel enchantment,
+        CardModel card,
+        decimal amount,
+        EnchantmentScope? scopeOverride)
+    {
+        return ApplyEnchantmentWithScopeOverrideCore(choiceContext, enchantment, card, amount, scopeOverride);
+    }
+
+    internal static async Task<EnchantmentModel?> ApplyEnchantmentWithScopeOverrideAsync(
+        PlayerChoiceContext? choiceContext,
+        EnchantmentModel enchantment,
+        CardModel card,
+        decimal amount,
+        EnchantmentScope? scopeOverride,
+        bool dispatchAfterCardEnchanted = true)
+    {
+        enchantment.AssertMutable();
+        int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
+
+        bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
+        bool canApply = isStackingExisting
+            ? MultiEnchantmentStackSupport.PassesCanEnchantRulesIgnoringDuplicate(enchantment, card)
+            : enchantment.CanEnchant(card);
+        if (!canApply)
+        {
+            throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
+        }
+
+        SeedMissingApplicationOrder(card);
+
+        EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
+        bool isGameplay = IsGameplayEnchantment(enchantment);
+        EnchantmentModel? existing = GetEnchantment(card, enchantment.GetType());
+        if (existing != null && behavior == EnchantmentStackBehavior.MergeAmount)
+        {
+            int addedAmount = appliedAmount;
+            int previousTotalAmount = existing.Amount;
+            existing.Amount += addedAmount;
+            MultiEnchantmentStackSupport.AppendMergedStackAmount(existing, previousTotalAmount, addedAmount);
+            MultiEnchantmentStackSupport.ApplyMergedAmountDelta(existing, addedAmount);
+            MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, existing, scopeOverride);
+            if (isGameplay && IsScopeEffectivelyPermanent(existing.GetType(), scopeOverride))
+            {
+                SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior, scopeOverride);
+            }
+            card.DynamicVars.RecalculateForUpgradeOrEnchant();
+            card.FinalizeUpgradeInternal();
+            RememberLastAppliedEnchantment(card, existing);
+            AppendApplicationOrder(card, enchantment.Id);
+            MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
+            MultiEnchantmentStackSupport.RefreshDerivedState(card);
+            TriggerEnchantmentChanged(card);
+            if (isGameplay)
+            {
+                RecordEnchantmentHistory(card, enchantment);
+            }
+            if (dispatchAfterCardEnchanted && isGameplay)
+            {
+                await MultiEnchantmentApi.DispatchAfterCardEnchanted(new AfterCardEnchantedContext(
+                    choiceContext,
+                    card,
+                    existing,
+                    enchantment,
+                    addedAmount,
+                    scopeOverride));
+            }
+            return existing;
+        }
+
+        (EnchantmentModel? applied, int appliedStackCount) = await AttachNewEnchantmentStacksAsync(
+            choiceContext,
+            card,
+            enchantment,
+            appliedAmount,
+            modifyCard: true,
+            triggerChanged: false,
+            scopeOverride);
+        if (applied == null)
+        {
+            return null;
+        }
+
+        if (isGameplay && IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
+        {
+            SyncDeckVersionEnchantment(card, applied.GetType(), appliedStackCount, behavior, scopeOverride);
+        }
+
+        card.FinalizeUpgradeInternal();
+        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        TriggerEnchantmentChanged(card);
+        if (isGameplay)
+        {
+            RecordEnchantmentHistory(card, enchantment);
+        }
+
+        if (dispatchAfterCardEnchanted && isGameplay)
+        {
+            await MultiEnchantmentApi.DispatchAfterCardEnchanted(new AfterCardEnchantedContext(
+                choiceContext,
+                card,
+                applied,
+                enchantment,
+                appliedStackCount,
+                scopeOverride));
+        }
+        return applied;
+    }
+
+    private static EnchantmentModel? ApplyEnchantmentWithScopeOverrideCore(
+        PlayerChoiceContext? choiceContext,
         EnchantmentModel enchantment,
         CardModel card,
         decimal amount,
@@ -121,6 +233,7 @@ internal static partial class MultiEnchantmentSupport
         SeedMissingApplicationOrder(card);
 
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
+        bool isGameplay = IsGameplayEnchantment(enchantment);
         EnchantmentModel? existing = GetEnchantment(card, enchantment.GetType());
         if (existing != null && behavior == EnchantmentStackBehavior.MergeAmount)
         {
@@ -131,7 +244,7 @@ internal static partial class MultiEnchantmentSupport
             MultiEnchantmentStackSupport.ApplyMergedAmountDelta(existing, addedAmount);
             MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(existing);
             MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, existing, scopeOverride);
-            if (IsScopeEffectivelyPermanent(existing.GetType(), scopeOverride))
+            if (isGameplay && IsScopeEffectivelyPermanent(existing.GetType(), scopeOverride))
             {
                 SyncDeckVersionEnchantment(card, existing.GetType(), addedAmount, behavior, scopeOverride);
             }
@@ -142,11 +255,15 @@ internal static partial class MultiEnchantmentSupport
             MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
             MultiEnchantmentStackSupport.RefreshDerivedState(card);
             TriggerEnchantmentChanged(card);
-            RecordEnchantmentHistory(card, enchantment);
+            if (isGameplay)
+            {
+                RecordEnchantmentHistory(card, enchantment);
+            }
             return existing;
         }
 
         EnchantmentModel? applied = AttachNewEnchantmentStacks(
+            choiceContext,
             card,
             enchantment,
             appliedAmount,
@@ -159,7 +276,7 @@ internal static partial class MultiEnchantmentSupport
             return null;
         }
 
-        if (IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
+        if (isGameplay && IsScopeEffectivelyPermanent(applied.GetType(), scopeOverride))
         {
             SyncDeckVersionEnchantment(card, applied.GetType(), appliedStackCount, behavior, scopeOverride);
         }
@@ -167,7 +284,10 @@ internal static partial class MultiEnchantmentSupport
         card.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
         TriggerEnchantmentChanged(card);
-        RecordEnchantmentHistory(card, enchantment);
+        if (isGameplay)
+        {
+            RecordEnchantmentHistory(card, enchantment);
+        }
         return applied;
     }
 
@@ -184,6 +304,7 @@ internal static partial class MultiEnchantmentSupport
     }
 
     private static EnchantmentModel? AttachNewEnchantmentStacks(
+        PlayerChoiceContext? choiceContext,
         CardModel card,
         EnchantmentModel enchantment,
         int stackCount,
@@ -214,6 +335,7 @@ internal static partial class MultiEnchantmentSupport
         if (ShouldFanOutAppliedStacks(behavior) && allowedStackCount > 1)
         {
             EnchantmentModel firstApplied = AttachEnchantmentState(
+                choiceContext,
                 card,
                 enchantment,
                 1,
@@ -224,7 +346,7 @@ internal static partial class MultiEnchantmentSupport
             for (int i = 1; i < allowedStackCount; i++)
             {
                 EnchantmentModel extra = (EnchantmentModel)enchantment.ClonePreservingMutability();
-                AttachEnchantmentState(card, extra, 1, modifyCard, triggerChanged: false, scopeOverride);
+                AttachEnchantmentState(choiceContext, card, extra, 1, modifyCard, triggerChanged: false, scopeOverride);
                 AppendApplicationOrder(card, extra.Id);
             }
 
@@ -236,9 +358,60 @@ internal static partial class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachEnchantmentState(card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
+        EnchantmentModel applied = AttachEnchantmentState(choiceContext, card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
+    }
+
+    private static async Task<(EnchantmentModel? Applied, int AppliedStackCount)> AttachNewEnchantmentStacksAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        int stackCount,
+        bool modifyCard,
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
+    {
+        enchantment.AssertMutable();
+        card.AssertMutable();
+        SeedMissingApplicationOrder(card);
+
+        EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
+        int allowedStackCount = EnforceOverflowPolicy(card, enchantment.GetType(), stackCount, behavior);
+        if (allowedStackCount <= 0)
+        {
+            return (null, 0);
+        }
+
+        if (ShouldFanOutAppliedStacks(behavior) && allowedStackCount > 1)
+        {
+            EnchantmentModel firstApplied = await AttachEnchantmentStateAsync(
+                choiceContext,
+                card,
+                enchantment,
+                1,
+                modifyCard,
+                triggerChanged: false,
+                scopeOverride);
+            AppendApplicationOrder(card, enchantment.Id);
+            for (int i = 1; i < allowedStackCount; i++)
+            {
+                EnchantmentModel extra = (EnchantmentModel)enchantment.ClonePreservingMutability();
+                await AttachEnchantmentStateAsync(choiceContext, card, extra, 1, modifyCard, triggerChanged: false, scopeOverride);
+                AppendApplicationOrder(card, extra.Id);
+            }
+
+            if (triggerChanged)
+            {
+                TriggerEnchantmentChanged(card);
+            }
+
+            return (firstApplied, allowedStackCount);
+        }
+
+        EnchantmentModel applied = await AttachEnchantmentStateAsync(choiceContext, card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
+        AppendApplicationOrder(card, applied.Id);
+        return (applied, allowedStackCount);
     }
 
     private static EnchantmentModel? AttachNewAdditionalEnchantmentStacks(
@@ -264,23 +437,25 @@ internal static partial class MultiEnchantmentSupport
         if (ShouldFanOutAppliedStacks(behavior) && allowedStackCount > 1)
         {
             EnchantmentModel firstApplied = AttachAdditionalEnchantmentState(
+                choiceContext: null,
                 card,
                 enchantment,
                 1,
-                modifyCard,
+                modifyCard: modifyCard,
                 triggerChanged: false,
-                scopeOverride);
+                scopeOverride: scopeOverride);
             AppendApplicationOrder(card, enchantment.Id);
             for (int i = 1; i < allowedStackCount; i++)
             {
                 EnchantmentModel clone = (EnchantmentModel)enchantment.ClonePreservingMutability();
                 AttachAdditionalEnchantmentState(
+                    choiceContext: null,
                     card,
                     clone,
                     1,
-                    modifyCard,
+                    modifyCard: modifyCard,
                     triggerChanged: false,
-                    scopeOverride);
+                    scopeOverride: scopeOverride);
                 AppendApplicationOrder(card, clone.Id);
             }
 
@@ -292,12 +467,13 @@ internal static partial class MultiEnchantmentSupport
             return firstApplied;
         }
 
-        EnchantmentModel applied = AttachAdditionalEnchantmentState(card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
+        EnchantmentModel applied = AttachAdditionalEnchantmentState(choiceContext: null, card, enchantment, allowedStackCount, modifyCard, triggerChanged, scopeOverride);
         AppendApplicationOrder(card, applied.Id);
         return applied;
     }
 
     private static EnchantmentModel AttachAdditionalEnchantmentState(
+        PlayerChoiceContext? choiceContext,
         CardModel card,
         EnchantmentModel enchantment,
         int amount,
@@ -313,10 +489,14 @@ internal static partial class MultiEnchantmentSupport
         enchantment.ApplyInternal(card, amount);
         CardEnchantmentState state = CardStates.GetOrCreateValue(card);
         state.ExtraEnchantments.Add(enchantment);
-        state.LastAppliedEnchantment = enchantment;
+        if (IsGameplayEnchantment(enchantment))
+        {
+            state.LastAppliedEnchantment = enchantment;
+            state.LastAppliedEnchantmentThisTurn = enchantment;
+        }
         MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
 
-        if (modifyCard)
+        if (modifyCard && IsGameplayEnchantment(enchantment))
         {
             bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
             ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
@@ -326,10 +506,57 @@ internal static partial class MultiEnchantmentSupport
 
                 // Phase 5: notify siblings that a new enchantment joined the card.
                 MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment)
+                    .GetAwaiter()
+                    .GetResult();
             }
         }
 
         // Sync active-status predicate immediately so the enchantment dims on first appearance.
+        MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
+
+        if (triggerChanged)
+        {
+            TriggerEnchantmentChanged(card);
+        }
+
+        return enchantment;
+    }
+
+    private static async Task<EnchantmentModel> AttachAdditionalEnchantmentStateAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        int amount,
+        bool modifyCard,
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null,
+        bool dispatchAppliedLifecycle = true)
+    {
+        enchantment.AssertMutable();
+        card.AssertMutable();
+        enchantment.ApplyInternal(card, amount);
+        CardEnchantmentState state = CardStates.GetOrCreateValue(card);
+        state.ExtraEnchantments.Add(enchantment);
+        if (IsGameplayEnchantment(enchantment))
+        {
+            state.LastAppliedEnchantment = enchantment;
+            state.LastAppliedEnchantmentThisTurn = enchantment;
+        }
+        MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
+
+        if (modifyCard && IsGameplayEnchantment(enchantment))
+        {
+            bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
+            ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
+            if (dispatchAppliedLifecycle)
+            {
+                MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+                MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                await MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment);
+            }
+        }
+
         MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
 
         if (triggerChanged)
@@ -351,6 +578,7 @@ internal static partial class MultiEnchantmentSupport
         // live Amount. Duplicate-instance enchantments like Goopy use Amount as runtime state, not
         // "how many additional copies to fan out".
         return AttachAdditionalEnchantmentState(
+            choiceContext: null,
             card,
             enchantment,
             enchantment.Amount,
@@ -475,15 +703,18 @@ internal static partial class MultiEnchantmentSupport
             state.LastAppliedEnchantment = null;
         }
 
+        if (ReferenceEquals(state.LastAppliedEnchantmentThisTurn, enchantment))
+        {
+            state.LastAppliedEnchantmentThisTurn = null;
+        }
+
         PruneEmptyCardState(card, state);
         return true;
     }
 
     public static void ClearAdditionalEnchantments(CardModel card, bool triggerChanged)
     {
-        foreach (EnchantmentModel enchantment in GetOrderedEnchantmentsForRemoval(card)
-                     .Where(static enchantment => !ReferenceEquals(enchantment.Card?.Enchantment, enchantment))
-                     .ToList())
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
         {
             RemoveEnchantmentInternal(card, enchantment, RemovalReason.CardCleared, bypassVeto: true, refreshCard: false, triggerChanged: false);
         }
@@ -522,7 +753,7 @@ internal static partial class MultiEnchantmentSupport
     public static void CloneCompatibleEnchantments(CardModel source, CardModel target)
     {
         bool changed = false;
-        foreach (EnchantmentModel enchantment in GetEnchantments(source))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(source))
         {
             EnchantmentModel cloned = (EnchantmentModel)enchantment.ClonePreservingMutability();
             if (!cloned.CanEnchant(target))
@@ -532,7 +763,7 @@ internal static partial class MultiEnchantmentSupport
 
             if (target.Enchantment == null)
             {
-                AttachEnchantmentState(target, cloned, cloned.Amount, modifyCard: true, triggerChanged: false);
+                AttachEnchantmentState(choiceContext: null, target, cloned, cloned.Amount, modifyCard: true, triggerChanged: false);
             }
             else
             {
@@ -555,6 +786,135 @@ internal static partial class MultiEnchantmentSupport
         }
     }
 
+    public static EnchantmentModel? CopyEnchantment(
+        PlayerChoiceContext? choiceContext,
+        CardModel target,
+        EnchantmentModel source,
+        EnchantmentScope? scopeOverride,
+        bool preserveScopeProgress = false)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(source);
+
+        EnchantmentModel cloned = (EnchantmentModel)source.ClonePreservingMutability();
+        EnchantmentScope? effectiveScopeOverride = scopeOverride ?? GetFreshScopeForCopy(source);
+        EnchantmentModel? applied = ApplyEnchantmentWithScopeOverride(
+            choiceContext,
+            cloned,
+            target,
+            cloned.Amount,
+            effectiveScopeOverride);
+        if (applied == null)
+        {
+            return null;
+        }
+
+        ApplyCopiedScopeProgress(source, target, applied, preserveScopeProgress);
+
+        return applied;
+    }
+
+    public static async Task<EnchantmentModel?> CopyEnchantmentAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel target,
+        EnchantmentModel source,
+        EnchantmentScope? scopeOverride,
+        bool preserveScopeProgress = false)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(source);
+
+        EnchantmentModel cloned = (EnchantmentModel)source.ClonePreservingMutability();
+        EnchantmentScope? effectiveScopeOverride = scopeOverride ?? GetFreshScopeForCopy(source);
+        EnchantmentModel? applied = await ApplyEnchantmentWithScopeOverrideAsync(
+            choiceContext,
+            cloned,
+            target,
+            cloned.Amount,
+            effectiveScopeOverride,
+            dispatchAfterCardEnchanted: false);
+        if (applied == null)
+        {
+            return null;
+        }
+
+        ApplyCopiedScopeProgress(source, target, applied, preserveScopeProgress);
+        await MultiEnchantmentApi.DispatchAfterCardEnchanted(new AfterCardEnchantedContext(
+            choiceContext,
+            target,
+            applied,
+            cloned,
+            cloned.Amount,
+            effectiveScopeOverride));
+
+        return applied;
+    }
+
+    private static void ApplyCopiedScopeProgress(
+        EnchantmentModel source,
+        CardModel target,
+        EnchantmentModel applied,
+        bool preserveScopeProgress)
+    {
+        if (preserveScopeProgress && source.Card != null)
+        {
+            CopyScopeProgressFromSource(source, target, applied);
+        }
+        else
+        {
+            ResetFreshScopeProgress(target, applied);
+        }
+    }
+
+    // Carries the source instance's live scope counters (remaining turns / activations) onto the
+    // copied instance. Used by "move" semantics where the enchantment's lifetime should continue
+    // rather than restart. Falls back to a fresh reset when the source has no tracked scope state.
+    private static void CopyScopeProgressFromSource(
+        EnchantmentModel source,
+        CardModel target,
+        EnchantmentModel applied)
+    {
+        ScopeRuntimeState sourceState = MultiEnchantmentScopeSupport.EnsureScopeState(source.Card!, source);
+        ScopeRuntimeState targetState = MultiEnchantmentScopeSupport.EnsureScopeState(target, applied);
+        targetState.ActivationCount = sourceState.ActivationCount;
+        targetState.TurnsRemaining = sourceState.TurnsRemaining;
+    }
+
+    private static void ResetFreshScopeProgress(CardModel card, EnchantmentModel enchantment)
+    {
+        ScopeRuntimeState state = MultiEnchantmentScopeSupport.EnsureScopeState(card, enchantment);
+        state.ActivationCount = 0;
+        if (state.Scope is EnchantmentScope.LingerForTurnsScope linger)
+        {
+            state.TurnsRemaining = linger.Turns;
+        }
+        else
+        {
+            state.TurnsRemaining = 0;
+        }
+    }
+
+    private static EnchantmentScope? GetFreshScopeForCopy(EnchantmentModel source)
+    {
+        CardModel? sourceCard = source.Card;
+        if (sourceCard == null)
+        {
+            return null;
+        }
+
+        ScopeRuntimeState state = MultiEnchantmentScopeSupport.EnsureScopeState(sourceCard, source);
+        EnchantmentScope scope = state.OverrideScope ?? state.Scope;
+        return scope switch
+        {
+            EnchantmentScope.PermanentScope => EnchantmentScope.Permanent,
+            EnchantmentScope.UntilCombatEndsScope => EnchantmentScope.UntilCombatEnds,
+            EnchantmentScope.UntilTurnEndsScope => EnchantmentScope.UntilTurnEnds,
+            EnchantmentScope.LingerForTurnsScope linger => EnchantmentScope.LingerForTurns(linger.Turns),
+            EnchantmentScope.MaxActivationsScope max => EnchantmentScope.MaxActivations(max.Max, max.Trigger),
+            _ => null,
+        };
+    }
+
     internal static bool RemoveEnchantmentInternal(
         CardModel card,
         EnchantmentModel enchantment,
@@ -573,7 +933,9 @@ internal static partial class MultiEnchantmentSupport
             return false;
         }
 
-        if (!bypassVeto)
+        bool isGameplay = IsGameplayEnchantment(enchantment);
+
+        if (!bypassVeto && isGameplay)
         {
             EnchantmentEntry? lifecycle = EnchantmentRegistry.GetDefinitionEntry(
                 enchantment.GetType(),
@@ -589,7 +951,7 @@ internal static partial class MultiEnchantmentSupport
             : null;
         EnchantmentScope? removedOverrideScope = GetScopeOverride(state, enchantment);
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
-        int? deckSyncedInstanceOrdinal = IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope)
+        int? deckSyncedInstanceOrdinal = isGameplay && IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope)
             ? GetDeckSyncedInstanceOrdinal(card, enchantment)
             : null;
 
@@ -600,13 +962,21 @@ internal static partial class MultiEnchantmentSupport
                 throw new InvalidOperationException("Failed to access CardModel.ClearEnchantmentInternal.");
             }
 
+            if (isGameplay && GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
+            {
+                MultiEnchantmentScopeSupport.DispatchOnSiblingRemoved(card, leaving: enchantment, reason);
+            }
+
             CardModelClearEnchantmentInternalMethod.Invoke(card, null);
         }
         else
         {
             // Phase 5: notify siblings before the enchantment is actually removed from the list,
             // so handlers see the leaving enchantment at its current state.
-            MultiEnchantmentScopeSupport.DispatchOnSiblingRemoved(card, leaving: enchantment, reason);
+            if (isGameplay)
+            {
+                MultiEnchantmentScopeSupport.DispatchOnSiblingRemoved(card, leaving: enchantment, reason);
+            }
             if (!RemoveAdditionalEnchantmentState(card, enchantment))
             {
                 return false;
@@ -628,6 +998,11 @@ internal static partial class MultiEnchantmentSupport
                 state.LastAppliedEnchantment = null;
             }
 
+            if (ReferenceEquals(state.LastAppliedEnchantmentThisTurn, enchantment))
+            {
+                state.LastAppliedEnchantmentThisTurn = null;
+            }
+
             PruneEmptyCardState(card, state);
         }
 
@@ -635,7 +1010,7 @@ internal static partial class MultiEnchantmentSupport
         // enchantments (UntilCombatEnds / UntilTurnEnds / LingerForTurns / MaxActivations)
         // were never synced to the deck version on apply, so removing them from the deck
         // version would silently destroy any permanent copy of the same type.
-        if (IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope))
+        if (isGameplay && IsScopeEffectivelyPermanent(enchantment.GetType(), removedOverrideScope))
         {
             SyncDeckVersionEnchantmentRemoval(
                 card,
@@ -685,7 +1060,55 @@ internal static partial class MultiEnchantmentSupport
         enchantment.ModifyCard();
     }
 
+    internal static void ReapplyMultiEnchantmentsAfterDowngrade(CardModel card)
+    {
+        card.AssertMutable();
+
+        HashSet<Type> reappliedTypes = new();
+        if (card.Enchantment != null)
+        {
+            EnchantmentModel primary = card.Enchantment;
+            Type primaryType = primary.GetType();
+            reappliedTypes.Add(primaryType);
+
+            // Base-game DowngradeInternal has already replayed the primary slot once via
+            // Enchantment.ModifyCard(). Restore only the merged applications that vanilla cannot
+            // see, otherwise a cost reducer would be applied one time too many.
+            if (MultiEnchantmentStackSupport.GetBehavior(primaryType) == EnchantmentStackBehavior.MergeAmount &&
+                primary.Amount > 1)
+            {
+                MultiEnchantmentStackSupport.ApplyMergedAmountDelta(primary, primary.Amount - 1);
+                MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(primary);
+            }
+        }
+
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
+        {
+            if (!ReferenceEquals(enchantment.Card, card))
+            {
+                continue;
+            }
+
+            Type type = enchantment.GetType();
+            bool isFirstOfTypeOnCard = reappliedTypes.Add(type);
+            if (MultiEnchantmentStackSupport.GetBehavior(type) == EnchantmentStackBehavior.MergeAmount &&
+                !isFirstOfTypeOnCard)
+            {
+                MultiEnchantmentStackSupport.RefreshMergedEnchantmentState(enchantment);
+                continue;
+            }
+
+            ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
+        }
+
+        // DowngradeInternal rebuilds the card's internal base state in-place. Treat that like a
+        // lightweight restore pass so idempotent lifecycle handlers that cache/recalculate card
+        // state (for example cost reducers) can re-derive their side effects after the reset.
+        MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(card);
+    }
+
     private static EnchantmentModel AttachEnchantmentState(
+        PlayerChoiceContext? choiceContext,
         CardModel card,
         EnchantmentModel enchantment,
         int amount,
@@ -695,16 +1118,35 @@ internal static partial class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         card.AssertMutable();
+        if (!IsGameplayEnchantment(enchantment))
+        {
+            return AttachAdditionalEnchantmentState(
+                choiceContext,
+                card,
+                enchantment,
+                amount,
+                modifyCard,
+                triggerChanged,
+                scopeOverride);
+        }
+
         if (card.Enchantment == null)
         {
             // Match the base-game "primary enchantment" path first so downstream code that expects
             // CardModel.Enchantment to be populated continues to behave like vanilla.
             card.EnchantInternal(enchantment, amount);
             MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
-            if (modifyCard)
+            if (modifyCard && IsGameplayEnchantment(enchantment))
             {
                 ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard: true);
                 MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+                if (GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
+                {
+                    MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                    MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment)
+                        .GetAwaiter()
+                        .GetResult();
+                }
             }
 
             // Sync active-status predicate immediately for the primary enchantment.
@@ -714,7 +1156,54 @@ internal static partial class MultiEnchantmentSupport
             return enchantment;
         }
 
-        return AttachAdditionalEnchantmentState(card, enchantment, amount, modifyCard, triggerChanged);
+        return AttachAdditionalEnchantmentState(choiceContext, card, enchantment, amount, modifyCard, triggerChanged);
+    }
+
+    private static async Task<EnchantmentModel> AttachEnchantmentStateAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        int amount,
+        bool modifyCard,
+        bool triggerChanged,
+        EnchantmentScope? scopeOverride = null)
+    {
+        enchantment.AssertMutable();
+        card.AssertMutable();
+        if (!IsGameplayEnchantment(enchantment))
+        {
+            return await AttachAdditionalEnchantmentStateAsync(
+                choiceContext,
+                card,
+                enchantment,
+                amount,
+                modifyCard,
+                triggerChanged,
+                scopeOverride);
+        }
+
+        if (card.Enchantment == null)
+        {
+            card.EnchantInternal(enchantment, amount);
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
+            if (modifyCard && IsGameplayEnchantment(enchantment))
+            {
+                ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard: true);
+                MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+                if (GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
+                {
+                    MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                    await MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment);
+                }
+            }
+
+            MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
+
+            RememberLastAppliedEnchantment(card, enchantment);
+            return enchantment;
+        }
+
+        return await AttachAdditionalEnchantmentStateAsync(choiceContext, card, enchantment, amount, modifyCard, triggerChanged);
     }
 
     private static bool ShouldFanOutAppliedStacks(EnchantmentStackBehavior behavior)

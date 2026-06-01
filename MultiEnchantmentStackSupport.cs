@@ -74,7 +74,7 @@ internal static class MultiEnchantmentStackSupport
         CardModel? card = enchantment.Card;
         List<EnchantmentModel> liveInstances = card == null
             ? new List<EnchantmentModel> { enchantment }
-            : MultiEnchantmentSupport.GetEnchantments(card)
+            : MultiEnchantmentSupport.GetGameplayEnchantments(card)
                 .Where(instance => instance.GetType() == enchantment.GetType())
                 .Cast<EnchantmentModel>()
                 .ToList();
@@ -157,7 +157,7 @@ internal static class MultiEnchantmentStackSupport
             return Array.Empty<EnchantmentStackSnapshot>();
         }
 
-        return MultiEnchantmentSupport.GetEnchantments(card)
+        return MultiEnchantmentSupport.GetGameplayEnchantments(card)
             .GroupBy(static enchantment => enchantment.GetType())
             .Select(static group => GetSnapshot(group.First()))
             .ToList();
@@ -287,12 +287,13 @@ internal static class MultiEnchantmentStackSupport
 
     public static int GetEnchantmentCount(CardModel? card, Type enchantmentType)
     {
-        return MultiEnchantmentSupport.GetEnchantments(card).Count(enchantment => enchantment.GetType() == enchantmentType);
+        return MultiEnchantmentSupport.GetEnchantmentsForType(card, enchantmentType)
+            .Count(enchantment => enchantment.GetType() == enchantmentType);
     }
 
     public static int GetTotalAmount(CardModel? card, Type enchantmentType)
     {
-        return MultiEnchantmentSupport.GetEnchantments(card)
+        return MultiEnchantmentSupport.GetEnchantmentsForType(card, enchantmentType)
             .Where(enchantment => enchantment.GetType() == enchantmentType)
             .Sum(enchantment => enchantment.Amount);
     }

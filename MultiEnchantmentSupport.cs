@@ -45,10 +45,15 @@ internal static partial class MultiEnchantmentSupport
     private const string EnchantVfxOverrideRestorePositionMeta = "_multi_enchant_vfx_override_restore_position";
     private const string EnchantVfxOverrideRestoreSizeMeta = "_multi_enchant_vfx_override_restore_size";
     private const string EnchantVfxOverrideRestoreActiveMeta = "_multi_enchant_vfx_override_restore_active";
+    private const string EnchantmentBadgeHiddenMeta = "_multi_enchant_badge_hidden";
+    private const string EnchantmentBadgeHiddenVisibleMeta = "_multi_enchant_badge_hidden_visible";
 
     private static readonly ConditionalWeakTable<CardModel, CardEnchantmentState> CardStates = new();
     private static readonly ConditionalWeakTable<NCard, CardUiState> CardUiStates = new();
     private static readonly ConditionalWeakTable<Node, EnchantmentVfxSnapshotState> PendingEnchantVfxSnapshots = new();
+    private static readonly ConditionalWeakTable<Control, EnchantmentBadgeRestoreState> EnchantmentBadgeRestoreStates = new();
+    private static readonly ConditionalWeakTable<TextureRect, EnchantmentIconRestoreState> EnchantmentIconRestoreStates = new();
+    private static readonly HashSet<string> InvalidHookListenerLogKeys = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Reentrancy guard for <see cref="ApplyDynamicVarEnchantments"/>. Tracks (card, varKey) pairs
@@ -172,6 +177,28 @@ internal static partial class MultiEnchantmentSupport
         }
     }
 
+    internal static IEnumerable<EnchantmentModel> GetGameplayEnchantments(CardModel? card)
+    {
+        return GetEnchantments(card).Where(IsGameplayEnchantment);
+    }
+
+    internal static bool IsGameplayEnchantment(EnchantmentModel enchantment)
+    {
+        return enchantment is not ExtraIconEnchantmentModel;
+    }
+
+    /// <summary>
+    /// Picks the enumeration source for a type-keyed query: extra-icon marker types see markers,
+    /// gameplay types exclude them. Keeps <see cref="HasEnchantment{T}"/>, <see cref="GetEnchantment"/>
+    /// and the stack-support count/amount APIs reporting the same presence for a given type.
+    /// </summary>
+    internal static IEnumerable<EnchantmentModel> GetEnchantmentsForType(CardModel? card, Type enchantmentType)
+    {
+        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
+            ? GetEnchantments(card)
+            : GetGameplayEnchantments(card);
+    }
+
     internal static IEnumerable<EnchantmentVisualState> GetOrderedVisualStates(CardModel? card)
     {
         foreach (OrderedVisualEntry entry in GetOrderedVisualEntries(card))
@@ -200,7 +227,7 @@ internal static partial class MultiEnchantmentSupport
 
     public static bool HasEnchantment<T>(CardModel? card) where T : EnchantmentModel
     {
-        return GetEnchantments(card).Any(static enchantment => enchantment is T);
+        return GetEnchantmentsForType(card, typeof(T)).Any(static enchantment => enchantment is T);
     }
 
     public static bool ShouldOfferCloneRestSiteOption(Player player)
@@ -210,27 +237,78 @@ internal static partial class MultiEnchantmentSupport
 
     public static EnchantmentModel? GetEnchantment(CardModel? card, Type enchantmentType)
     {
-        return GetEnchantments(card).FirstOrDefault(enchantment => enchantment.GetType() == enchantmentType);
+        return GetEnchantmentsForType(card, enchantmentType)
+            .FirstOrDefault(enchantment => enchantment.GetType() == enchantmentType);
     }
 
     public static bool ShouldGlowGold(CardModel card)
     {
-        return GetAdditionalEnchantments(card).Any(static enchantment => enchantment.ShouldGlowGold);
+        return GetAdditionalEnchantments(card).Any(static enchantment =>
+            IsGameplayEnchantment(enchantment) && enchantment.ShouldGlowGold);
     }
 
     public static bool ShouldGlowRed(CardModel card)
     {
-        return GetAdditionalEnchantments(card).Any(static enchantment => enchantment.ShouldGlowRed);
+        return GetAdditionalEnchantments(card).Any(static enchantment =>
+            IsGameplayEnchantment(enchantment) && enchantment.ShouldGlowRed);
     }
 
     public static bool ShouldStartAtBottomOfDrawPile(CardModel card)
     {
-        return GetEnchantments(card).Any(static enchantment => enchantment.ShouldStartAtBottomOfDrawPile);
+        return GetGameplayEnchantments(card).Any(static enchantment => enchantment.ShouldStartAtBottomOfDrawPile);
     }
 
-    public static bool HasAnyEnchantments(CardModel? card)
+    public static bool HasAnyEnchantments(CardModel? card, bool includeExtraIcons = false)
     {
-        return card?.Enchantment != null || GetAdditionalEnchantments(card).Count > 0;
+        if (card == null)
+        {
+            return false;
+        }
+
+        if (card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeExtraIcons))
+        {
+            return true;
+        }
+
+        IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(card);
+        for (int i = 0; i < extras.Count; i++)
+        {
+            if (ShouldCountEnchantment(extras[i], includeExtraIcons))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Total number of enchantments on <paramref name="card"/> — the primary slot (if present) plus
+    /// every extra enchantment instance. Counts instances, not distinct types. Allocation-free.
+    /// </summary>
+    public static int GetEnchantmentTotalCount(CardModel? card, bool includeExtraIcons = false)
+    {
+        if (card == null)
+        {
+            return 0;
+        }
+
+        int count = card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeExtraIcons) ? 1 : 0;
+        IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(card);
+        for (int i = 0; i < extras.Count; i++)
+        {
+            if (ShouldCountEnchantment(extras[i], includeExtraIcons))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static bool ShouldCountEnchantment(EnchantmentModel enchantment, bool includeExtraIcons)
+    {
+        return includeExtraIcons || IsGameplayEnchantment(enchantment);
     }
 
     /// <summary>
@@ -246,7 +324,7 @@ internal static partial class MultiEnchantmentSupport
             return false;
         }
 
-        if (GetAdditionalEnchantments(card).Count > 0)
+        if (GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
         {
             return true;
         }
@@ -263,7 +341,7 @@ internal static partial class MultiEnchantmentSupport
         // pipeline gets to fold contributions on top of vanilla's value. Without this check, a
         // card carrying only a SamplePlusFive (which contributes to "damage"/"block") would
         // bypass our prefix entirely and the contribution would never fire.
-        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card))
         {
             if (EnchantmentRegistry.HasAnyDynamicVarContributions(enchantment.GetType()))
             {
@@ -281,7 +359,7 @@ internal static partial class MultiEnchantmentSupport
             return false;
         }
 
-        if (GetAdditionalEnchantments(card).Count > 0)
+        if (GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
         {
             return true;
         }
@@ -324,6 +402,31 @@ internal static partial class MultiEnchantmentSupport
     }
 
     /// <summary>
+    /// Re-evaluates and redraws extra-icon visuals for <paramref name="card"/> immediately (re-runs
+    /// display providers + badge sync), reusing the same refresh path enchantment changes use. Lets
+    /// provider edits / disposals take effect on an already-rendered card without waiting for the
+    /// next vanilla visual pass.
+    /// </summary>
+    internal static void RefreshExtraIcons(CardModel card)
+    {
+        TriggerEnchantmentChanged(card);
+    }
+
+    /// <summary>Refreshes extra-icon visuals on every currently-rendered card.</summary>
+    internal static void RefreshAllExtraIcons()
+    {
+        foreach (CardModel card in CardUiStates
+            .Select(static entry => entry.Key.Model)
+            .Where(static model => model != null)
+            .Select(static model => model!)
+            .Distinct()
+            .ToList())
+        {
+            TriggerEnchantmentChanged(card);
+        }
+    }
+
+    /// <summary>
     /// Refreshes all derived state (DynamicVars, keywords, UI signals) for
     /// <paramref name="enchantment"/>'s owning card after its <see cref="EnchantmentModel.Props"/>
     /// have been mutated by user code. Called from
@@ -345,7 +448,27 @@ internal static partial class MultiEnchantmentSupport
 
     private static void RememberLastAppliedEnchantment(CardModel card, EnchantmentModel enchantment)
     {
-        CardStates.GetOrCreateValue(card).LastAppliedEnchantment = enchantment;
+        if (!IsGameplayEnchantment(enchantment))
+        {
+            return;
+        }
+
+        CardEnchantmentState state = CardStates.GetOrCreateValue(card);
+        state.LastAppliedEnchantment = enchantment;
+        state.LastAppliedEnchantmentThisTurn = enchantment;
+    }
+
+    /// <summary>
+    /// Clears the per-turn "last injected" pointer for <paramref name="card"/>. Called at the start
+    /// of every player turn so <see cref="GetMostRecentlyAppliedEnchantmentThisTurn"/> only reports
+    /// enchantments applied during the current turn. No-op when the card has no tracked state.
+    /// </summary>
+    internal static void ResetLastAppliedEnchantmentThisTurn(CardModel card)
+    {
+        if (CardStates.TryGetValue(card, out CardEnchantmentState? state))
+        {
+            state.LastAppliedEnchantmentThisTurn = null;
+        }
     }
 
     public static Task OnPlayForMultiEnchantmentPatch(CardModel card, PlayerChoiceContext choiceContext, CardPlay cardPlay)

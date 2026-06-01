@@ -97,14 +97,8 @@ internal static partial class MultiEnchantmentSupport
 
         for (int i = 0; i < animatedIndex; i++)
         {
-            Control badge = (Control)primaryTab.Duplicate();
+            Control badge = DuplicateEnchantmentTab(primaryTab);
             badge.Name = $"{EnchantVfxStaticBadgePrefix}{i}";
-            badge.UniqueNameInOwner = false;
-            if (badge.Material != null)
-            {
-                badge.Material = (Material)badge.Material.Duplicate();
-            }
-
             cardBadgeRoot.AddChildSafely(badge);
             ApplyEnchantmentSlotLayout(badge, slotLayouts[i], visible: true);
             ApplyEnchantmentVisualState(badge, visualStates[i]);
@@ -173,6 +167,7 @@ internal static partial class MultiEnchantmentSupport
 
             EnchantmentModel mirrored = model.ToMutable();
             AttachNewEnchantmentStacks(
+                choiceContext: null,
                 deckVersion,
                 mirrored,
                 amount,
@@ -203,7 +198,7 @@ internal static partial class MultiEnchantmentSupport
             ? existingState
             : null;
 
-        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card))
         {
             if (enchantment.GetType() != enchantmentType)
             {
@@ -233,7 +228,7 @@ internal static partial class MultiEnchantmentSupport
             ? existingState
             : null;
 
-        return GetEnchantments(card)
+        return GetGameplayEnchantments(card)
             .Where(enchantment => enchantment.GetType() == enchantmentType
                 && IsScopeEffectivelyPermanent(enchantmentType, GetScopeOverride(state, enchantment)))
             .ToList();

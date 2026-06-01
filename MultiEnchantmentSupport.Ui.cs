@@ -21,6 +21,7 @@ using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
@@ -53,7 +54,9 @@ internal static partial class MultiEnchantmentSupport
         // Snapshot the extra enchantment list: IsActive predicates and DynamicVar updates can
         // invoke user-defined code (ConditionalActive lambdas, [ModifyDynamicVar] methods) that
         // may chain into mod APIs and mutate state.ExtraEnchantments. Defensive snapshot.
-        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(model).ToList())
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(model)
+                     .Where(IsGameplayEnchantment)
+                     .ToList())
         {
             // Always clear the previous preview first so stale numbers don't leak when an
             // enchantment toggles from active → inactive between hover refreshes.
@@ -130,7 +133,6 @@ internal static partial class MultiEnchantmentSupport
             defaultPosition);
 
         ApplyEnchantmentSlotLayout(primaryTab, slotLayouts[0], visible: true);
-        ApplyEnchantmentVisualState(primaryTab, visualStates[0]);
 
         while (uiState.ExtraTabs.Count > expectedExtraTabCount)
         {
@@ -145,23 +147,20 @@ internal static partial class MultiEnchantmentSupport
 
         while (uiState.ExtraTabs.Count < expectedExtraTabCount)
         {
-            Control tab = (Control)primaryTab.Duplicate();
+            Control tab = DuplicateEnchantmentTab(primaryTab);
             tab.Name = $"{ExtraEnchantmentTabPrefix}{uiState.ExtraTabs.Count + 1}";
-            tab.UniqueNameInOwner = false;
-            if (tab.Material != null)
-            {
-                tab.Material = (Material)tab.Material.Duplicate();
-            }
-
             badgeRoot.AddChildSafely(tab);
             uiState.ExtraTabs.Add(tab);
         }
+
+        ApplyEnchantmentVisualState(primaryTab, visualStates[0]);
 
         for (int i = 0; i < uiState.ExtraTabs.Count; i++)
         {
             Control tab = uiState.ExtraTabs[i];
             if (i >= expectedExtraTabCount)
             {
+                RestoreEnchantmentBadgePresentation(tab);
                 tab.Visible = false;
                 continue;
             }
@@ -181,6 +180,11 @@ internal static partial class MultiEnchantmentSupport
 
         Control? primaryTab = NCardEnchantmentTabField?.GetValue(cardNode) as Control;
         Node? badgeRoot = primaryTab?.GetParent();
+        if (primaryTab != null)
+        {
+            RestoreEnchantmentBadgePresentation(primaryTab);
+        }
+
         if (badgeRoot != null)
         {
             ClearNamedChildren(badgeRoot, ExtraEnchantmentTabPrefix);
@@ -220,6 +224,11 @@ internal static partial class MultiEnchantmentSupport
         }
 
         Control? primaryTab = NCardEnchantmentTabField?.GetValue(cardNode) as Control;
+        if (primaryTab != null)
+        {
+            RestoreEnchantmentBadgePresentation(primaryTab);
+        }
+
         Node? badgeRoot = primaryTab?.GetParent();
         if (badgeRoot != null)
         {
@@ -362,7 +371,10 @@ internal static partial class MultiEnchantmentSupport
     {
         foreach (AbstractModel model in original.ToList())
         {
-            yield return model;
+            if (ShouldYieldHookListener(model, "RunState", expectedCombatState: null))
+            {
+                yield return model;
+            }
         }
 
         foreach (Player player in runState.Players.Where(static player => player.IsActiveForHooks).ToList())
@@ -372,7 +384,9 @@ internal static partial class MultiEnchantmentSupport
                 // Snapshot the extra enchantment list: a downstream virtual (e.g.
                 // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the
                 // live ExtraEnchantments list and would otherwise crash the enumerator.
-                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
+                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card)
+                             .Where(IsGameplayEnchantment)
+                             .ToList())
                 {
                     // Honor WhenActive / ConditionalActive on the listener path. Without this,
                     // an enchantment whose IsActive predicate is false still fires its
@@ -380,7 +394,7 @@ internal static partial class MultiEnchantmentSupport
                     // AfterDamageReceived, …) because Hook.* iterates the listener list directly
                     // and skips the per-call IsActive gate that the value-modifier pipelines
                     // (ApplyDamageEnchantments etc.) apply.
-                    if (!MultiEnchantmentScopeSupport.IsActive(card, enchantment))
+                    if (!ShouldAppendListenerEnchantment(card, enchantment, "RunState", expectedCombatState: null))
                     {
                         continue;
                     }
@@ -395,7 +409,10 @@ internal static partial class MultiEnchantmentSupport
     {
         foreach (AbstractModel model in original.ToList())
         {
-            yield return model;
+            if (ShouldYieldHookListener(model, "CombatState", combatState))
+            {
+                yield return model;
+            }
         }
 
         foreach (Player player in combatState.Players.Where(static player => player.IsActiveForHooks && player.PlayerCombatState != null).ToList())
@@ -405,11 +422,13 @@ internal static partial class MultiEnchantmentSupport
                 // Snapshot the extra enchantment list: a downstream virtual (e.g.
                 // AfterCardChangedPiles) may call RemoveEnchantment, which mutates the
                 // live ExtraEnchantments list and would otherwise crash the enumerator.
-                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card).ToList())
+                foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(card)
+                             .Where(IsGameplayEnchantment)
+                             .ToList())
                 {
                     // See AppendRunStateExtraEnchantments for why IsActive gates the listener
                     // path as well as the value-modifier pipelines.
-                    if (!MultiEnchantmentScopeSupport.IsActive(card, enchantment))
+                    if (!ShouldAppendListenerEnchantment(card, enchantment, "CombatState", combatState))
                     {
                         continue;
                     }
@@ -417,6 +436,353 @@ internal static partial class MultiEnchantmentSupport
                     yield return enchantment;
                 }
             }
+        }
+    }
+
+    private static bool ShouldAppendListenerEnchantment(
+        CardModel card,
+        EnchantmentModel enchantment,
+        string listenerSource,
+        CombatState? expectedCombatState)
+    {
+        CardModel? ownerCard = enchantment.Card;
+        if (ownerCard == null)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping dangling extra enchantment on {listenerSource} hook listeners. " +
+                $"ExpectedCard={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        if (!ReferenceEquals(ownerCard, card))
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping mismatched extra enchantment on {listenerSource} hook listeners. " +
+                $"ExpectedCard={card.Id} ActualCard={ownerCard.Id} Enchantment={enchantment.Id} " +
+                $"Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        if (ownerCard.HasBeenRemovedFromState)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping removed-card extra enchantment on {listenerSource} hook listeners. " +
+                $"Card={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        Player? owner = ownerCard.Owner;
+        if (owner == null)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping ownerless-card extra enchantment on {listenerSource} hook listeners. " +
+                $"Card={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        if (!owner.IsActiveForHooks)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping inactive-owner extra enchantment on {listenerSource} hook listeners. " +
+                $"Card={card.Id} Owner={owner.NetId} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        if (expectedCombatState != null && !ReferenceEquals(ownerCard.CombatState, expectedCombatState))
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Skipping off-combat extra enchantment on {listenerSource} hook listeners. " +
+                $"Card={card.Id} Pile={ownerCard.Pile?.Type.ToString() ?? "<none>"} Enchantment={enchantment.Id} " +
+                $"Type={enchantment.GetType().FullName}");
+            return false;
+        }
+
+        return ShouldYieldHookListener(enchantment, listenerSource, expectedCombatState) &&
+               MultiEnchantmentScopeSupport.IsActive(card, enchantment);
+    }
+
+    private static bool ShouldYieldHookListener(
+        AbstractModel? model,
+        string listenerSource,
+        CombatState? expectedCombatState)
+    {
+        if (model == null)
+        {
+            LogSkippedInvalidHookListener(null, listenerSource, "listener is null");
+            return false;
+        }
+
+        try
+        {
+            if (TryGetInvalidHookListenerReason(model, expectedCombatState, out string? reason))
+            {
+                LogSkippedInvalidHookListener(model, listenerSource, reason ?? "unknown invalid hook listener");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogSkippedInvalidHookListener(
+                model,
+                listenerSource,
+                $"validation threw {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool TryGetInvalidHookListenerReason(
+        AbstractModel model,
+        CombatState? expectedCombatState,
+        out string? reason)
+    {
+        reason = null;
+        switch (model)
+        {
+            case CardModel card:
+                return TryGetInvalidCardHookListenerReason(card, expectedCombatState, out reason);
+            case EnchantmentModel enchantment:
+                return TryGetInvalidCardOwnedHookListenerReason(
+                    enchantment.Card,
+                    expectedCombatState,
+                    "enchantment has no card",
+                    "enchantment card",
+                    out reason);
+            case AfflictionModel affliction:
+                return TryGetInvalidCardOwnedHookListenerReason(
+                    affliction.Card,
+                    expectedCombatState,
+                    "affliction has no card",
+                    "affliction card",
+                    out reason);
+            case PowerModel power:
+                Creature? powerOwner = power.Owner;
+                if (powerOwner == null)
+                {
+                    reason = "power has no owner";
+                    return true;
+                }
+
+                if (powerOwner.CombatState == null)
+                {
+                    reason = "power owner has no combat state";
+                    return true;
+                }
+
+                if (expectedCombatState != null && !ReferenceEquals(powerOwner.CombatState, expectedCombatState))
+                {
+                    reason = "power owner belongs to a different combat state";
+                    return true;
+                }
+
+                if (powerOwner.Player is { } powerPlayer && !powerPlayer.IsActiveForHooks)
+                {
+                    reason = "power owner player is inactive for hooks";
+                    return true;
+                }
+
+                return false;
+            case RelicModel relic:
+                return TryGetInvalidPlayerOwnedHookListenerReason(
+                    relic.Owner,
+                    relic.HasBeenRemovedFromState,
+                    "relic",
+                    out reason);
+            case PotionModel potion:
+                return TryGetInvalidPlayerOwnedHookListenerReason(
+                    potion.Owner,
+                    potion.HasBeenRemovedFromState,
+                    "potion",
+                    out reason);
+            case OrbModel orb:
+                return TryGetInvalidPlayerOwnedHookListenerReason(
+                    orb.Owner,
+                    orb.HasBeenRemovedFromState,
+                    "orb",
+                    out reason);
+            case MonsterModel monster:
+                Creature? monsterCreature = monster.Creature;
+                if (monsterCreature == null)
+                {
+                    reason = "monster has no creature";
+                    return true;
+                }
+
+                if (monsterCreature.CombatState == null)
+                {
+                    reason = "monster creature has no combat state";
+                    return true;
+                }
+
+                if (expectedCombatState != null && !ReferenceEquals(monsterCreature.CombatState, expectedCombatState))
+                {
+                    reason = "monster belongs to a different combat state";
+                    return true;
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryGetInvalidCardOwnedHookListenerReason(
+        CardModel? card,
+        CombatState? expectedCombatState,
+        string missingCardReason,
+        string cardLabel,
+        out string? reason)
+    {
+        if (card == null)
+        {
+            reason = missingCardReason;
+            return true;
+        }
+
+        return TryGetInvalidCardHookListenerReason(card, expectedCombatState, out reason, cardLabel);
+    }
+
+    private static bool TryGetInvalidCardHookListenerReason(
+        CardModel card,
+        CombatState? expectedCombatState,
+        out string? reason,
+        string cardLabel = "card")
+    {
+        if (card.HasBeenRemovedFromState)
+        {
+            reason = $"{cardLabel} has been removed from state";
+            return true;
+        }
+
+        Player? owner = card.Owner;
+        if (owner == null)
+        {
+            reason = $"{cardLabel} has no owner";
+            return true;
+        }
+
+        if (!owner.IsActiveForHooks)
+        {
+            reason = $"{cardLabel} owner is inactive for hooks";
+            return true;
+        }
+
+        if (expectedCombatState != null && !ReferenceEquals(card.CombatState, expectedCombatState))
+        {
+            reason = $"{cardLabel} belongs to a different combat state or no combat pile";
+            return true;
+        }
+
+        reason = null;
+        return false;
+    }
+
+    private static bool TryGetInvalidPlayerOwnedHookListenerReason(
+        Player? owner,
+        bool hasBeenRemovedFromState,
+        string modelKind,
+        out string? reason)
+    {
+        if (hasBeenRemovedFromState)
+        {
+            reason = $"{modelKind} has been removed from state";
+            return true;
+        }
+
+        if (owner == null)
+        {
+            reason = $"{modelKind} has no owner";
+            return true;
+        }
+
+        if (!owner.IsActiveForHooks)
+        {
+            reason = $"{modelKind} owner is inactive for hooks";
+            return true;
+        }
+
+        reason = null;
+        return false;
+    }
+
+    private static void LogSkippedInvalidHookListener(
+        AbstractModel? model,
+        string listenerSource,
+        string reason)
+    {
+        string description = DescribeHookListener(model);
+        string key = $"{listenerSource}|{RuntimeHelpers.GetHashCode(model)}|{reason}|{description}";
+        lock (InvalidHookListenerLogKeys)
+        {
+            if (!InvalidHookListenerLogKeys.Add(key))
+            {
+                return;
+            }
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment][HookListenerGuard] Skipping invalid {listenerSource} hook listener. " +
+            $"Reason={reason}; {description}");
+    }
+
+    private static string DescribeHookListener(AbstractModel? model)
+    {
+        if (model == null)
+        {
+            return "Listener=<null>";
+        }
+
+        string typeName = model.GetType().FullName ?? model.GetType().Name;
+        string id = SafeModelId(model);
+        return model switch
+        {
+            CardModel card => $"ListenerType={typeName} Id={id} Card={card.Id} Owner={SafePlayerId(card.Owner)} Pile={card.Pile?.Type.ToString() ?? "<none>"} Removed={card.HasBeenRemovedFromState}",
+            EnchantmentModel enchantment => $"ListenerType={typeName} Id={id} Enchantment={enchantment.Id} Card={DescribeCard(enchantment.Card)}",
+            AfflictionModel affliction => $"ListenerType={typeName} Id={id} Affliction={affliction.Id} Card={DescribeCard(affliction.Card)}",
+            PowerModel power => $"ListenerType={typeName} Id={id} Power={power.Id} Owner={DescribeCreature(power.Owner)}",
+            RelicModel relic => $"ListenerType={typeName} Id={id} Relic={relic.Id} Owner={SafePlayerId(relic.Owner)} Removed={relic.HasBeenRemovedFromState}",
+            PotionModel potion => $"ListenerType={typeName} Id={id} Potion={potion.Id} Owner={SafePlayerId(potion.Owner)} Removed={potion.HasBeenRemovedFromState}",
+            OrbModel orb => $"ListenerType={typeName} Id={id} Orb={orb.Id} Owner={SafePlayerId(orb.Owner)} Removed={orb.HasBeenRemovedFromState}",
+            MonsterModel monster => $"ListenerType={typeName} Id={id} Monster={monster.Id} Creature={DescribeCreature(monster.Creature)}",
+            _ => $"ListenerType={typeName} Id={id}",
+        };
+    }
+
+    private static string DescribeCard(CardModel? card)
+    {
+        if (card == null)
+        {
+            return "<null>";
+        }
+
+        return $"{card.Id} Owner={SafePlayerId(card.Owner)} Pile={card.Pile?.Type.ToString() ?? "<none>"} Removed={card.HasBeenRemovedFromState}";
+    }
+
+    private static string DescribeCreature(Creature? creature)
+    {
+        if (creature == null)
+        {
+            return "<null>";
+        }
+
+        return $"{creature.LogName} CombatState={(creature.CombatState == null ? "<null>" : "present")} Player={SafePlayerId(creature.Player)}";
+    }
+
+    private static string SafePlayerId(Player? player)
+    {
+        return player == null ? "<null>" : player.NetId.ToString();
+    }
+
+    private static string SafeModelId(AbstractModel model)
+    {
+        try
+        {
+            return model.Id.ToString();
+        }
+        catch (Exception ex)
+        {
+            return $"<id threw {ex.GetType().Name}>";
         }
     }
 
@@ -444,6 +810,7 @@ internal static partial class MultiEnchantmentSupport
         MegaLabel? label = tab.GetNodeOrNull<MegaLabel>("Label");
         if (icon != null)
         {
+            RestoreEnchantmentIconStyle(icon);
             icon.Texture = visualState.Icon;
         }
 
@@ -454,6 +821,284 @@ internal static partial class MultiEnchantmentSupport
         }
 
         ApplyStatusToTab(tab, icon, label, visualState.Status);
+        ApplyEnchantmentPresentationStyle(tab, icon, visualState.Status, visualState.PresentationStyle);
+    }
+
+    private static Control DuplicateEnchantmentTab(Control source)
+    {
+        RestoreEnchantmentBadgePresentation(source);
+
+        Control tab = (Control)source.Duplicate();
+        tab.UniqueNameInOwner = false;
+        if (tab.Material != null)
+        {
+            tab.Material = (Material)tab.Material.Duplicate();
+        }
+
+        return tab;
+    }
+
+    private static void ApplyEnchantmentPresentationStyle(
+        Control tab,
+        TextureRect? icon,
+        EnchantmentStatus status,
+        EnchantmentPresentationStyle style)
+    {
+        if (!style.ShowBadgeBacking)
+        {
+            HideEnchantmentBadgeBacking(tab);
+            CaptureEnchantmentIconRestoreState(icon);
+            if (icon != null)
+            {
+                // Backing hidden → the vanilla desaturating parent shader is detached, so this path
+                // must dim disabled icons itself (gray fallback).
+                icon.UseParentMaterial = false;
+                icon.SelfModulate = ResolveIconTint(status, style, shaderHandlesDimming: false);
+            }
+            ApplyEnchantmentIconPresentation(icon, style);
+            return;
+        }
+
+        RestoreEnchantmentBadgePresentation(tab);
+        ApplyBadgeBackingTexture(tab, style.BadgeBackingTexture);
+        if (icon != null)
+        {
+            // Backing shown → ApplyStatusToTab leaves the parent desaturation shader active for
+            // disabled entries, so only apply an explicit author tint here; a gray fallback would
+            // dim the icon twice.
+            CaptureEnchantmentIconRestoreState(icon);
+            icon.SelfModulate = ResolveIconTint(status, style, shaderHandlesDimming: true);
+        }
+
+        ApplyEnchantmentIconPresentation(icon, style);
+    }
+
+    private static Color ResolveIconTint(EnchantmentStatus status, EnchantmentPresentationStyle style, bool shaderHandlesDimming)
+    {
+        if (status == EnchantmentStatus.Disabled)
+        {
+            Color? explicitTint = style.DisabledIconTint ?? style.IconTint;
+            return explicitTint ?? (shaderHandlesDimming ? Colors.White : StsColors.gray);
+        }
+
+        return style.IconTint ?? Colors.White;
+    }
+
+    private static void ApplyEnchantmentIconPresentation(TextureRect? icon, EnchantmentPresentationStyle style)
+    {
+        if (icon == null)
+        {
+            return;
+        }
+
+        float scale = NormalizeIconScale(style.IconScale);
+        Vector2 offset = style.IconOffset;
+        if (Mathf.IsEqualApprox(scale, 1f) && offset == Vector2.Zero)
+        {
+            return;
+        }
+
+        CaptureEnchantmentIconRestoreState(icon);
+        icon.PivotOffset = icon.Size * 0.5f;
+        icon.Scale *= scale;
+        icon.Position += offset;
+    }
+
+    private static void CaptureEnchantmentIconRestoreState(TextureRect? icon)
+    {
+        if (icon != null)
+        {
+            EnchantmentIconRestoreStates.GetValue(icon, static key => new EnchantmentIconRestoreState(key));
+        }
+    }
+
+    private static float NormalizeIconScale(float scale)
+    {
+        return scale <= 0f || float.IsNaN(scale) || float.IsInfinity(scale)
+            ? 1f
+            : scale;
+    }
+
+    private static void RestoreEnchantmentIconStyle(TextureRect icon)
+    {
+        if (EnchantmentIconRestoreStates.TryGetValue(icon, out EnchantmentIconRestoreState? state))
+        {
+            state.Restore(icon);
+            EnchantmentIconRestoreStates.Remove(icon);
+        }
+    }
+
+    private static void RestoreEnchantmentBadgePresentation(Control tab)
+    {
+        if (tab.GetNodeOrNull<TextureRect>("Icon") is { } icon)
+        {
+            RestoreEnchantmentIconStyle(icon);
+        }
+
+        RestoreBadgeBackingNode(tab);
+        SetBadgeBackingVisible(tab, visible: true);
+    }
+
+    private static void HideEnchantmentBadgeBacking(Control tab)
+    {
+        ClearBadgeBackingTexture(tab);
+        SetBadgeBackingVisible(tab, visible: false);
+    }
+
+    private static void ApplyBadgeBackingTexture(Control tab, Texture2D? texture)
+    {
+        if (texture == null)
+        {
+            return;
+        }
+
+        if (TryApplyBadgeBackingTexture(tab, texture))
+        {
+            return;
+        }
+
+        foreach (Node child in tab.GetChildren())
+        {
+            if (TryApplyBadgeBackingTexture(child, texture))
+            {
+                return;
+            }
+        }
+    }
+
+    private static bool TryApplyBadgeBackingTexture(Node node, Texture2D texture)
+    {
+        if (IsBadgeForegroundNode(node))
+        {
+            return false;
+        }
+
+        if (node is TextureRect textureRect)
+        {
+            EnchantmentBadgeRestoreStates.GetValue(textureRect, static key => new EnchantmentBadgeRestoreState(key));
+            textureRect.Texture = texture;
+            textureRect.SelfModulate = Colors.White;
+            textureRect.Visible = true;
+            return true;
+        }
+
+        if (node is NinePatchRect ninePatchRect)
+        {
+            EnchantmentBadgeRestoreStates.GetValue(ninePatchRect, static key => new EnchantmentBadgeRestoreState(key));
+            ninePatchRect.Texture = texture;
+            ninePatchRect.SelfModulate = Colors.White;
+            ninePatchRect.Visible = true;
+            return true;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (TryApplyBadgeBackingTexture(child, texture))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void SetBadgeBackingVisible(Node node, bool visible)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (IsBadgeForegroundNode(child))
+            {
+                continue;
+            }
+
+            bool containsForeground = ContainsBadgeForegroundNode(child);
+            if (visible)
+            {
+                RestoreBadgeBackingNode(child);
+            }
+            else if (child is CanvasItem canvasItem)
+            {
+                if (child is Control control)
+                {
+                    ClearBadgeBackingTexture(control);
+                }
+
+                if (!containsForeground)
+                {
+                    HideBadgeBackingNode(canvasItem);
+                }
+            }
+
+            SetBadgeBackingVisible(child, visible);
+        }
+    }
+
+    private static bool IsBadgeForegroundNode(Node node)
+    {
+        string name = node.Name.ToString();
+        return string.Equals(name, "Icon", StringComparison.Ordinal) ||
+               string.Equals(name, "Label", StringComparison.Ordinal);
+    }
+
+    private static bool ContainsBadgeForegroundNode(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (IsBadgeForegroundNode(child) || ContainsBadgeForegroundNode(child))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ClearBadgeBackingTexture(Control node)
+    {
+        EnchantmentBadgeRestoreStates.GetValue(node, static key => new EnchantmentBadgeRestoreState(key));
+
+        if (node is TextureRect textureRect)
+        {
+            textureRect.Texture = null;
+        }
+
+        if (node is NinePatchRect ninePatchRect)
+        {
+            ninePatchRect.Texture = null;
+        }
+
+        node.SelfModulate = Colors.Transparent;
+    }
+
+    private static void HideBadgeBackingNode(CanvasItem node)
+    {
+        if (!node.HasMeta(EnchantmentBadgeHiddenMeta))
+        {
+            node.SetMeta(EnchantmentBadgeHiddenMeta, true);
+            node.SetMeta(EnchantmentBadgeHiddenVisibleMeta, node.Visible);
+        }
+
+        node.Visible = false;
+    }
+
+    private static void RestoreBadgeBackingNode(Node node)
+    {
+        if (node is Control control &&
+            EnchantmentBadgeRestoreStates.TryGetValue(control, out EnchantmentBadgeRestoreState? state))
+        {
+            state.Restore(control);
+            EnchantmentBadgeRestoreStates.Remove(control);
+        }
+
+        if (node is CanvasItem canvasItem && canvasItem.HasMeta(EnchantmentBadgeHiddenMeta))
+        {
+            bool wasVisible = canvasItem.HasMeta(EnchantmentBadgeHiddenVisibleMeta)
+                ? canvasItem.GetMeta(EnchantmentBadgeHiddenVisibleMeta).AsBool()
+                : true;
+            canvasItem.Visible = wasVisible;
+            canvasItem.RemoveMeta(EnchantmentBadgeHiddenVisibleMeta);
+            canvasItem.RemoveMeta(EnchantmentBadgeHiddenMeta);
+        }
     }
 
     private static List<EnchantmentSlotLayout> BuildEnchantmentSlotLayouts(
@@ -531,6 +1176,7 @@ internal static partial class MultiEnchantmentSupport
             bool shouldShow = i < expectedExtraTabCount;
             if (!shouldShow)
             {
+                RestoreEnchantmentBadgePresentation(tab);
                 tab.Visible = false;
                 continue;
             }
@@ -693,6 +1339,11 @@ internal static partial class MultiEnchantmentSupport
             return true;
         }
 
+        if (HasDisplayOnlyExtraIconVisuals(model))
+        {
+            return true;
+        }
+
         EnchantmentModel? primary = model.Enchantment;
         return primary != null && MultiEnchantmentStackSupport.GetVisualStackCount(primary) > 1;
     }
@@ -730,6 +1381,17 @@ internal static partial class MultiEnchantmentSupport
         hash.Add(visualState.DisplayAmount);
         hash.Add(visualState.ShowAmount);
         hash.Add((int)visualState.Status);
+        hash.Add(visualState.PresentationStyle.ShowBadgeBacking);
+        hash.Add(visualState.PresentationStyle.PreserveExtraTextBbCode);
+        hash.Add(NormalizeIconScale(visualState.PresentationStyle.IconScale));
+        hash.Add(visualState.PresentationStyle.IconOffset);
+        hash.Add(visualState.PresentationStyle.IconTint);
+        hash.Add(visualState.PresentationStyle.DisabledIconTint);
+        hash.Add(visualState.PresentationStyle.BadgeBackingTexture);
+        hash.Add(visualState.PresentationStyle.BadgeBackingTexture?.ResourcePath);
+        hash.Add(visualState.PresentationStyle.HideWhenDisabled);
+        hash.Add(visualState.PresentationStyle.DisplayPriority);
+        hash.Add(visualState.IsDisplayOnly);
     }
 
     private static void ClearNamedChildren(Node parent, string prefix)

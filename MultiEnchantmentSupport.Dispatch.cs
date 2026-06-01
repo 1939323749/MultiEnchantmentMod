@@ -39,7 +39,9 @@ internal static partial class MultiEnchantmentSupport
         // Base-game source: CardModel.OnPlayWrapper.
         // Extra enchantments must execute in the same phase as the primary enchantment's OnPlay so
         // cards/relics/powers observing AfterCardPlayed see the post-OnPlay state consistently.
-        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(cardPlay.Card).ToList())
+        foreach (EnchantmentModel enchantment in GetAdditionalEnchantments(cardPlay.Card)
+                     .Where(IsGameplayEnchantment)
+                     .ToList())
         {
             if (!MultiEnchantmentScopeSupport.IsActive(cardPlay.Card, enchantment))
             {
@@ -267,7 +269,7 @@ internal static partial class MultiEnchantmentSupport
             }
 
             mirroredGoopy = (Goopy)model.ToMutable();
-            AttachEnchantmentState(deckVersion, mirroredGoopy, 1, modifyCard: true, triggerChanged: false);
+            AttachEnchantmentState(choiceContext: null, deckVersion, mirroredGoopy, 1, modifyCard: true, triggerChanged: false);
         }
 
         mirroredGoopy.Amount = goopy.Amount;

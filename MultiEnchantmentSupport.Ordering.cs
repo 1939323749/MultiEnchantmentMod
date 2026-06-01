@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -45,18 +46,46 @@ internal static partial class MultiEnchantmentSupport
         }
 
         if (CardStates.TryGetValue(card, out CardEnchantmentState? state) &&
-            state.LastAppliedEnchantment?.Card == card)
+            state.LastAppliedEnchantment?.Card == card &&
+            IsGameplayEnchantment(state.LastAppliedEnchantment))
         {
             return state.LastAppliedEnchantment;
         }
 
-        IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(card);
+        List<EnchantmentModel> extras = GetAdditionalEnchantments(card)
+            .Where(IsGameplayEnchantment)
+            .ToList();
         if (extras.Count > 0)
         {
             return extras[^1];
         }
 
-        return card.Enchantment;
+        return card.Enchantment != null && IsGameplayEnchantment(card.Enchantment)
+            ? card.Enchantment
+            : null;
+    }
+
+    /// <summary>
+    /// Returns the enchantment most recently applied to <paramref name="card"/> during the current
+    /// player turn, or <c>null</c> when nothing has been applied since the turn started. Unlike
+    /// <see cref="GetMostRecentlyAppliedEnchantment"/> this does NOT fall back to existing
+    /// enchantments — it is purely "what did I inject this turn".
+    /// </summary>
+    public static EnchantmentModel? GetMostRecentlyAppliedEnchantmentThisTurn(CardModel? card)
+    {
+        if (card == null)
+        {
+            return null;
+        }
+
+        if (CardStates.TryGetValue(card, out CardEnchantmentState? state) &&
+            state.LastAppliedEnchantmentThisTurn?.Card == card &&
+            IsGameplayEnchantment(state.LastAppliedEnchantmentThisTurn))
+        {
+            return state.LastAppliedEnchantmentThisTurn;
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<ModelId> GetApplicationOrder(CardModel? card)
@@ -120,7 +149,7 @@ internal static partial class MultiEnchantmentSupport
         List<EnchantmentModel> ordered = new();
         HashSet<EnchantmentModel> seen = new(ReferenceEqualityComparer.Instance);
         Dictionary<ModelId, Queue<EnchantmentModel>> byId = new();
-        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card))
         {
             if (!byId.TryGetValue(enchantment.Id, out Queue<EnchantmentModel>? queue))
             {
@@ -145,7 +174,7 @@ internal static partial class MultiEnchantmentSupport
             }
         }
 
-        foreach (EnchantmentModel enchantment in GetEnchantments(card).Reverse())
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card).Reverse())
         {
             if (seen.Add(enchantment))
             {
@@ -227,7 +256,7 @@ internal static partial class MultiEnchantmentSupport
         CardEnchantmentState state = CardStates.GetOrCreateValue(card);
         state.ApplicationOrder.Clear();
         state.ApplicationOrder.AddRange(
-            GetEnchantments(card)
+            GetGameplayEnchantments(card)
                 .SelectMany(static enchantment =>
                     Enumerable.Repeat(enchantment.Id, MultiEnchantmentStackSupport.GetVisualStackCount(enchantment))));
     }
@@ -240,9 +269,16 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
+        // ApplicationOrder is the gameplay replay order (RebuildApplicationOrder / SeedMissing are
+        // gameplay-only), so never carry marker ids across — they have no gameplay order and would be
+        // stripped on the next rebuild anyway, leaving clone and rebuild paths inconsistent.
+        HashSet<ModelId> gameplayIds = GetGameplayEnchantments(source)
+            .Select(static enchantment => enchantment.Id)
+            .ToHashSet();
+
         CardEnchantmentState targetState = CardStates.GetOrCreateValue(target);
         targetState.ApplicationOrder.Clear();
-        targetState.ApplicationOrder.AddRange(sourceState.ApplicationOrder);
+        targetState.ApplicationOrder.AddRange(sourceState.ApplicationOrder.Where(gameplayIds.Contains));
     }
 
     private static void CopyScopeState(
@@ -270,7 +306,8 @@ internal static partial class MultiEnchantmentSupport
             state.ApplicationOrder.Count == 0 &&
             state.ScopeStates.Count == 0 &&
             state.PendingRemovals.Count == 0 &&
-            state.LastAppliedEnchantment == null)
+            state.LastAppliedEnchantment == null &&
+            state.LastAppliedEnchantmentThisTurn == null)
         {
             CardStates.Remove(card);
         }
@@ -305,7 +342,7 @@ internal static partial class MultiEnchantmentSupport
     {
         List<OrderedEnchantmentEntry> entries = new();
         HashSet<Type> handledMergedTypes = new();
-        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card))
         {
             if (MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType()) == EnchantmentStackBehavior.MergeAmount)
             {
@@ -339,7 +376,7 @@ internal static partial class MultiEnchantmentSupport
     {
         List<OrderedDynamicVarEnchantmentEntry> entries = new();
         HashSet<Type> handledTypes = new();
-        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        foreach (EnchantmentModel enchantment in GetGameplayEnchantments(card))
         {
             Type enchantmentType = enchantment.GetType();
             if (!handledTypes.Add(enchantmentType))
@@ -397,12 +434,142 @@ internal static partial class MultiEnchantmentSupport
                         ResolveVisualSliceIcon(enchantment, snapshot, customVisualSlice),
                         GetDisplayAmount(enchantment, slice.Amount),
                         enchantment.ShowAmount,
-                        slice.Status)));
+                        slice.Status,
+                        EnchantmentRegistry.GetPresentationStyle(enchantment.GetType()))));
                 sliceIndex++;
             }
         }
 
+        AddDisplayOnlyExtraIconEntries(card, entries, handledTypes);
         return entries;
+    }
+
+    private static void AddDisplayOnlyExtraIconEntries(
+        CardModel? card,
+        List<OrderedVisualEntry> entries,
+        HashSet<Type> handledTypes)
+    {
+        if (card == null || !ExtraIconDisplayRegistry.HasProviders)
+        {
+            return;
+        }
+
+        foreach ((ExtraIconDisplay display, Texture2D icon, EnchantmentStatus status, _) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
+        {
+            entries.Add(new OrderedVisualEntry(
+                CreateDisplayOnlyVisualId(display.EnchantmentType),
+                new EnchantmentVisualState(
+                    icon,
+                    display.Amount,
+                    display.ShowAmount,
+                    status,
+                    display.PresentationStyle ?? EnchantmentRegistry.GetPresentationStyle(display.EnchantmentType),
+                    IsDisplayOnly: true)));
+        }
+    }
+
+    // Shared resolution for "which display-only markers are currently showing on this card", reused
+    // by visual-entry building and by card hover-tip aggregation so both honor the exact same
+    // ShouldDisplay predicate, live-enchantment suppression, and icon-source resolution. Mutates
+    // <paramref name="handledTypes"/> just like the visual path (claims the type unless the display
+    // opts into ShowWithLiveEnchantment).
+    private static IEnumerable<(ExtraIconDisplay Display, Texture2D Icon, EnchantmentStatus Status, EnchantmentModel? Source)> EnumerateShowingDisplayOnlyMarkers(
+        CardModel card,
+        HashSet<Type> handledTypes)
+    {
+        IReadOnlyList<ExtraIconDisplay> displays = ExtraIconDisplayRegistry.GetDisplays(card);
+        if (displays.Count == 0)
+        {
+            yield break;
+        }
+
+        bool isCombatCard = card.CombatState != null;
+        bool isPreviewCard = card.IsEnchantmentPreview;
+        foreach (ExtraIconDisplay display in displays)
+        {
+            Type enchantmentType = display.EnchantmentType;
+            if (display.ShouldDisplay != null)
+            {
+                bool shouldDisplay;
+                try
+                {
+                    bool hasLiveEnchantment = GetEnchantments(card).Any(enchantment => enchantment.GetType() == enchantmentType);
+                    ExtraIconDisplayContext context = new(card, hasLiveEnchantment, isCombatCard, isPreviewCard);
+                    shouldDisplay = display.ShouldDisplay(context);
+                }
+                catch (Exception ex)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        $"[MultiEnchantment] Extra-icon display predicate failed for {enchantmentType.FullName}: {ex}");
+                    continue;
+                }
+
+                if (!shouldDisplay)
+                {
+                    continue;
+                }
+            }
+
+            // By default suppress the marker when a live instance (or earlier marker) of this type
+            // already claimed a slot; ShowWithLiveEnchantment opts out so the marker coexists with
+            // the live badge instead of being dropped.
+            if (!display.ShowWithLiveEnchantment && !handledTypes.Add(enchantmentType))
+            {
+                continue;
+            }
+
+            // Icon priority: an explicit ExtraIconDisplay.Icon wins (the only way to use arbitrary
+            // art, since EnchantmentModel.Icon is non-virtual); then a supplied Enchantment's icon;
+            // then the type's canonical model icon (resolved from ModelDb — never constructed).
+            EnchantmentModel? iconSource = display.Enchantment ?? TryResolveDefaultEnchantment(enchantmentType);
+            Texture2D? icon = display.Icon ?? iconSource?.Icon;
+            if (icon == null)
+            {
+                LogDisplayOnlyExtraIconFailure(enchantmentType,
+                    "no icon resolved — set ExtraIconDisplay.Icon to a texture, supply ExtraIconDisplay.Enchantment, " +
+                    "or ship a texture at the model's icon path (EnchantmentModel.Icon is non-virtual and cannot be overridden).");
+                continue;
+            }
+
+            EnchantmentStatus status = iconSource?.Status ?? EnchantmentStatus.Normal;
+            yield return (display, icon, status, iconSource);
+        }
+    }
+
+    // Hover tips for the display-only markers currently shown on a card. Vanilla surfaces enchantment
+    // hover info at the card level (CardModel.HoverTips aggregates Enchantment.HoverTips), and the
+    // mod already extends that to stored extra enchantments — but a provider marker is not a stored
+    // enchantment, so without this its icon has no explanation. Markers suppressed by a live
+    // enchantment of the same type contribute nothing (that enchantment already surfaces its tips),
+    // avoiding duplicates.
+    internal static IEnumerable<IHoverTip> GetDisplayOnlyMarkerHoverTips(CardModel? card)
+    {
+        if (card == null || !ExtraIconDisplayRegistry.HasProviders)
+        {
+            return Array.Empty<IHoverTip>();
+        }
+
+        HashSet<Type> handledTypes = new();
+        foreach (EnchantmentModel live in GetEnchantments(card))
+        {
+            handledTypes.Add(live.GetType());
+        }
+
+        List<IHoverTip>? tips = null;
+        foreach ((ExtraIconDisplay _, Texture2D _, EnchantmentStatus _, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
+        {
+            if (source == null)
+            {
+                continue;
+            }
+
+            foreach (IHoverTip tip in source.HoverTips)
+            {
+                (tips ??= new List<IHoverTip>()).Add(tip);
+            }
+        }
+
+        return (IEnumerable<IHoverTip>?)tips ?? Array.Empty<IHoverTip>();
     }
 
     private static Texture2D ResolveVisualSliceIcon(
@@ -454,17 +621,17 @@ internal static partial class MultiEnchantmentSupport
     {
         try
         {
-            if (Activator.CreateInstance(iconType) is not EnchantmentModel defaultInstance)
+            if (ResolveCanonicalEnchantment(iconType) is not { } defaultInstance)
             {
                 defaultIcon = null!;
-                failureReason = "Activator.CreateInstance returned null.";
+                failureReason = "ModelDb has no canonical model for this type.";
                 return false;
             }
 
             if (defaultInstance.Icon == null)
             {
                 defaultIcon = null!;
-                failureReason = "Constructed enchantment did not provide a default icon.";
+                failureReason = "the resolved model's Icon is null.";
                 return false;
             }
 
@@ -498,10 +665,91 @@ internal static partial class MultiEnchantmentSupport
 
     private static List<OrderedVisualEntry> GetOrderedVisualEntries(CardModel? card)
     {
-        return OrderEntries(
-            card,
-            GetDefaultOrderedVisualEntries(card),
-            static entry => entry.EnchantmentId);
+        List<OrderedVisualEntry> defaultEntries = GetDefaultOrderedVisualEntries(card);
+        List<OrderedVisualEntry> displayOnlyEntries = defaultEntries
+            .Where(static entry => entry.VisualState.IsDisplayOnly)
+            .ToList();
+        List<OrderedVisualEntry> orderedEntries;
+        if (displayOnlyEntries.Count > 0)
+        {
+            List<OrderedVisualEntry> liveEntries = defaultEntries
+                .Where(static entry => !entry.VisualState.IsDisplayOnly)
+                .ToList();
+            orderedEntries = OrderEntries(card, liveEntries, static entry => entry.EnchantmentId);
+            orderedEntries.AddRange(displayOnlyEntries);
+        }
+        else
+        {
+            orderedEntries = OrderEntries(
+                card,
+                defaultEntries,
+                static entry => entry.EnchantmentId);
+        }
+
+        return orderedEntries
+            .Where(static entry => entry.VisualState.Status != EnchantmentStatus.Disabled ||
+                                   !entry.VisualState.PresentationStyle.HideWhenDisabled)
+            .Select(static (entry, index) => (entry, index))
+            .OrderByDescending(static item => item.entry.VisualState.PresentationStyle.DisplayPriority)
+            .ThenBy(static item => item.index)
+            .Select(static item => item.entry)
+            .ToList();
+    }
+
+    private static bool HasDisplayOnlyExtraIconVisuals(CardModel? card)
+    {
+        return card != null &&
+               ExtraIconDisplayRegistry.HasProviders &&
+               GetOrderedVisualEntries(card).Any(static entry => entry.VisualState.IsDisplayOnly);
+    }
+
+    // A display-only marker's icon source is read-only here (we only sample Icon / ShowAmount /
+    // Status, all constant per type), so cache the resolved model instead of looking it up on every
+    // UI refresh. Caching null on failure also collapses the failure log to a single line.
+    private static readonly ConcurrentDictionary<Type, EnchantmentModel?> DefaultEnchantmentCache = new();
+
+    private static EnchantmentModel? TryResolveDefaultEnchantment(Type enchantmentType)
+    {
+        return DefaultEnchantmentCache.GetOrAdd(enchantmentType, static type =>
+        {
+            try
+            {
+                return ResolveCanonicalEnchantment(type);
+            }
+            catch (Exception ex)
+            {
+                LogDisplayOnlyExtraIconFailure(type, ex.ToString());
+                return null;
+            }
+        });
+    }
+
+    // EnchantmentModel instances are canonical singletons owned by ModelDb — constructing one
+    // (Activator / `new`) throws DuplicateModelException ("Don't call constructors on models! Use
+    // ModelDb instead."). Fetch the registered instance by type and read its icon from that.
+    private static EnchantmentModel? ResolveCanonicalEnchantment(Type enchantmentType)
+    {
+        ModelId modelId = ModelDb.GetId(enchantmentType);
+        return ModelDb.GetById<EnchantmentModel>(modelId);
+    }
+
+    private static ModelId CreateDisplayOnlyVisualId(Type enchantmentType)
+    {
+        return new ModelId(
+            "multi_enchantment_extra_icon",
+            enchantmentType.AssemblyQualifiedName ?? enchantmentType.FullName ?? enchantmentType.Name);
+    }
+
+    private static void LogDisplayOnlyExtraIconFailure(Type enchantmentType, string reason)
+    {
+        if (!VisualSliceIconResolutionWarnings.TryAdd((typeof(ExtraIconDisplay), enchantmentType), 0))
+        {
+            return;
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] Failed to create display-only extra icon for {enchantmentType.FullName ?? enchantmentType.Name}. " +
+            $"Error: {reason}");
     }
 
     private static List<TEntry> OrderEntries<TEntry>(
@@ -515,11 +763,18 @@ internal static partial class MultiEnchantmentSupport
         }
 
         IReadOnlyList<ModelId> order = GetApplicationOrder(card);
-        if (order.Count == 0 || order.Count != defaultEntries.Count)
+        if (order.Count == 0)
         {
             return defaultEntries;
         }
 
+        // Stable partial reorder. ApplicationOrder is the gameplay replay order, but the visual
+        // entry set also contains marker entries that never enter that order. Rather than fall back
+        // to the default order whenever the two sets differ (which would silently drop custom
+        // ordering for every card carrying a marker), emit entries in ApplicationOrder first, then
+        // append any entry whose id is absent from the order in its original relative position.
+        // Stale order ids with no matching entry are skipped. Nothing is dropped or duplicated, and
+        // when the order matches the entry set exactly the result equals a full reorder.
         Dictionary<ModelId, Queue<TEntry>> entriesById = new();
         foreach (TEntry entry in defaultEntries)
         {
@@ -533,21 +788,27 @@ internal static partial class MultiEnchantmentSupport
             queue.Enqueue(entry);
         }
 
-        List<TEntry> orderedEntries = new(order.Count);
+        List<TEntry> orderedEntries = new(defaultEntries.Count);
         foreach (ModelId enchantmentId in order)
         {
-            if (!entriesById.TryGetValue(enchantmentId, out Queue<TEntry>? queue) ||
-                queue.Count == 0)
+            if (entriesById.TryGetValue(enchantmentId, out Queue<TEntry>? queue) && queue.Count > 0)
             {
-                return defaultEntries;
+                orderedEntries.Add(queue.Dequeue());
             }
-
-            orderedEntries.Add(queue.Dequeue());
         }
 
-        return entriesById.Values.Any(static queue => queue.Count > 0)
-            ? defaultEntries
-            : orderedEntries;
+        // Entries the order did not position (markers, or anything missing from a stale order)
+        // follow in their original relative sequence.
+        foreach (TEntry entry in defaultEntries)
+        {
+            Queue<TEntry> queue = entriesById[idSelector(entry)];
+            if (queue.Count > 0)
+            {
+                orderedEntries.Add(queue.Dequeue());
+            }
+        }
+
+        return orderedEntries;
     }
 
     private static int GetDisplayAmount(OrderedEnchantmentEntry entry)

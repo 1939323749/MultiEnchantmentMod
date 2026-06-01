@@ -142,7 +142,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             EnsureScopeState(card, enchantment);
             InvokeLifecycle(card, enchantment, static entry => entry.OnRestored != null, static (entry, owner, model) => entry.RunOnRestored(owner, model));
@@ -241,7 +241,7 @@ internal static class MultiEnchantmentScopeSupport
 
     private static void ResetCombatScopeStateForCard(CardModel card)
     {
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             ScopeRuntimeState state = EnsureScopeState(card, enchantment);
             state.ActivationCount = 0;
@@ -254,7 +254,7 @@ internal static class MultiEnchantmentScopeSupport
 
     private static void FireOnCombatStartCallbackForCard(CardModel card)
     {
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             EnsureScopeState(card, enchantment);
             InvokeLifecycle(card, enchantment, static entry => entry.OnCombatStart != null, static (entry, owner, model) => entry.RunOnCombatStart(owner, model));
@@ -316,7 +316,12 @@ internal static class MultiEnchantmentScopeSupport
         // Dispatch* methods below — see DispatchOnCardPlayedForCard etc.
         foreach (CardModel card in (player.PlayerCombatState?.AllCards ?? Enumerable.Empty<CardModel>()).ToList())
         {
-            List<EnchantmentModel> enchantments = MultiEnchantmentSupport.GetEnchantments(card).ToList();
+            // Clear the per-turn "last injected" pointer before the enchantment-count gate: a card
+            // injected last turn may carry no live enchantments now but still needs its turn-scoped
+            // marker reset so GetMostRecentlyAppliedEnchantmentThisTurn doesn't report stale data.
+            MultiEnchantmentSupport.ResetLastAppliedEnchantmentThisTurn(card);
+
+            List<EnchantmentModel> enchantments = MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList();
             if (enchantments.Count == 0)
             {
                 continue;
@@ -420,7 +425,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             NoteActivation(enchantment, trigger);
         }
@@ -463,7 +468,7 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             if (!IsActive(card, enchantment))
             {
@@ -555,7 +560,7 @@ internal static class MultiEnchantmentScopeSupport
             foreach (CardModel selfCard in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
                 bool anyEnchantments = false;
-                foreach (EnchantmentModel ench in MultiEnchantmentSupport.GetEnchantments(selfCard).ToList())
+                foreach (EnchantmentModel ench in MultiEnchantmentSupport.GetGameplayEnchantments(selfCard).ToList())
                 {
                     anyEnchantments = true;
                     if (!IsActive(selfCard, ench)) continue;
@@ -580,7 +585,7 @@ internal static class MultiEnchantmentScopeSupport
     /// </summary>
     internal static void DispatchOnSiblingApplied(CardModel card, EnchantmentModel newcomer)
     {
-        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             if (ReferenceEquals(sibling, newcomer)) continue;
             if (!IsActive(card, sibling)) continue;
@@ -594,6 +599,14 @@ internal static class MultiEnchantmentScopeSupport
         RefreshAfterUserCallbacks(card);
     }
 
+    internal static Task DispatchAfterSiblingAppliedStacked(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel newcomer)
+    {
+        return MultiEnchantmentSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, newcomer);
+    }
+
     /// <summary>
     /// Fires <c>OnSiblingRemoved(card, self, leaving, reason)</c> on every active enchantment
     /// on <paramref name="card"/> (except <paramref name="leaving"/> itself). Called from
@@ -602,7 +615,7 @@ internal static class MultiEnchantmentScopeSupport
     /// </summary>
     internal static void DispatchOnSiblingRemoved(CardModel card, EnchantmentModel leaving, RemovalReason reason)
     {
-        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             if (ReferenceEquals(sibling, leaving)) continue;
             if (!IsActive(card, sibling)) continue;
@@ -633,7 +646,7 @@ internal static class MultiEnchantmentScopeSupport
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
             bool anyEnchantments = false;
-            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
                 anyEnchantments = true;
                 if (!IsActive(card, enchantment))
@@ -669,7 +682,7 @@ internal static class MultiEnchantmentScopeSupport
             foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
                 bool anyEnchantments = false;
-                foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+                foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
                 {
                     anyEnchantments = true;
                     if (!IsActive(card, enchantment))
@@ -722,7 +735,7 @@ internal static class MultiEnchantmentScopeSupport
         // Sync active-status predicates before dispatching and gating on IsActive.
         RefreshActiveStatuses(card);
 
-        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             if (!IsActive(card, enchantment)) continue;
             InvokeLifecycleWithContext(card, enchantment, (oldPile, source),
@@ -753,7 +766,7 @@ internal static class MultiEnchantmentScopeSupport
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
             bool anyEnchantments = false;
-            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
                 anyEnchantments = true;
                 if (!IsActive(card, enchantment))
@@ -778,7 +791,7 @@ internal static class MultiEnchantmentScopeSupport
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
             bool anyEnchantments = false;
-            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
                 anyEnchantments = true;
                 if (!IsActive(card, enchantment))
@@ -812,7 +825,7 @@ internal static class MultiEnchantmentScopeSupport
         bool shouldDie = true;
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
-            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
+            foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
                 if (!IsActive(card, enchantment))
                 {
@@ -929,7 +942,11 @@ internal static class MultiEnchantmentScopeSupport
     }
 
     /// <summary>
-    /// Evaluates active-status predicates for every enchantment on <paramref name="card"/>.
+    /// Evaluates active-status predicates for every enchantment on <paramref name="card"/>, including
+    /// extra-icon markers. This is a <em>visual</em> status sync (it only flips <c>Status</c> for a
+    /// type that registered a <c>WhenActive</c>/<c>ShouldBeActive</c> predicate, which in turn drives
+    /// <see cref="EnchantmentPresentationStyle.HideWhenDisabled"/>) — not a gameplay lifecycle hook —
+    /// so markers must participate or a registered marker's HideWhenDisabled would never fire.
     /// </summary>
     internal static void RefreshActiveStatuses(CardModel card)
     {

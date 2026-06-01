@@ -41,6 +41,12 @@ internal static partial class MultiEnchantmentSupport
         public Dictionary<EnchantmentModel, ScopeRuntimeState> ScopeStates { get; } = new(ReferenceEqualityComparer.Instance);
         public List<PendingRemovalEntry> PendingRemovals { get; } = new();
         public EnchantmentModel? LastAppliedEnchantment { get; set; }
+
+        // Turn-scoped mirror of <see cref="LastAppliedEnchantment"/>. Reset at the start of every
+        // player turn (see MultiEnchantmentScopeSupport.OnPlayerTurnStarted) so downstream cards can
+        // answer "the enchantment I last injected *this turn*". Transient — never persisted to the
+        // save sidecar.
+        public EnchantmentModel? LastAppliedEnchantmentThisTurn { get; set; }
     }
 
     private sealed class CardUiState
@@ -52,6 +58,74 @@ internal static partial class MultiEnchantmentSupport
         public int LastExpectedExtraTabCount { get; set; }
     }
 
+    private sealed class EnchantmentBadgeRestoreState
+    {
+        public EnchantmentBadgeRestoreState(Control tab)
+        {
+            SelfModulate = tab.SelfModulate;
+
+            if (tab is TextureRect textureRect)
+            {
+                HasTextureRectTexture = true;
+                TextureRectTexture = textureRect.Texture;
+            }
+
+            if (tab is NinePatchRect ninePatchRect)
+            {
+                HasNinePatchTexture = true;
+                NinePatchTexture = ninePatchRect.Texture;
+            }
+        }
+
+        public bool HasTextureRectTexture { get; }
+        public Texture2D? TextureRectTexture { get; }
+        public bool HasNinePatchTexture { get; }
+        public Texture2D? NinePatchTexture { get; }
+        public Color SelfModulate { get; }
+
+        public void Restore(Control tab)
+        {
+            tab.SelfModulate = SelfModulate;
+
+            if (HasTextureRectTexture && tab is TextureRect textureRect)
+            {
+                textureRect.Texture = TextureRectTexture;
+            }
+
+            if (HasNinePatchTexture && tab is NinePatchRect ninePatchRect)
+            {
+                ninePatchRect.Texture = NinePatchTexture;
+            }
+        }
+    }
+
+    private sealed class EnchantmentIconRestoreState
+    {
+        public EnchantmentIconRestoreState(TextureRect icon)
+        {
+            Position = icon.Position;
+            Scale = icon.Scale;
+            PivotOffset = icon.PivotOffset;
+            SelfModulate = icon.SelfModulate;
+            UseParentMaterial = icon.UseParentMaterial;
+        }
+
+        public Vector2 Position { get; }
+        public Vector2 Scale { get; }
+        public Vector2 PivotOffset { get; }
+        public Color SelfModulate { get; }
+        public bool UseParentMaterial { get; }
+
+        public void Restore(TextureRect icon)
+        {
+            icon.Position = Position;
+            icon.Scale = Scale;
+            icon.PivotOffset = PivotOffset;
+            icon.SelfModulate = SelfModulate;
+            icon.UseParentMaterial = UseParentMaterial;
+        }
+    }
+
     private sealed class EnchantmentVfxSnapshotState
     {
         public List<EnchantmentVisualState> VisualStates { get; set; } = new();
@@ -61,7 +135,9 @@ internal static partial class MultiEnchantmentSupport
         Texture2D Icon,
         int DisplayAmount,
         bool ShowAmount,
-        EnchantmentStatus Status);
+        EnchantmentStatus Status,
+        EnchantmentPresentationStyle PresentationStyle,
+        bool IsDisplayOnly = false);
 
     private readonly record struct EnchantmentSlotLayout(
         Vector2 Position,
