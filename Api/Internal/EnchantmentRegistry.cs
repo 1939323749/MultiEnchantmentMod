@@ -611,17 +611,22 @@ internal static class EnchantmentRegistry
 
     internal static bool DeclaresSavedProperties(Type enchantmentType)
     {
-        foreach (PropertyInfo property in enchantmentType.GetProperties(
-                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |
-                     BindingFlags.DeclaredOnly))
+        for (Type? current = enchantmentType;
+             current != null && current != typeof(EnchantmentModel);
+             current = current.BaseType)
         {
-            foreach (Attribute attribute in property.GetCustomAttributes(inherit: false))
+            foreach (PropertyInfo property in current.GetProperties(
+                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |
+                         BindingFlags.DeclaredOnly))
             {
-                Type attributeType = attribute.GetType();
-                if (string.Equals(attributeType.Name, "SavedPropertyAttribute", StringComparison.Ordinal) ||
-                    string.Equals(attributeType.FullName, "MegaCrit.Sts2.Core.Saves.SavedPropertyAttribute", StringComparison.Ordinal))
+                foreach (Attribute attribute in property.GetCustomAttributes(inherit: false))
                 {
-                    return true;
+                    Type attributeType = attribute.GetType();
+                    if (string.Equals(attributeType.Name, "SavedPropertyAttribute", StringComparison.Ordinal) ||
+                        string.Equals(attributeType.FullName, "MegaCrit.Sts2.Core.Saves.SavedPropertyAttribute", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
                 }
             }
         }
