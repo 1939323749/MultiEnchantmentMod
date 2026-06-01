@@ -179,11 +179,51 @@ internal static class AssemblyScanner
             // Pick up any assembly that loaded between Initialize and first combat without
             // having called ScanCallingAssembly explicitly. After this we no-op forever.
             EnsureScannedLocked();
+            EnsureAutoRegisteredThirdPartyEnchantmentsLocked();
             _sealed = true;
         }
 
         global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
             "[StackApi] Registry sealed at first BeforeCombatStart. Further Register/ScanAssembly calls will be rejected.");
+    }
+
+    private static void EnsureAutoRegisteredThirdPartyEnchantmentsLocked()
+    {
+        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type[] types;
+            try
+            {
+                types = assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                types = ex.Types.Where(static t => t != null).Cast<Type>().ToArray();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (Type type in types)
+            {
+                if (type.IsAbstract ||
+                    type.IsInterface ||
+                    type.ContainsGenericParameters ||
+                    !typeof(EnchantmentModel).IsAssignableFrom(type))
+                {
+                    continue;
+                }
+
+                string? ns = type.Namespace;
+                if (ns != null && ns.StartsWith("MegaCrit.Sts2", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                EnchantmentRegistry.EnsureRegistered(type);
+            }
+        }
     }
 
     private static int ScanCore(Assembly assembly)
