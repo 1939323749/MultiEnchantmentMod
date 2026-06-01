@@ -133,6 +133,9 @@
 
   "SAMPLE_ALTERNATING_BADGES.title": "Alternating Badges",
   "SAMPLE_ALTERNATING_BADGES.description": "Reference sample (Tier B, per-badge status and icon presentation). Odd rounds light the first badge; even rounds light the second.",
-  "SAMPLE_ALTERNATING_BADGES.extraCardText": "Alternates between two badge states and icons."
+  "SAMPLE_ALTERNATING_BADGES.extraCardText": "Alternates between two badge states and icons.",
+
+  "SAMPLE_LIBRARY_MARKER.title": "Library Marker",
+  "SAMPLE_LIBRARY_MARKER.description": "Reference sample (display-only extra icon). Shows a marker icon from card UI refreshes, including card-library and preview cards without live enchantment instances."
 
 }

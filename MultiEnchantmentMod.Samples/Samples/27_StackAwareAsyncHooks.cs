@@ -17,6 +17,7 @@ namespace MultiEnchantmentMod.Samples;
 //   - one random target decision, or N random decisions chosen explicitly by the author
 //   - reacting to true DamageResult values after damage has resolved
 //   - listening to "any card was drawn" after this card turned the listener on
+//   - reacting immediately when this card is re-enchanted through EnchantAsync / CopyEnchantment
 //
 // The sample stores counters rather than issuing game commands so it remains safe in every test
 // environment. Replace the marked comments with CreatureCmd/CardSelectCmd/PowerCmd calls in a
@@ -29,6 +30,7 @@ public sealed class SampleStackedTactics : EnchantmentModel
     public int PlaysResolved { get; set; }
     public int DrawsObservedThisTurn { get; set; }
     public decimal DamageObservedThisCombat { get; set; }
+    public int ReenchantEventsSeen { get; set; }
 
     public override bool ShowAmount => true;
     public override bool HasExtraCardText => true;
@@ -99,6 +101,21 @@ public sealed class SampleStackedTacticsDefinition : EnchantmentDefinition<Sampl
         return Task.CompletedTask;
     }
 
+    protected override Task AfterSiblingAppliedStacked(StackedAfterSiblingAppliedContext context)
+    {
+        var enchantment = (SampleStackedTactics)context.Snapshot.AnchorInstance;
+        if (context.NewSibling == enchantment)
+        {
+            return Task.CompletedTask;
+        }
+
+        // Re-enchant/trigger-style hook: only pre-existing siblings are notified, so this is a
+        // good place to auto-play or schedule commands when a card gains another enchantment.
+        enchantment.ReenchantEventsSeen += context.Snapshot.ActiveTotalAmount;
+        MultiEnchantmentApi.NotifyPropsChanged(enchantment);
+        return Task.CompletedTask;
+    }
+
     protected override Task BeforeFlushStacked(StackedBeforeFlushContext context)
     {
         var enchantment = (SampleStackedTactics)context.Snapshot.AnchorInstance;
@@ -139,7 +156,7 @@ public sealed class SampleStackedTacticsDefinition : EnchantmentDefinition<Sampl
         _ = defaultText;
         var enchantment = (SampleStackedTactics)snapshot.AnchorInstance;
         formattedText =
-            $"plays={enchantment.PlaysResolved}, drawn={enchantment.DrawsObservedThisTurn}, damage={enchantment.DamageObservedThisCombat}";
+            $"plays={enchantment.PlaysResolved}, reenchant={enchantment.ReenchantEventsSeen}, drawn={enchantment.DrawsObservedThisTurn}, damage={enchantment.DamageObservedThisCombat}";
         return true;
     }
 }

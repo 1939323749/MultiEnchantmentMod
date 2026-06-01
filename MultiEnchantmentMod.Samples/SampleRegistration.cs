@@ -60,6 +60,7 @@ public partial class SampleRegistration : Node
         SampleFlexibleScopeRegistration.Install();
         SampleNumericContributionRegistration.Install();
         SampleHandStatusSharpenRegistration.Install();
-        Logger.Info($"[{ModId}] Installed 11 fluent (Tier C) sample registration(s).");
+        SampleLibraryMarkerRegistration.Install();
+        Logger.Info($"[{ModId}] Installed 12 fluent/display sample registration(s).");
     }
 }

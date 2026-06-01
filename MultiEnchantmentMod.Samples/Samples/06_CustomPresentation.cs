@@ -23,9 +23,14 @@ public sealed class SampleNonlinearEnchantment : EnchantmentModel
     public override bool HasExtraCardText => true;
 }
 
-[EnchantmentPresentation(HasExtraText = true, HasVisualSliceOverride = true)]
+[EnchantmentPresentation(HasExtraText = true, HasPresentationStyle = true, HasVisualSliceOverride = true)]
 public sealed class SampleNonlinearDefinition : EnchantmentDefinition<SampleNonlinearEnchantment>
 {
+    public override EnchantmentPresentationStyle PresentationStyle => new()
+    {
+        PreserveExtraTextBbCode = true,
+    };
+
     protected override bool TryFormatExtraText(
         EnchantmentStackSnapshot snapshot,
         string defaultText,
@@ -69,9 +74,16 @@ public sealed class SampleAlternatingBadges : EnchantmentModel
     public override bool HasExtraCardText => true;
 }
 
-[EnchantmentPresentation(HasVisualSliceOverride = true)]
+[EnchantmentPresentation(HasPresentationStyle = true, HasVisualSliceOverride = true)]
 public sealed class SampleAlternatingBadgesDefinition : EnchantmentDefinition<SampleAlternatingBadges>
 {
+    public override EnchantmentPresentationStyle PresentationStyle => new()
+    {
+        ShowBadgeBacking = false,
+        IconScale = 1.25f,
+        DisplayPriority = 100,
+    };
+
     protected override IReadOnlyList<EnchantmentVisualSlice>? GetVisualSlices(
         EnchantmentStackSnapshot snapshot)
     {
