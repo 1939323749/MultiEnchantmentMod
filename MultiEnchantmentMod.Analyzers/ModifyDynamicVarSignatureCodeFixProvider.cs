@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Simplification;
 
 namespace MultiEnchantmentMod.Analyzers;
 
@@ -62,16 +63,27 @@ public sealed class ModifyDynamicVarSignatureCodeFixProvider : CodeFixProvider
             return document;
         }
 
+        SemanticModel? semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        INamedTypeSymbol? snapshotSymbol = semanticModel?.Compilation.GetTypeByMetadataName(MetadataNames.EnchantmentStackSnapshot);
+        if (snapshotSymbol == null)
+        {
+            return document;
+        }
+
         // Build the correct return type: decimal
         TypeSyntax decimalType = SyntaxFactory.PredefinedType(
             SyntaxFactory.Token(SyntaxKind.DecimalKeyword));
+        TypeSyntax snapshotType = SyntaxFactory.ParseTypeName(
+                snapshotSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat))
+            .WithAdditionalAnnotations(Simplifier.Annotation)
+            .WithTrailingTrivia(SyntaxFactory.Space);
 
         // Build the correct parameter list: (EnchantmentStackSnapshot snapshot, decimal currentValue)
         ParameterListSyntax newParams = SyntaxFactory.ParameterList(
             SyntaxFactory.SeparatedList(new[]
             {
                 SyntaxFactory.Parameter(SyntaxFactory.Identifier("snapshot"))
-                    .WithType(SyntaxFactory.ParseTypeName("EnchantmentStackSnapshot").WithTrailingTrivia(SyntaxFactory.Space)),
+                    .WithType(snapshotType),
                 SyntaxFactory.Parameter(SyntaxFactory.Identifier("currentValue"))
                     .WithType(SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.DecimalKeyword)).WithTrailingTrivia(SyntaxFactory.Space))
             }));
@@ -81,20 +93,6 @@ public sealed class ModifyDynamicVarSignatureCodeFixProvider : CodeFixProvider
             .WithParameterList(newParams);
 
         SyntaxNode newRoot = root.ReplaceNode(methodDecl, newMethod);
-
-        // Ensure the using directive for the snapshot type exists.
-        CompilationUnitSyntax compilationUnit = (CompilationUnitSyntax)newRoot;
-        const string snapshotNamespace = "MultiEnchantmentMod";
-        bool hasUsing = compilationUnit.Usings.Any(u => u.Name?.ToString() == snapshotNamespace);
-        if (!hasUsing)
-        {
-            UsingDirectiveSyntax usingDirective = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName(snapshotNamespace))
-                .NormalizeWhitespace()
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-            compilationUnit = compilationUnit.AddUsings(usingDirective);
-            newRoot = compilationUnit;
-        }
-
         return document.WithSyntaxRoot(newRoot);
     }
 }

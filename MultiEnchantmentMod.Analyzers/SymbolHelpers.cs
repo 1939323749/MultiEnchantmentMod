@@ -122,19 +122,39 @@ internal static class SymbolHelpers
 
     public static bool OverridesAnyPresentationMember(INamedTypeSymbol type)
     {
-        foreach (ISymbol member in type.GetMembers())
+        for (INamedTypeSymbol? current = type; current != null; current = current.BaseType)
         {
-            if (!member.IsOverride)
+            foreach (ISymbol member in current.GetMembers())
             {
-                continue;
-            }
+                if (!member.IsOverride)
+                {
+                    continue;
+                }
 
-            switch (member.Name)
+                switch (member.Name)
+                {
+                    case "get_PresentationStyle":
+                    case "TryFormatExtraText":
+                    case "GetVisualSliceAmounts":
+                    case "GetVisualSlices":
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static bool OverridesMemberInHierarchy(INamedTypeSymbol type, string memberName)
+    {
+        for (INamedTypeSymbol? current = type; current != null; current = current.BaseType)
+        {
+            foreach (ISymbol member in current.GetMembers(memberName))
             {
-                case "TryFormatExtraText":
-                case "GetVisualSliceAmounts":
-                case "GetVisualSlices":
+                if (member is IMethodSymbol { IsOverride: true })
+                {
                     return true;
+                }
             }
         }
 

@@ -57,6 +57,11 @@ public sealed class MissingCompatibilityAttributeCodeFixProvider : CodeFixProvid
         SyntaxNode targetRoot = root;
         foreach (Document doc in document.Project.Documents)
         {
+            if (IsGeneratedDocument(doc))
+            {
+                continue;
+            }
+
             SyntaxNode? docRoot = await doc.GetSyntaxTreeAsync(cancellationToken).ConfigureAwait(false) is { } docTree
                 ? await docTree.GetRootAsync(cancellationToken).ConfigureAwait(false)
                 : null;
@@ -123,5 +128,18 @@ public sealed class MissingCompatibilityAttributeCodeFixProvider : CodeFixProvid
         }
 
         return targetDocument.Project.Solution.WithDocumentSyntaxRoot(targetDocument.Id, compilationUnit);
+    }
+
+    private static bool IsGeneratedDocument(Document document)
+    {
+        if (document.FilePath is not string path || path.Length == 0)
+        {
+            return false;
+        }
+
+        string normalized = path.Replace('\\', '/');
+        return normalized.IndexOf("/obj/", System.StringComparison.OrdinalIgnoreCase) >= 0
+            || normalized.EndsWith(".g.cs", System.StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".generated.cs", System.StringComparison.OrdinalIgnoreCase);
     }
 }

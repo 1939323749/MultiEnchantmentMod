@@ -311,18 +311,16 @@ public sealed class MultiEnchantmentAnalyzer : DiagnosticAnalyzer
             return;
         }
 
-        foreach (ISymbol member in definition.DefinitionType.GetMembers("OnMergedDelta"))
+        if (!SymbolHelpers.OverridesMemberInHierarchy(definition.DefinitionType, "OnMergedDelta"))
         {
-            if (member is IMethodSymbol method && method.IsOverride)
-            {
-                context.ReportDiagnostic(Diagnostic.Create(
-                    Mem012,
-                    SymbolHelpers.GetBestLocation(method),
-                    definition.DefinitionType.Name,
-                    definition.Stack));
-                return;
-            }
+            return;
         }
+
+        context.ReportDiagnostic(Diagnostic.Create(
+            Mem012,
+            SymbolHelpers.GetBestLocation(definition.DefinitionType),
+            definition.DefinitionType.Name,
+            definition.Stack));
     }
 
     private static void AnalyzeModelMismatch(SymbolAnalysisContext context, AnalyzerSymbols symbols, DefinitionInfo definition, INamedTypeSymbol enchantmentType)
