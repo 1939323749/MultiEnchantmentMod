@@ -3,6 +3,10 @@
 > 本文档系统性地记录了 Slay the Spire 2 中所有钩子（Hooks），覆盖卡牌、能力、遗物、战斗、生物、药水、房间等全部游戏系统。  
 > 所有示例名称和效果描述均来自游戏本地化文件（中文）。
 
+> **当前校准：** 本文档已按本仓库当前目标游戏 DLL（0.106.1 系列，2026-05-30 本地安装）复核关键签名。0.106.x 之后，许多 `Hook` 静态方法的战斗状态参数公开为 `ICombatState`；下文示例里的 `CombatState` 若出现在卡牌/生物实例属性上，表示运行时具体状态对象。写 Harmony patch 时必须匹配 `Hook` 的 `ICombatState` 签名。
+
+> **0.106.x 迁移重点：** `Hook.BeforeSideTurnStart` / `Hook.AfterSideTurnStart` 现在带 `IReadOnlyList<Creature> participants`；`Hook.BeforeTurnEnd` / `Hook.AfterTurnEnd` 现在带 `IEnumerable<Creature> participants`，并分发到 `AbstractModel.BeforeSideTurnEnd*` / `AfterSideTurnEnd*`。`EnchantmentModel.EnchantBlockAdditive` / `EnchantBlockMultiplicative` 的 `ValueProp` 参数已移除。
+
 ---
 
 ## 目录
@@ -21,8 +25,8 @@
 9. [数值修改钩子](#9-数值修改钩子) — `ModifyDamage`, `ModifyBlock`, `ModifyEnergyCostInCombat`, `ModifyCardPlayCount`, `ModifyXValue` 等
 10. [守卫与条件钩子](#10-守卫与条件钩子) — `ShouldPlay`, `ShouldAddToDeck`, `ShouldPlayerResetEnergy` 等
 11. [修改后通知钩子](#11-修改后通知钩子) — `AfterModifyingDamageAmount`, `AfterEnergyReset`, `AfterEnergySpent` 等
-12. [HP/伤害相关修改钩子](#12-hp伤害相关修改钩子) — `ModifyHpLostBeforeOsty`, `ModifyHpLostAfterOsty`, `ModifyUnblockedDamageTarget`, `ModifyEnergyGain`, `ModifyMaxEnergy`
-13. [能力/充能球/能量相关钩子](#13-能力充能球能量相关钩子) — `ModifyPowerAmountGiven`, `TryModifyPowerAmountReceived`, `ModifyOrbValue`, `ModifyOrbPassiveTriggerCounts`
+12. [HP/伤害相关修改钩子](#12-hp伤害相关修改钩子) — `ModifyHpLostBeforeOsty`, `ModifyHpLostAfterOsty`, `ModifyHpLost`, `ModifyUnblockedDamageTarget`, `ModifyEnergyGain`, `ModifyMaxEnergy`
+13. [能力/充能球/能量相关钩子](#13-能力充能球能量相关钩子) — `ModifyPowerAmountGiven`, `ModifyPowerAmountReceived`, `ModifyOrbValue`, `ModifyOrbPassiveTriggerCounts`
 14. [Should 守卫钩子详解](#14-should-守卫钩子详解) — `ShouldDie`/`ShouldDieLate`, `ShouldClearBlock`, `ShouldDraw`, `ShouldGainGold`, `ShouldEtherealTrigger`
 15. [高级卡牌模式与进阶技巧](#15-高级卡牌模式与进阶技巧) — `BeforeDamage` VFX、`IsPlayable`、`CardSelectCmd`、`ShouldGlowGold`、`CanBeGeneratedByModifiers`
 
@@ -299,7 +303,7 @@ public sealed class Inflame : CardModel
 
 ```csharp
 // Hook.cs:143 — 调度方法
-public static async Task AfterCardEnteredCombat(CombatState combatState, CardModel card)
+public static async Task AfterCardEnteredCombat(ICombatState combatState, CardModel card)
 
 // AbstractModel.cs:191 — 虚方法
 public virtual Task AfterCardEnteredCombat(CardModel card) => Task.CompletedTask;
@@ -390,7 +394,7 @@ public sealed class Stomp : CardModel
 
 ```csharp
 // Hook.cs:172 — 调度方法
-public static async Task BeforeCardPlayed(CombatState combatState, CardPlay cardPlay)
+public static async Task BeforeCardPlayed(ICombatState combatState, CardPlay cardPlay)
 
 // AbstractModel.cs:211 — 虚方法
 public virtual Task BeforeCardPlayed(CardPlay cardPlay) => Task.CompletedTask;
@@ -430,7 +434,7 @@ public override Task BeforeCardPlayed(CardPlay cardPlay)
 
 ```csharp
 // Hook.cs:181 — 调度方法
-public static async Task AfterCardPlayed(CombatState combatState,
+public static async Task AfterCardPlayed(ICombatState combatState,
     PlayerChoiceContext choiceContext, CardPlay cardPlay)
 
 // AbstractModel.cs:216 — 虚方法
@@ -552,7 +556,7 @@ public sealed class RightHandHand : CardModel
 
 ```csharp
 // Hook.cs:125 — 调度方法
-public static async Task AfterCardDrawn(CombatState combatState,
+public static async Task AfterCardDrawn(ICombatState combatState,
     PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
 
 // AbstractModel.cs:181,186 — 虚方法
@@ -648,7 +652,7 @@ public sealed class Void : CardModel
 
 ```csharp
 // Hook.cs:114 — 调度方法
-public static async Task AfterCardDiscarded(CombatState combatState,
+public static async Task AfterCardDiscarded(ICombatState combatState,
     PlayerChoiceContext choiceContext, CardModel card)
 
 // AbstractModel.cs:176 — 虚方法
@@ -689,7 +693,7 @@ public sealed class ToughBandages : RelicModel
 
 ```csharp
 // Hook.cs:152 — 调度方法
-public static async Task AfterCardExhausted(CombatState combatState,
+public static async Task AfterCardExhausted(ICombatState combatState,
     PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
 
 // AbstractModel.cs:201 — 虚方法
@@ -735,7 +739,7 @@ public sealed class FeelNoPainPower : PowerModel
 
 ```csharp
 // Hook.cs:100 — 调度方法
-public static async Task AfterCardChangedPiles(IRunState runState, CombatState? combatState,
+public static async Task AfterCardChangedPiles(IRunState runState, ICombatState? combatState,
     CardModel card, PileType oldPile, AbstractModel? source)
 
 // AbstractModel.cs:166,171 — 虚方法
@@ -801,7 +805,7 @@ public sealed class SovereignBlade : CardModel
 
 ```csharp
 // Hook.cs:208 — 调度方法
-public static async Task AfterCardRetained(CombatState combatState, CardModel card)
+// 0.106.1: vanilla no longer exposes Hook.AfterCardRetained as a public static hook.
 
 // AbstractModel.cs:226 — 虚方法
 public virtual Task AfterCardRetained(CardModel card) => Task.CompletedTask;
@@ -809,7 +813,20 @@ public virtual Task AfterCardRetained(CardModel card) => Task.CompletedTask;
 
 **触发时机：** 回合结束时，一张卡牌因"保留"关键词而留在手牌中时触发。
 
-**说明：** 此钩子在 CardModel 和 AbstractModel 层级均未被广泛重写（目前代码库中无直接重写实例）。它被保留供未来使用——如需在卡牌被保留时触发特殊效果（如保留时获得临时增益），可重写此方法。
+**说明：** 0.106.1 中 `AbstractModel.AfterCardRetained(CardModel)` 仍然存在，但 `Hook.AfterCardRetained(...)` 不再作为公开静态调度入口出现；不要再给它写 Harmony patch。需要响应保留事件时，优先使用现有回合结束/flush 流程或 MultiEnchantmentMod 的 `OnCardRetained` lifecycle 桥接。
+
+#### 自定义示例：保留时降低自身费用
+
+```csharp
+public override Task AfterCardRetained(CardModel card)
+{
+    if (card != this) return Task.CompletedTask;
+
+    // 仅作为兼容旧覆写的例子；0.106.1 新逻辑优先接入 flush/retained 桥接。
+    base.EnergyCost.AddThisCombat(-1);
+    return Task.CompletedTask;
+}
+```
 
 ---
 
@@ -851,11 +868,11 @@ public override Task BeforeCardRemoved(CardModel card)
 
 ```csharp
 // Hook.cs:163 — 调度方法
-public static async Task AfterCardGeneratedForCombat(CombatState combatState,
-    CardModel card, bool addedByPlayer)
+public static async Task AfterCardGeneratedForCombat(ICombatState combatState,
+    CardModel card, Player? creator)
 
 // AbstractModel.cs:196 — 虚方法
-public virtual Task AfterCardGeneratedForCombat(CardModel card, bool addedByPlayer)
+public virtual Task AfterCardGeneratedForCombat(CardModel card, Player? creator)
     => Task.CompletedTask;
 ```
 
@@ -865,7 +882,7 @@ public virtual Task AfterCardGeneratedForCombat(CardModel card, bool addedByPlay
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `card` | `CardModel` | 被生成的卡牌 |
-| `addedByPlayer` | `bool` | 是否由玩家主动添加（区别于外部强制的生成） |
+| `creator` | `Player?` | 生成这张牌的玩家；非玩家来源可能为 null |
 
 #### 示例：火箭飞拳（Rocket Punch）
 
@@ -890,10 +907,10 @@ public sealed class RocketPunch : CardModel
         await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner);
     }
 
-    public override Task AfterCardGeneratedForCombat(CardModel card, bool addedByPlayer)
+    public override Task AfterCardGeneratedForCombat(CardModel card, Player? creator)
     {
-        // 只响应由玩家生成的卡牌
-        if (!addedByPlayer) return Task.CompletedTask;
+        // 只响应由本玩家生成的卡牌
+        if (creator != base.Owner) return Task.CompletedTask;
         if (card.Owner != base.Owner) return Task.CompletedTask;
         // 只响应状态牌的生成
         if (card.Type != CardType.Status) return Task.CompletedTask;
@@ -911,7 +928,7 @@ public sealed class RocketPunch : CardModel
 }
 ```
 
-> **关键模式：** RocketPunch 使用 `addedByPlayer` 参数过滤——只响应玩家主动生成的卡牌（如通过仪式效果生成的诅咒牌），忽略系统生成的卡牌。费用使用 `SetUntilPlayed(0)` 而非 `AddThisTurn`，意味着一旦触发，效果持续直到此卡被打出（跨回合有效，但打一次后恢复原费用）。
+> **关键模式：** 0.106.x 中 RocketPunch 这类逻辑应使用 `creator` 过滤来源玩家，而不是旧版的 `addedByPlayer` 布尔值。费用使用 `SetUntilPlayed(0)` 而非 `AddThisTurn`，意味着一旦触发，效果持续直到此卡被打出（跨回合有效，但打一次后恢复原费用）。
 
 ---
 
@@ -923,8 +940,9 @@ public sealed class RocketPunch : CardModel
 
 ```csharp
 // Hook.cs:37,46 — 调度方法
-public static async Task BeforeAttack(CombatState combatState, AttackCommand command)
-public static async Task AfterAttack(CombatState combatState, AttackCommand command)
+public static async Task BeforeAttack(ICombatState combatState, AttackCommand command)
+public static async Task AfterAttack(ICombatState combatState,
+    PlayerChoiceContext choiceContext, AttackCommand command)
 
 // AbstractModel.cs — 虚方法
 public virtual Task BeforeAttack(AttackCommand command) => Task.CompletedTask;
@@ -1006,9 +1024,9 @@ public sealed class Flatten : CardModel
 
 ```csharp
 // Hook.cs:73,82 — 调度方法
-public static async Task BeforeBlockGained(CombatState combatState, Creature creature,
+public static async Task BeforeBlockGained(ICombatState combatState, Creature creature,
     decimal amount, ValueProp props, CardModel? cardSource)
-public static async Task AfterBlockGained(CombatState combatState, Creature creature,
+public static async Task AfterBlockGained(ICombatState combatState, Creature creature,
     decimal amount, ValueProp props, CardModel? cardSource)
 ```
 
@@ -1024,19 +1042,65 @@ public static async Task AfterBlockGained(CombatState combatState, Creature crea
 
 **说明：** 这两个钩子主要用于防御型能力/遗物修改格挡值。目前系统中它们主要由 `ModifyBlock` 相关钩子（见第 7 章）间接使用，以实现格挡的数值修改。
 
+#### 示例：格挡获得后累计状态
+
+```csharp
+private sealed class Data
+{
+    public decimal BlockGainedThisTurn;
+}
+
+protected override object InitInternalData() => new Data();
+
+public override Task AfterBlockGained(Creature creature, decimal amount,
+    ValueProp props, CardModel? cardSource)
+{
+    if (creature != base.Owner) return Task.CompletedTask;
+    if (amount <= 0m) return Task.CompletedTask;
+
+    GetInternalData<Data>().BlockGainedThisTurn += amount;
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+**实际覆写参考：** `JuggernautPower`、`BeaconOfHopePower` 使用 `AfterBlockGained` 响应格挡获得；当前 0.106.1 本体没有发现 `BeforeBlockGained` 的实际覆写，更适合 Mod 做预记录或预动画。
+
 ---
 
 ### 5.3 `AfterBlockBroken` / `AfterBlockCleared`
 
 ```csharp
 // Hook.cs:55,64 — 调度方法
-public static async Task AfterBlockBroken(CombatState combatState, Creature creature)
-public static async Task AfterBlockCleared(CombatState combatState, Creature creature)
+public static async Task AfterBlockBroken(ICombatState combatState, Creature creature)
+public static async Task AfterBlockCleared(ICombatState combatState, Creature creature)
 ```
 
 **触发时机：**
 - `AfterBlockBroken` — 格挡被攻击打破（降为 0）时触发
 - `AfterBlockCleared` — 格挡在回合开始被清空时触发
+
+#### 示例：格挡破裂/清空后重置状态
+
+```csharp
+public override Task AfterBlockBroken(Creature creature)
+{
+    if (creature != base.Owner) return Task.CompletedTask;
+
+    GetInternalData<Data>().WasBlockBrokenThisTurn = true;
+    return Task.CompletedTask;
+}
+
+public override Task AfterBlockCleared(Creature creature)
+{
+    if (creature != base.Owner) return Task.CompletedTask;
+
+    GetInternalData<Data>().WasBlockBrokenThisTurn = false;
+    return Task.CompletedTask;
+}
+```
+
+**实际覆写参考：** `BurrowedPower` 使用 `AfterBlockBroken`；`CaptainsWheel`、`HornCleat`、`SelfFormingClayPower`、`ToricToughnessPower` 等使用 `AfterBlockCleared` 做回合开始后的状态处理。
 
 ---
 
@@ -1100,13 +1164,23 @@ public virtual void AfterTransformedTo() { }
 - `AfterTransformedFrom` — 此卡牌被变形为另一张牌时（变形前）
 - `AfterTransformedTo` — 此卡牌从另一张牌变形而来时（变形后）
 
-**典型用法：** 清理变形前关联的视觉节点或状态。
+#### 示例：君王之剑清理变形前 VFX
 
 ```csharp
 // SovereignBlade.cs:176
 public override void AfterTransformedFrom()
 {
     RemoveSovereignBladeNode();  // 移除与此卡关联的 VFX 节点
+}
+```
+
+#### 自定义示例：变形后重建派生状态
+
+```csharp
+public override void AfterTransformedTo()
+{
+    // 新卡从旧卡变形而来后，重新计算只依赖当前卡面的临时缓存。
+    RebuildPreviewCache();
 }
 ```
 
@@ -1127,6 +1201,35 @@ protected virtual void AfterDowngraded() { }
 - `AfterDowngraded` — 卡牌被降级（如被战斗效果降级）后
 
 **说明：** `AfterForged` 不直接可重写——它触发一个事件，外部通过订阅 `card.Forged += ...` 来响应。`AfterDowngraded` 是受保护的虚方法，可被子类重写用于清理升级状态。
+
+#### 示例：监听锻造事件
+
+```csharp
+public override void AfterCreated()
+{
+    base.AfterCreated();
+    Forged += OnForged;
+}
+
+private void OnForged()
+{
+    // ForgeCmd 完成后触发，可在这里刷新自定义视觉或缓存。
+    RefreshForgedVfx();
+}
+```
+
+#### 示例：降级后回滚成长值
+
+```csharp
+protected override void AfterDowngraded()
+{
+    base.AfterDowngraded();
+
+    // 真实游戏里 Claw / GeneticAlgorithm / KinglyPunch 等成长牌会在降级后
+    // 同步修正由升级带来的派生数值。
+    RecalculateGrowthBonusAfterDowngrade();
+}
+```
 
 ---
 
@@ -1173,7 +1276,7 @@ protected virtual PileType GetResultPileType()
 
 ```csharp
 // Hook.cs:91 — 调度方法
-public static async Task BeforeCardAutoPlayed(CombatState combatState, CardModel card,
+public static async Task BeforeCardAutoPlayed(ICombatState combatState, CardModel card,
     Creature? target, AutoPlayType type)
 
 // AbstractModel.cs:206 — 虚方法
@@ -1448,7 +1551,7 @@ ModifyDamageAdditive (加法) → ModifyDamageMultiplicative (乘法) → Modify
 
 ```csharp
 // Hook.cs:1130 — 调度入口
-public static decimal ModifyDamage(IRunState runState, CombatState? combatState,
+public static decimal ModifyDamage(IRunState runState, ICombatState? combatState,
     Creature? target, Creature? dealer, decimal damage, ValueProp props,
     CardModel? cardSource, ModifyDamageHookType hookType, CardPreviewMode previewMode,
     out IEnumerable<AbstractModel> modifiers)
@@ -1546,7 +1649,7 @@ public sealed class IntangiblePower : PowerModel
 
 ```csharp
 // Hook.cs:984 — 调度入口
-public static decimal ModifyBlock(CombatState combatState, Creature target,
+public static decimal ModifyBlock(ICombatState combatState, Creature target,
     decimal block, ValueProp props, CardModel? cardSource, CardPlay? cardPlay,
     out IEnumerable<AbstractModel> modifiers)
 
@@ -1607,7 +1710,7 @@ public sealed class FrailPower : PowerModel
 
 ```csharp
 // Hook.cs:1215
-public static decimal ModifyEnergyCostInCombat(CombatState combatState,
+public static decimal ModifyEnergyCostInCombat(ICombatState combatState,
     CardModel card, decimal originalCost)
 
 // AbstractModel.cs:821
@@ -1659,7 +1762,7 @@ public sealed class CorruptionPower : PowerModel
 
 ```csharp
 // Hook.cs:1540
-public static decimal ModifyStarCost(CombatState combatState,
+public static decimal ModifyStarCost(ICombatState combatState,
     CardModel card, decimal originalCost)
 
 // AbstractModel.cs:827
@@ -1669,13 +1772,33 @@ public virtual bool TryModifyStarCost(CardModel card,
 
 **说明：** 与 `ModifyEnergyCostInCombat` 模式完全相同，但针对星石费用。主要用于如 `BrilliantScarf`（降低星石费用）等遗物。
 
+#### 示例：星能费用减免
+
+```csharp
+// BrilliantScarf.cs / VoidFormPower.cs 使用同类模式
+public override bool TryModifyStarCost(CardModel card, decimal originalCost,
+    out decimal modifiedCost)
+{
+    if (card.Owner != base.Owner)
+    {
+        modifiedCost = originalCost;
+        return false;
+    }
+
+    modifiedCost = Math.Max(0m, originalCost - 1m);
+    return modifiedCost != originalCost;
+}
+```
+
+`TryModifyStarCost` 是短路式修改：第一个返回 `true` 的监听器给出最终费用，后续监听器不会继续覆盖。
+
 ---
 
 ### 9.5 `ModifyCardPlayCount`
 
 ```csharp
 // Hook.cs:1040
-public static int ModifyCardPlayCount(CombatState combatState, CardModel card,
+public static int ModifyCardPlayCount(ICombatState combatState, CardModel card,
     int playCount, Creature? target, out List<AbstractModel> modifyingModels)
 
 // AbstractModel.cs:631
@@ -1726,7 +1849,7 @@ public sealed class EchoFormPower : PowerModel
 
 ```csharp
 // Hook.cs:1584
-public static int ModifyXValue(CombatState combatState, CardModel card, int originalValue)
+public static int ModifyXValue(ICombatState combatState, CardModel card, int originalValue)
 
 // AbstractModel.cs:789
 public virtual int ModifyXValue(CardModel card, int originalValue) => originalValue;
@@ -1831,11 +1954,24 @@ public static decimal ModifyCardRewardUpgradeOdds(IRunState runState,
 
 **用途：** 修改奖励卡牌出现已升级版本的概率。
 
+**自定义示例：** 将本玩家的技能牌奖励升级概率提高到 100%。
+
+```csharp
+public override decimal ModifyCardRewardUpgradeOdds(Player player,
+    CardModel card, decimal odds)
+{
+    if (player != base.Owner) return odds;
+    if (card.Type != CardType.Skill) return odds;
+
+    return 1m;
+}
+```
+
 #### `ModifyHandDraw`
 
 ```csharp
 // Hook.cs:1275
-public static decimal ModifyHandDraw(CombatState combatState, Player player,
+public static decimal ModifyHandDraw(ICombatState combatState, Player player,
     decimal originalCardCount, out IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:691,696
@@ -1851,7 +1987,7 @@ public virtual decimal ModifyHandDrawLate(Player player, decimal count) => count
 
 ```csharp
 // Hook.cs:1353
-public static decimal ModifyMaxEnergy(CombatState combatState, Player player,
+public static decimal ModifyMaxEnergy(ICombatState combatState, Player player,
     decimal amount)
 
 // AbstractModel.cs:721
@@ -1866,7 +2002,7 @@ public virtual decimal ModifyMaxEnergy(Player player, decimal amount) => amount;
 
 ```csharp
 // Hook.cs:1532
-public static void ModifyShuffleOrder(CombatState combatState, Player player,
+public static void ModifyShuffleOrder(ICombatState combatState, Player player,
     List<CardModel> cards, bool isInitialShuffle)
 
 // AbstractModel.cs:760
@@ -1888,7 +2024,7 @@ public virtual void ModifyShuffleOrder(Player player, List<CardModel> cards,
 
 ```csharp
 // Hook.cs:1828
-public static bool ShouldPlay(CombatState combatState, CardModel card,
+public static bool ShouldPlay(ICombatState combatState, CardModel card,
     out AbstractModel? preventer, AutoPlayType autoPlayType)
 
 // AbstractModel.cs:949
@@ -1951,7 +2087,8 @@ public sealed class VelvetChoker : RelicModel
         return Task.CompletedTask;
     }
 
-    public override Task BeforeSideTurnStart(...)
+    public override Task BeforeSideTurnStart(PlayerChoiceContext choiceContext,
+        CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)
     {
         _cardsPlayedThisTurn = 0;  // 每回合重置计数
         return Task.CompletedTask;
@@ -1974,13 +2111,33 @@ public virtual bool ShouldAddToDeck(CardModel card) => true;
 
 **用途：** 阻止某些卡牌被加入牌库（旅程级别，非战斗中）。
 
+#### 自定义示例：阻止状态牌进入牌库
+
+```csharp
+public override bool ShouldAddToDeck(CardModel card)
+{
+    if (card.Owner != base.Owner) return true;
+
+    return card.Type != CardType.Status;
+}
+
+public override Task AfterAddToDeckPrevented(CardModel card)
+{
+    if (card.Owner == base.Owner)
+        Flash();
+    return Task.CompletedTask;
+}
+```
+
+`ShouldAddToDeck` 只负责 veto；如需播放反馈、消耗层数或记录日志，使用 `AfterAddToDeckPrevented` 响应真正被阻止的结果。
+
 ---
 
 ### 10.3 `ShouldPlayerResetEnergy`
 
 ```csharp
 // Hook.cs:1842
-public static bool ShouldPlayerResetEnergy(CombatState combatState, Player player)
+public static bool ShouldPlayerResetEnergy(ICombatState combatState, Player player)
 
 // AbstractModel.cs:954
 public virtual bool ShouldPlayerResetEnergy(Player player) => true;
@@ -2073,7 +2230,7 @@ protected override bool IsPlayable =>
 ```csharp
 // Hook.cs:506
 public static async Task AfterModifyingDamageAmount(IRunState runState,
-    CombatState? combatState, CardModel? cardSource, IEnumerable<AbstractModel> modifiers)
+    ICombatState? combatState, CardModel? cardSource, IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:386
 public virtual Task AfterModifyingDamageAmount(CardModel? cardSource)
@@ -2099,7 +2256,7 @@ public override Task AfterModifyingDamageAmount(CardModel? cardSource)
 
 ```csharp
 // Hook.cs:362
-public static async Task AfterEnergyReset(CombatState combatState, Player player)
+public static async Task AfterEnergyReset(ICombatState combatState, Player player)
 
 // AbstractModel.cs:301,306
 public virtual Task AfterEnergyReset(Player player) => Task.CompletedTask;
@@ -2116,7 +2273,7 @@ public virtual Task AfterEnergyResetLate(Player player) => Task.CompletedTask;
 
 ```csharp
 // Hook.cs:376
-public static async Task AfterEnergySpent(CombatState combatState,
+public static async Task AfterEnergySpent(ICombatState combatState,
     CardModel card, int amount)
 
 // AbstractModel.cs:311
@@ -2134,7 +2291,7 @@ public virtual Task AfterEnergySpent(CardModel card, int amount)
 
 ```csharp
 // Hook.cs:470
-public static async Task AfterModifyingBlockAmount(CombatState combatState,
+public static async Task AfterModifyingBlockAmount(ICombatState combatState,
     decimal modifiedBlock, CardModel? cardSource, CardPlay? cardPlay,
     IEnumerable<AbstractModel> modifiers)
 
@@ -2143,13 +2300,26 @@ public virtual Task AfterModifyingBlockAmount(decimal modifiedAmount,
     CardModel? cardSource, CardPlay? cardPlay) => Task.CompletedTask;
 ```
 
+**示例：** `FastenPower`、`PaelsLegion`、`Vambrace` 在格挡数值被修改后闪光或消耗自身状态。
+
+```csharp
+public override Task AfterModifyingBlockAmount(decimal modifiedAmount,
+    CardModel? cardSource, CardPlay? cardPlay)
+{
+    if (modifiedAmount <= 0m) return Task.CompletedTask;
+
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
 ---
 
 ### 11.5 `AfterModifyingCardPlayCount`
 
 ```csharp
 // Hook.cs:482
-public static async Task AfterModifyingCardPlayCount(CombatState combatState,
+public static async Task AfterModifyingCardPlayCount(ICombatState combatState,
     CardModel card, IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:366
@@ -2165,7 +2335,7 @@ public virtual Task AfterModifyingCardPlayCount(CardModel card)
 
 ```csharp
 // Hook.cs:530
-public static async Task AfterModifyingHandDraw(CombatState combatState,
+public static async Task AfterModifyingHandDraw(ICombatState combatState,
     IEnumerable<AbstractModel> modifiers)
 
 // Hook.cs:494
@@ -2174,6 +2344,45 @@ public static async Task AfterModifyingCardRewardOptions(IRunState runState,
 ```
 
 **用途：** 在抽牌数量或奖励选项被修改后通知相关监听器。
+
+#### 示例：抽牌数量修改后反馈
+
+```csharp
+public override decimal ModifyHandDraw(Player player, decimal count)
+{
+    if (player != base.Owner) return count;
+    return count + 2m;
+}
+
+public override Task AfterModifyingHandDraw()
+{
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+#### 示例：奖励选项修改后反馈
+
+```csharp
+public override bool TryModifyCardRewardOptions(Player player,
+    List<CardCreationResult> cardRewardOptions,
+    CardCreationOptions creationOptions)
+{
+    if (player != base.Owner) return false;
+
+    foreach (CardCreationResult option in cardRewardOptions)
+        CardCmd.Upgrade(option.Card, CardPreviewStyle.None);
+    return true;
+}
+
+public override Task AfterModifyingCardRewardOptions()
+{
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+**实际覆写参考：** `Pocketwatch`、`PollinousCore`、`MindRotPower` 使用 `AfterModifyingHandDraw`；`SilkenTress`、`SilverCrucible` 使用 `AfterModifyingCardRewardOptions`。
 
 ---
 
@@ -2185,7 +2394,7 @@ public static async Task AfterModifyingCardRewardOptions(IRunState runState,
 
 ```csharp
 // Hook.cs:1301
-public static decimal ModifyHpLostBeforeOsty(IRunState runState, CombatState? combatState,
+public static decimal ModifyHpLostBeforeOsty(IRunState runState, ICombatState? combatState,
     Creature target, decimal amount, ValueProp props, Creature? dealer,
     CardModel? cardSource, out IEnumerable<AbstractModel> modifiers)
 
@@ -2245,7 +2454,7 @@ public override Task AfterModifyingHpLostBeforeOsty()
 
 ```csharp
 // Hook.cs:1327
-public static decimal ModifyHpLostAfterOsty(IRunState runState, CombatState? combatState,
+public static decimal ModifyHpLostAfterOsty(IRunState runState, ICombatState? combatState,
     Creature target, decimal amount, ValueProp props, Creature? dealer,
     CardModel? cardSource, out IEnumerable<AbstractModel> modifiers)
 
@@ -2349,7 +2558,7 @@ private int GetDamageCap(Creature? dealer)
 
 ```csharp
 // Hook.cs:1564
-public static Creature ModifyUnblockedDamageTarget(CombatState combatState,
+public static Creature ModifyUnblockedDamageTarget(ICombatState combatState,
     Creature originalTarget, decimal amount, ValueProp props, Creature? dealer)
 
 // AbstractModel.cs:769
@@ -2395,11 +2604,40 @@ public override bool ShouldCreatureBeRemovedFromCombatAfterDeath(Creature creatu
 
 ---
 
-### 12.4 `ModifyEnergyGain` — 修改能量获取
+### 12.4 `ModifyHpLost` — HP 损失汇总入口
+
+```csharp
+// Hook.cs:1285
+public static decimal ModifyHpLost(IRunState runState, ICombatState combatState,
+    Creature target, decimal amount, ValueProp props, Creature dealer,
+    CardModel cardSource, HpLossHookPhase phases,
+    out IEnumerable<AbstractModel> modifiers)
+```
+
+**用途：** 这是 Hook 层公开的 HP 损失汇总调度入口，会按 `HpLossHookPhase` 选择并串联 `ModifyHpLostBeforeOsty` / `ModifyHpLostAfterOsty` 及其 Late 阶段。作者通常不覆写这个入口本身，而是在 `AbstractModel` 层重写前后两个具体阶段。
+
+#### 调用链示例：命令侧统一计算 HP 损失
+
+```csharp
+IEnumerable<AbstractModel> modifiers;
+decimal hpLoss = Hook.ModifyHpLost(runState, combatState, target,
+    rawAmount, props, dealer, cardSource,
+    HpLossHookPhase.BeforeOsty | HpLossHookPhase.AfterOsty,
+    out modifiers);
+
+await Hook.AfterModifyingHpLostBeforeOsty(runState, combatState, modifiers);
+await Hook.AfterModifyingHpLostAfterOsty(runState, combatState, modifiers);
+```
+
+`ModifyHpLost` 是命令/引擎层的聚合入口，不是模型作者的覆写点。Mod 作者要改变伤害落地数值时，仍应覆写 `ModifyHpLostBeforeOsty*` 或 `ModifyHpLostAfterOsty*`。
+
+---
+
+### 12.5 `ModifyEnergyGain` — 修改能量获取
 
 ```csharp
 // Hook.cs:1229
-public static decimal ModifyEnergyGain(CombatState combatState, Player player,
+public static decimal ModifyEnergyGain(ICombatState combatState, Player player,
     decimal amount, out IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:676
@@ -2428,7 +2666,8 @@ public override Task AfterModifyingEnergyGain()
     return Task.CompletedTask;
 }
 
-public override async Task AfterTurnEnd(PlayerChoiceContext choiceContext, CombatSide side)
+public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext,
+    CombatSide side, IEnumerable<Creature> participants)
 {
     await PowerCmd.Remove(this);  // 回合结束时自动移除
 }
@@ -2438,11 +2677,11 @@ public override async Task AfterTurnEnd(PlayerChoiceContext choiceContext, Comba
 
 ---
 
-### 12.5 `ModifyMaxEnergy` — 修改最大能量
+### 12.6 `ModifyMaxEnergy` — 修改最大能量
 
 ```csharp
 // Hook.cs:1353
-public static decimal ModifyMaxEnergy(CombatState combatState, Player player,
+public static decimal ModifyMaxEnergy(ICombatState combatState, Player player,
     decimal amount)
 
 // AbstractModel.cs:721
@@ -2455,11 +2694,11 @@ public virtual decimal ModifyMaxEnergy(Player player, decimal amount) => amount;
 
 ---
 
-### 12.6 `ShouldPlayerResetEnergy` — 玩家是否重置能量
+### 12.7 `ShouldPlayerResetEnergy` — 玩家是否重置能量
 
 ```csharp
 // Hook.cs:1842
-public static bool ShouldPlayerResetEnergy(CombatState combatState, Player player)
+public static bool ShouldPlayerResetEnergy(ICombatState combatState, Player player)
 
 // AbstractModel.cs:954
 public virtual bool ShouldPlayerResetEnergy(Player player) => true;
@@ -2475,7 +2714,7 @@ public virtual bool ShouldPlayerResetEnergy(Player player) => true;
 
 ```csharp
 // Hook.cs:1443
-public static decimal ModifyPowerAmountGiven(CombatState combatState, PowerModel power,
+public static decimal ModifyPowerAmountGiven(ICombatState combatState, PowerModel power,
     Creature giver, decimal amount, Creature? target, CardModel? cardSource,
     out IEnumerable<AbstractModel> modifiers)
 
@@ -2515,13 +2754,13 @@ public override Task AfterModifyingPowerAmountGiven(PowerModel power)
 
 ---
 
-### 13.2 `TryModifyPowerAmountReceived` — 尝试修改接收的能力层数
+### 13.2 `ModifyPowerAmountReceived` / `TryModifyPowerAmountReceived` — 修改接收的能力层数
 
 ```csharp
-// Hook.cs:1460（通过 TryModify 模式）
-public static bool TryModifyPowerAmountReceived(CombatState combatState,
-    PowerModel canonicalPower, Creature target, decimal amount, Creature? giver,
-    out decimal modifiedAmount)
+// Hook.cs:1460
+public static decimal ModifyPowerAmountReceived(ICombatState combatState,
+    PowerModel canonicalPower, Creature target, decimal amount, Creature giver,
+    out IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:833
 public virtual bool TryModifyPowerAmountReceived(PowerModel canonicalPower,
@@ -2532,7 +2771,7 @@ public virtual bool TryModifyPowerAmountReceived(PowerModel canonicalPower,
 }
 ```
 
-**触发时机：** 当目标将要接收一个能力时，允许完全阻止或修改层数。使用 `TryModify` 模式（返回 `bool` + `out` 参数），意味着一旦某个修改器返回 `true`，后续修改器将不再执行。
+**触发时机：** 当目标将要接收一个能力时，允许完全阻止或修改层数。Hook 层公开入口名是 `ModifyPowerAmountReceived`，内部遍历 `AbstractModel.TryModifyPowerAmountReceived`；模型覆写层仍使用 `TryModify` 模式（返回 `bool` + `out` 参数），意味着一旦某个修改器返回 `true`，后续修改器将不再执行。
 
 ---
 
@@ -2579,7 +2818,7 @@ public override async Task AfterModifyingPowerAmountReceived(PowerModel power)
 
 ```csharp
 // Hook.cs:1433
-public static decimal ModifyOrbValue(CombatState combatState, Player player,
+public static decimal ModifyOrbValue(ICombatState combatState, Player player,
     OrbModel orb, decimal value)
 
 // AbstractModel.cs:745
@@ -2611,7 +2850,7 @@ public override decimal ModifyOrbValue(Player player, decimal value)
 
 ```csharp
 // Hook.cs:1417
-public static int ModifyOrbPassiveTriggerCounts(CombatState combatState,
+public static int ModifyOrbPassiveTriggerCounts(ICombatState combatState,
     Player player, OrbModel orb, int triggerCount)
 
 // AbstractModel.cs:641
@@ -2631,7 +2870,7 @@ public virtual int ModifyOrbPassiveTriggerCounts(Player player, OrbModel orb,
 
 ```csharp
 // Hook.cs:1708
-public static bool ShouldDie(IRunState runState, CombatState? combatState,
+public static bool ShouldDie(IRunState runState, ICombatState? combatState,
     Creature creature, out AbstractModel? preventer)
 
 // AbstractModel.cs:899
@@ -2679,7 +2918,7 @@ public override async Task AfterPreventingDeath(Creature creature)
 
 ```csharp
 // Hook.cs:1682
-public static bool ShouldClearBlock(CombatState combatState, Creature creature,
+public static bool ShouldClearBlock(ICombatState combatState, Creature creature,
     out AbstractModel? preventer)
 
 // AbstractModel.cs:894
@@ -2711,7 +2950,7 @@ public override bool ShouldClearBlock(Creature creature)
 
 ```csharp
 // Hook.cs:1828
-public static bool ShouldPlay(CombatState combatState, CardModel card,
+public static bool ShouldPlay(ICombatState combatState, CardModel card,
     out AbstractModel? preventer, AutoPlayType autoPlayType)
 
 // AbstractModel.cs:949
@@ -2790,7 +3029,8 @@ public override bool ShouldPlay(CardModel card, AutoPlayType autoPlayType)
     return !GetInternalData<Data>().boundCardPlayed;
 }
 
-public override Task BeforeTurnEnd(PlayerChoiceContext choiceContext, CombatSide side)
+public override Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext,
+    CombatSide side, IEnumerable<Creature> participants)
 {
     GetInternalData<Data>().boundCardPlayed = false;  // 重置状态
     // 清除所有束缚
@@ -2804,7 +3044,7 @@ public override Task BeforeTurnEnd(PlayerChoiceContext choiceContext, CombatSide
 1. `AfterCardDrawn` — 给抽到的牌附加 `Bound` 刻印
 2. `BeforeCardPlayed` — 标记第一张 Bound 牌已打出
 3. `ShouldPlay` — 检查是否已经打过 Bound 牌，如果是则阻止打出更多
-4. `BeforeTurnEnd` — 回合结束时重置状态并清除所有 Bound 刻印
+4. `BeforeSideTurnEnd` — 回合结束时重置状态并清除所有 Bound 刻印
 
 使用内部数据类 `Data` 管理状态，通过 `GetInternalData<T>()` 存取。
 
@@ -2814,7 +3054,7 @@ public override Task BeforeTurnEnd(PlayerChoiceContext choiceContext, CombatSide
 
 ```csharp
 // Hook.cs:1742
-public static bool ShouldDraw(CombatState combatState, Player player,
+public static bool ShouldDraw(ICombatState combatState, Player player,
     bool fromHandDraw, out AbstractModel? modifier)
 
 // AbstractModel（通常在 PowerModel/RelicModel 中重写）
@@ -2829,7 +3069,7 @@ public virtual bool ShouldDraw(Player player, bool fromHandDraw) => true;
 
 ```csharp
 // Hook.cs:1780
-public static bool ShouldGainGold(IRunState runState, CombatState? combatState,
+public static bool ShouldGainGold(IRunState runState, ICombatState? combatState,
     decimal amount, Player player)
 
 // AbstractModel（通常在 RelicModel 中重写）
@@ -2838,13 +3078,26 @@ public virtual bool ShouldGainGold(decimal amount, Player player) => true;
 
 **用途：** 某些遗物（如 ectoplasm）可以阻止获得金币。
 
+#### 示例：灵体外质（Ectoplasm）
+
+```csharp
+public override bool ShouldGainGold(decimal amount, Player player)
+{
+    if (player != base.Owner) return true;
+
+    return false;
+}
+```
+
+**实际覆写参考：** `Ectoplasm` 会阻止持有者获得金币；`BowlerHat` 也覆写了 `ShouldGainGold` 来处理金币获取限制。
+
 ---
 
 ### 14.6 `ShouldEtherealTrigger` — 是否触发虚无
 
 ```csharp
 // Hook.cs:1756
-public static bool ShouldEtherealTrigger(CombatState combatState, CardModel card)
+public static bool ShouldEtherealTrigger(ICombatState combatState, CardModel card)
 
 // AbstractModel.cs:919
 public virtual bool ShouldEtherealTrigger(CardModel card) => true;
@@ -2852,13 +3105,27 @@ public virtual bool ShouldEtherealTrigger(CardModel card) => true;
 
 **用途：** 控制带有 Ethereal 关键词的卡牌是否在回合结束时被消耗。某些能力可以阻止虚无触发。
 
+#### 自定义示例：本回合保护一张虚无牌
+
+```csharp
+public override bool ShouldEtherealTrigger(CardModel card)
+{
+    if (card.Owner != base.Owner) return true;
+    if (card != ProtectedCard) return true;
+
+    return false;
+}
+```
+
+当前 0.106.1 本体未发现实际覆写；该入口主要留给 Mod 实现“本回合保留一张虚无牌”这类保护效果。
+
 ---
 
 ### 14.7 `ShouldGainStars` — 是否允许获得星能
 
 ```csharp
 // Hook.cs:1804
-public static bool ShouldGainStars(CombatState combatState, decimal amount,
+public static bool ShouldGainStars(ICombatState combatState, decimal amount,
     Player player)
 
 // AbstractModel.cs:934
@@ -2866,6 +3133,20 @@ public virtual bool ShouldGainStars(decimal amount, Player player) => true;
 ```
 
 **用途：** 控制星能的获取。当前版本暂无实际使用此钩子的模型。
+
+#### 自定义示例：封锁星能获取
+
+```csharp
+public override bool ShouldGainStars(decimal amount, Player player)
+{
+    if (player != base.Owner) return true;
+
+    Flash();
+    return false;
+}
+```
+
+该钩子语义和 `ShouldGainGold` 类似，返回 `false` 会阻止这次星能进入玩家资源池。
 
 ---
 
@@ -3149,7 +3430,7 @@ PowerCmd.Apply<T>(target, amount, applier, cardSource)
        │
        ├─ Hook.BeforePowerAmountChanged（全局通知）
        ├─ Hook.ModifyPowerAmountGiven（给予者侧修改）
-       ├─ Hook.TryModifyPowerAmountReceived（接收者侧修改，可短路）
+       ├─ Hook.ModifyPowerAmountReceived（接收者侧修改，可短路）
        ├─ power.BeforeApplied()（能力自身钩子）
        ├─ power.ApplyInternal() → SetAmount() + Owner.ApplyPowerInternal()
        ├─ CombatManager.Instance.History.PowerReceived（记录到历史）
@@ -3244,7 +3525,8 @@ private int TriggerCount
     }
 }
 
-public override async Task AfterSideTurnStart(CombatSide side, CombatState combatState)
+public override async Task AfterSideTurnStart(CombatSide side,
+    IReadOnlyList<Creature> participants, ICombatState combatState)
 {
     if (side != base.Owner.Side) return;
 
@@ -3325,7 +3607,8 @@ public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext,
     }
 }
 
-public override async Task AfterTurnEnd(PlayerChoiceContext choiceContext, CombatSide side)
+public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext,
+    CombatSide side, IEnumerable<Creature> participants)
 {
     if (side == CombatSide.Player)
     {
@@ -3515,7 +3798,8 @@ public override int ModifyXValue(CardModel card, int originalValue)
 
 ```csharp
 // Brimstone.cs — 商店遗物，双向效果
-public override async Task AfterSideTurnStart(CombatSide side, CombatState combatState)
+public override async Task AfterSideTurnStart(CombatSide side,
+    IReadOnlyList<Creature> participants, ICombatState combatState)
 {
     if (side == base.Owner.Creature.Side)
     {
@@ -3557,7 +3841,8 @@ public override Task AfterCardPlayed(PlayerChoiceContext context, CardPlay cardP
 }
 
 // 钩子2：回合结束时保存状态
-public override Task AfterTurnEnd(PlayerChoiceContext choiceContext, CombatSide side)
+public override Task AfterSideTurnEnd(PlayerChoiceContext choiceContext,
+    CombatSide side, IEnumerable<Creature> participants)
 {
     if (side != base.Owner.Creature.Side) return Task.CompletedTask;
     AnyAttacksPlayedLastTurn = AnyAttacksPlayedThisTurn;
@@ -3589,7 +3874,7 @@ public override Task AfterCombatEnd(CombatRoom _)
 
 **解析：** 孙子兵法展示了 **4 个钩子协同** 的复杂遗物：
 - `AfterCardPlayed` — 检测攻击牌
-- `AfterTurnEnd` — 上回合状态传递给下回合
+- `AfterSideTurnEnd` — 上回合状态传递给下回合
 - `AfterEnergyReset` — 在正确的时机给予额外能量
 - `AfterCombatEnd` — 战斗结束清理状态
 
@@ -3607,7 +3892,8 @@ public override bool ShowCounter => CombatManager.Instance.IsInProgress;
 public override int DisplayAmount => AttacksPlayedThisTurn % 3;
 
 // 回合开始重置计数
-public override Task BeforeSideTurnStart(...)
+public override Task BeforeSideTurnStart(PlayerChoiceContext choiceContext,
+    CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)
 {
     AttacksPlayedThisTurn = 0;
     base.Status = RelicStatus.Normal;
@@ -3637,7 +3923,8 @@ public override async Task AfterCardPlayed(PlayerChoiceContext context, CardPlay
 
 ```csharp
 // CloakClasp.cs
-public override async Task BeforeTurnEnd(PlayerChoiceContext choiceContext, CombatSide side)
+public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext,
+    CombatSide side, IEnumerable<Creature> participants)
 {
     if (side == base.Owner.Creature.Side)
     {
@@ -3652,7 +3939,7 @@ public override async Task BeforeTurnEnd(PlayerChoiceContext choiceContext, Comb
 }
 ```
 
-**解析：** 斗篷扣使用 `BeforeTurnEnd` 在回合结束之前检查手牌数量并给予格挡。`cards.Count * BlockValue` 实现了"每张手牌 N 格挡"的线性缩放。
+**解析：** 斗篷扣使用 `BeforeSideTurnEnd` 在回合结束之前检查手牌数量并给予格挡。`cards.Count * BlockValue` 实现了"每张手牌 N 格挡"的线性缩放。
 
 ---
 
@@ -3935,16 +4222,16 @@ public override bool TryModifyCardBeingAddedToDeck(CardModel card,
 │ │   │   ├─ AfterCardPlayed → AfterCardPlayedLate         │    │
 │ │   │   └─ ... (更多卡牌)                                │    │
 │ │   │                                                   │    │
-│ │   ├─ BeforeTurnEnd [VeryEarly → Early → Normal]        │    │
+│ │   ├─ BeforeSideTurnEnd [VeryEarly → Early → Normal]    │    │
 │ │   ├─ BeforeFlush [Normal → Late]                       │    │
 │ │   ├─ 弃牌 / 保留牌处理                                   │    │
-│ │   ├─ AfterTurnEnd [Normal → Late]                      │    │
+│ │   ├─ AfterSideTurnEnd [Normal → Late]                  │    │
 │ │   └─ ShouldTakeExtraTurn? → AfterTakingExtraTurn       │    │
 │ │                                                       │    │
 │ │ [敌方回合]                                              │    │
 │ │   └─ BeforeSideTurnStart → AfterSideTurnStart          │    │
 │ │       └─ 每个怪物执行 MoveState                          │    │
-│ │           └─ BeforeTurnEnd → AfterTurnEnd              │    │
+│ │           └─ BeforeSideTurnEnd → AfterSideTurnEnd      │    │
 │ │                                                       │    │
 │ └─── 重复 ─────────────────────────────────────────────┘    │
 │                                                             │
@@ -3960,7 +4247,7 @@ public override bool TryModifyCardBeingAddedToDeck(CardModel card,
 
 ```csharp
 // Hook.cs — 战斗开始前
-public static async Task BeforeCombatStart(IRunState runState, CombatState? combatState)
+public static async Task BeforeCombatStart(IRunState runState, ICombatState? combatState)
 
 // AbstractModel.cs
 public virtual Task BeforeCombatStart() => Task.CompletedTask;
@@ -3975,19 +4262,22 @@ public virtual Task BeforeCombatStartLate() => Task.CompletedTask;
 
 ```csharp
 // Hook.cs
-public static async Task BeforeSideTurnStart(CombatState combatState, CombatSide side)
-public static async Task AfterSideTurnStart(CombatState combatState, CombatSide side)
+public static async Task BeforeSideTurnStart(ICombatState combatState,
+    CombatSide side, IReadOnlyList<Creature> participants)
+public static async Task AfterSideTurnStart(ICombatState combatState,
+    CombatSide side, IReadOnlyList<Creature> participants)
 
 // AbstractModel.cs
 public virtual Task BeforeSideTurnStart(PlayerChoiceContext choiceContext,
-    CombatSide side, CombatState combatState) => Task.CompletedTask;
-public virtual Task AfterSideTurnStart(CombatSide side, CombatState combatState)
+    CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)
     => Task.CompletedTask;
-public virtual Task AfterSideTurnStartLate(CombatSide side, CombatState combatState)
-    => Task.CompletedTask;
+public virtual Task AfterSideTurnStart(CombatSide side,
+    IReadOnlyList<Creature> participants, ICombatState combatState) => Task.CompletedTask;
+public virtual Task AfterSideTurnStartLate(CombatSide side,
+    IReadOnlyList<Creature> participants, ICombatState combatState) => Task.CompletedTask;
 ```
 
-**注意：** 没有独立的 `BeforeTurnStart` 钩子！`StartTurn()` 是 `CombatManager` 的私有方法，通过 `Creature.BeforeTurnStart` / `Creature.AfterTurnStart` 直接调用。对外暴露的钩子是 `BeforeSideTurnStart`、`AfterSideTurnStart` 和 `AfterPlayerTurnStart`。
+**注意：** 没有独立的 `BeforeTurnStart` 钩子！`StartTurn()` 是 `CombatManager` 的私有方法，通过 `Creature.BeforeTurnStart` / `Creature.AfterTurnStart` 直接调用。对外暴露的钩子是 `BeforeSideTurnStart`、`AfterSideTurnStart` 和 `AfterPlayerTurnStart`。0.106.x 起，side-turn 钩子还会传入本次回合开始的 `participants`，下游直接 override `AbstractModel` 时也必须保留该参数；MultiEnchantmentMod 的 `OnSideTurnStart` / `OnBeforeSideTurnStart` lifecycle 回调会把它抽象成 `(card, enchantment, side)`。
 
 #### 玩家回合
 
@@ -3998,21 +4288,21 @@ AfterPlayerTurnStart(PlayerChoiceContext, Player)
 AfterPlayerTurnStartLate(PlayerChoiceContext, Player)
 
 // 出牌阶段开始（2 阶段）
-BeforePlayPhaseStart(HookPlayerChoiceContext, Task, CombatState, Player)
-BeforePlayPhaseStartLate(HookPlayerChoiceContext, Task, CombatState, Player)
+BeforePlayPhaseStart(HookPlayerChoiceContext, Task, ICombatState, Player)
+BeforePlayPhaseStartLate(HookPlayerChoiceContext, Task, ICombatState, Player)
 ```
 
 #### 回合结束
 
 ```csharp
 // 回合结束前（3 阶段）
-BeforeTurnEndVeryEarly(PlayerChoiceContext, CombatSide)
-BeforeTurnEndEarly(PlayerChoiceContext, CombatSide)
-BeforeTurnEnd(PlayerChoiceContext, CombatSide)
+BeforeSideTurnEndVeryEarly(PlayerChoiceContext, CombatSide, IEnumerable<Creature>)
+BeforeSideTurnEndEarly(PlayerChoiceContext, CombatSide, IEnumerable<Creature>)
+BeforeSideTurnEnd(PlayerChoiceContext, CombatSide, IEnumerable<Creature>)
 
 // 回合结束后（2 阶段）
-AfterTurnEnd(PlayerChoiceContext, CombatSide)
-AfterTurnEndLate(PlayerChoiceContext, CombatSide)
+AfterSideTurnEnd(PlayerChoiceContext, CombatSide, IEnumerable<Creature>)
+AfterSideTurnEndLate(PlayerChoiceContext, CombatSide, IEnumerable<Creature>)
 ```
 
 #### 抽牌流程
@@ -4022,10 +4312,15 @@ AfterTurnEndLate(PlayerChoiceContext, CombatSide)
 ShouldDraw(Player, bool fromHandDraw) → bool
 ModifyHandDraw(Player, decimal count) → decimal
 ModifyHandDrawLate(Player, decimal count) → decimal
-BeforeHandDraw(Player, PlayerChoiceContext, CombatState)
-BeforeHandDrawLate(Player, PlayerChoiceContext, CombatState)
-AfterModifyingHandDraw(CombatState, IEnumerable<AbstractModel>)
+BeforeHandDraw(Player, PlayerChoiceContext, ICombatState)
+BeforeHandDrawLate(Player, PlayerChoiceContext, ICombatState)
+AfterModifyingHandDraw(ICombatState, IEnumerable<AbstractModel>)
 ```
+
+**示例参考：**
+- `BeforeHandDraw`：`NinjaScroll`、`Toolbox`、`CreativeAiPower`、`InfiniteBladesPower` 在抽牌前生成或加入起手资源。
+- `BeforeHandDrawLate`：当前 0.106.1 本体未发现实际覆写，适合 Mod 在所有普通抽牌前效果完成后做最终修正。
+- `AfterModifyingHandDraw`：`Pocketwatch`、`MindRotPower` 在抽牌数量被修改后播放反馈或消费状态。
 
 #### 额外回合
 
@@ -4035,17 +4330,25 @@ ShouldTakeExtraTurn(Player) → bool
 AfterTakingExtraTurn(Player)
 ```
 
+**示例参考：** `PaelsEye` 使用 `ShouldTakeExtraTurn` 允许玩家获得额外回合，并在 `AfterTakingExtraTurn` 中标记或消耗这次额外回合来源。
+
 #### 战斗结束
 
 ```csharp
 // Hook.cs
-ShouldStopCombatFromEnding(CombatState) → bool
-AfterCombatEnd(IRunState, CombatState?, CombatRoom)
-AfterCombatVictoryEarly(IRunState, CombatState?, CombatRoom)
-AfterCombatVictory(IRunState, CombatState?, CombatRoom)
+ShouldStopCombatFromEnding(ICombatState) → bool
+AfterCombatEnd(IRunState, ICombatState?, CombatRoom)
+AfterCombatVictoryEarly(IRunState, ICombatState?, CombatRoom)
+AfterCombatVictory(IRunState, ICombatState?, CombatRoom)
 ```
 
 **执行顺序：** `AfterCombatEnd` 处理任何战斗结束后事务（无论胜负），`AfterCombatVictory` 仅胜利时触发。`ShouldStopCombatFromEnding` 是短路检查——任何监听器返回 `true` 都会阻止战斗结束。
+
+**示例参考：**
+- `ShouldStopCombatFromEnding`：`AdaptablePower`、`InfestedPower`、`SteamEruptionPower` 可延迟战斗结束以完成特殊结算。
+- `AfterCombatEnd`：`CentennialPuzzle`、`HappyFlower` 等在任意战斗结束后重置一次性状态。
+- `AfterCombatVictoryEarly`：`MeatOnTheBone` 在胜利早期处理回血。
+- `AfterCombatVictory`：`BurningBlood`、`BlackBlood` 在胜利后回血，`WarHammer` 在胜利后处理奖励向效果。
 
 ---
 
@@ -4135,16 +4438,16 @@ BeforeDamageReceived(context, target, amount, props, dealer, cardSource)
 
 ```csharp
 // 格挡获取前/后
-BeforeBlockGained(CombatState, Creature, decimal, ValueProp, CardModel?)
-AfterBlockGained(CombatState, Creature, decimal, ValueProp, CardModel?)
+BeforeBlockGained(ICombatState, Creature, decimal, ValueProp, CardModel?)
+AfterBlockGained(ICombatState, Creature, decimal, ValueProp, CardModel?)
 
 // 格挡被打破/清除
-AfterBlockBroken(CombatState, Creature)    // 格挡归零
-AfterBlockCleared(CombatState, Creature)   // 回合开始清除
+AfterBlockBroken(ICombatState, Creature)    // 格挡归零
+AfterBlockCleared(ICombatState, Creature)   // 回合开始清除
 
 // 守卫
-ShouldClearBlock(CombatState, Creature, out AbstractModel?) → bool
-AfterPreventingBlockClear(CombatState, AbstractModel, Creature)
+ShouldClearBlock(ICombatState, Creature, out AbstractModel?) → bool
+AfterPreventingBlockClear(ICombatState, AbstractModel, Creature)
 ```
 
 ---
@@ -4153,7 +4456,7 @@ AfterPreventingBlockClear(CombatState, AbstractModel, Creature)
 
 ```csharp
 // Hook.cs:1564
-public static Creature ModifyUnblockedDamageTarget(CombatState combatState,
+public static Creature ModifyUnblockedDamageTarget(ICombatState combatState,
     Creature originalTarget, decimal amount, ValueProp props, Creature? dealer)
 ```
 
@@ -4165,18 +4468,25 @@ public static Creature ModifyUnblockedDamageTarget(CombatState combatState,
 
 ```csharp
 // 生物加入战斗
-AfterCreatureAddedToCombat(CombatState, Creature)
+AfterCreatureAddedToCombat(ICombatState, Creature)
 
 // HP 变化
-AfterCurrentHpChanged(IRunState, CombatState?, Creature, decimal delta)
+AfterCurrentHpChanged(IRunState, ICombatState?, Creature, decimal delta)
 
 // 宠物复活
-AfterOstyRevived(CombatState, Creature)
+AfterOstyRevived(ICombatState, Creature)
 
 // 可攻击性守卫
-ShouldAllowHitting(CombatState, Creature) → bool
-ShouldAllowTargeting(CombatState, Creature, out AbstractModel?) → bool
+ShouldAllowHitting(ICombatState, Creature) → bool
+ShouldAllowTargeting(ICombatState, Creature, out AbstractModel?) → bool
 ```
+
+**示例参考：**
+- `AfterCreatureAddedToCombat`：`PhilosophersStone`、`FurCoat` 在新敌人加入战斗后补上对应效果。
+- `AfterCurrentHpChanged`：`MeatOnTheBone`、`RedSkull` 根据生命值变化更新遗物状态或触发阈值效果。
+- `AfterOstyRevived`：`SandpitPower` 响应奥斯提复活。
+- `ShouldAllowHitting`：`DieForYouPower`、`IllusionPower`、`ReattachPower` 控制某些单位是否还能被命中。
+- `ShouldAllowTargeting`：当前 0.106.1 本体未发现实际覆写，适合 Mod 阻止玩家把某类效果指定到受保护目标上。
 
 ---
 
@@ -4198,16 +4508,22 @@ public abstract class PotionModel : AbstractModel
 
 ```csharp
 // 使用前/后
-BeforePotionUsed(IRunState, CombatState?, PotionModel, Creature?)
-AfterPotionUsed(IRunState, CombatState?, PotionModel, Creature?)
+BeforePotionUsed(IRunState, ICombatState?, PotionModel, Creature?)
+AfterPotionUsed(IRunState, ICombatState?, PotionModel, Creature?)
 
 // 获得/丢弃
-AfterPotionProcured(IRunState, CombatState?, PotionModel)
-AfterPotionDiscarded(IRunState, CombatState?, PotionModel)
+AfterPotionProcured(IRunState, ICombatState?, PotionModel)
+AfterPotionDiscarded(IRunState, ICombatState?, PotionModel)
 
 // 守卫
-ShouldProcurePotion(IRunState, CombatState?, PotionModel, Player) → bool
+ShouldProcurePotion(IRunState, ICombatState?, PotionModel, Player) → bool
 ```
+
+**示例参考：**
+- `BeforePotionUsed`：`SurroundedPower` 在药水使用前响应目标和药水信息。
+- `AfterPotionUsed`：`BeltBuckle`、`ReptileTrinket` 在药水使用后触发额外效果。
+- `AfterPotionProcured` / `AfterPotionDiscarded`：`BeltBuckle` 跟踪药水获得与丢弃。
+- `ShouldProcurePotion`：`Sozu` 返回 `false` 阻止持有者获得药水。
 
 ### 20.3 示例：苏祖（Sozu）
 
@@ -4237,6 +4553,8 @@ BeforeRoomEntered(IRunState, AbstractRoom)
 AfterRoomEntered(IRunState, AbstractRoom)
 ```
 
+**示例参考：** `BigMushroom`、`BronzeScales`、`DataDisk`、`EternalFeather`、`Girya` 等在 `AfterRoomEntered` 中根据进入的房间类型重置或结算房间级状态。当前 0.106.1 本体未发现 `BeforeRoomEntered` 的实际覆写，适合 Mod 在房间效果正式触发前做预处理。
+
 **RoomType 枚举** (`src/Core/Rooms/RoomType.cs`)：
 `Unassigned`, `Monster`, `Elite`, `Boss`, `Treasure`, `Shop`, `Event`, `RestSite`, `Map`
 
@@ -4251,6 +4569,8 @@ AfterRestSiteSmith(IRunState, Player)
 
 // 修改
 ModifyRestSiteHealAmount(IRunState, Creature, decimal) → decimal
+ModifyRestSiteHealRewards(IRunState, Player, List<Reward>, bool isMimicked)
+    → IEnumerable<AbstractModel>
 ModifyRestSiteOptions(IRunState, Player, ICollection<RestSiteOption>)
     → IEnumerable<AbstractModel>
 ModifyExtraRestSiteHealText(IRunState, Player, IReadOnlyList<LocString>)
@@ -4258,6 +4578,15 @@ ModifyExtraRestSiteHealText(IRunState, Player, IReadOnlyList<LocString>)
 
 // 守卫
 ShouldDisableRemainingRestSiteOptions(IRunState, Player) → bool
+```
+
+对应的 `AbstractModel` 覆写入口：
+
+```csharp
+public virtual bool TryModifyRestSiteHealRewards(Player player,
+    List<Reward> rewards, bool isMimicked)
+public virtual bool TryModifyRestSiteOptions(Player player,
+    ICollection<RestSiteOption> options)
 ```
 
 **示例：捕梦网（Dream Catcher）** — 在休息处治疗时额外获得卡牌奖励。使用 `TryModifyRestSiteHealRewards` 在治疗时添加卡牌奖励选项。
@@ -4280,6 +4609,15 @@ ShouldAllowMerchantCardRemoval(IRunState, Player) → bool
 ShouldRefillMerchantEntry(IRunState, MerchantEntry, Player) → bool
 ```
 
+**示例参考：**
+- `AfterItemPurchased`：`MawBank` 在购买后处理金币银行状态。
+- `ModifyMerchantPrice`：`MembershipCard`、`TheCourier` 修改商店价格。
+- `ModifyMerchantCardCreationResults`：`FrozenEgg`、`MoltenEgg`、`ToxicEgg` 在商店卡牌生成后自动升级对应类型。
+- `ModifyMerchantCardPool`：`CharacterCards` modifier 替换或扩展商店卡池。
+- `ModifyMerchantCardRarity`：当前 0.106.1 本体未发现实际覆写，可用于 Mod 调整商店卡牌稀有度分布。
+- `ShouldAllowMerchantCardRemoval`：`Hoarder` modifier 阻止商人删牌。
+- `ShouldRefillMerchantEntry`：`TheCourier` 允许商店格子补货。
+
 ---
 
 ### 21.4 地图钩子
@@ -4298,6 +4636,14 @@ ShouldAllowFreeTravel(IRunState) → bool
 ShouldProceedToNextMapPoint(IRunState) → bool
 ```
 
+**示例参考：**
+- `AfterMapGenerated`：`SpoilsMap` 在地图生成后标记任务点。
+- `ModifyGeneratedMap` / `ModifyGeneratedMapLate`：`GoldenCompass`、`BigGameHunter`、`FurCoat`、`SpoilsMap` 修改地图结构或特殊点。
+- `ModifyUnknownMapPointRoomTypes`：`GoldenCompass`、`JuzuBracelet`、`LanternKey` 控制未知点可能房间类型。
+- `ModifyOddsIncreaseForUnrolledRoomType`：`DeadlyEvents` modifier 调整房间类型滚动概率。
+- `ShouldAllowFreeTravel`：`WingedBoots`、`Flight` 允许自由移动。
+- `ShouldProceedToNextMapPoint`：当前 0.106.1 本体未发现实际覆写，适合 Mod 阻止进入下一地图点直到自定义流程完成。
+
 ---
 
 ### 21.5 事件钩子
@@ -4307,7 +4653,9 @@ ModifyNextEvent(IRunState, EventModel) → EventModel
 ShouldAllowAncient(IRunState, Player, AncientEventModel) → bool
 ```
 
-**示例：黑星（Black Star）** — `TryModifyRewards` 在精英战额外添加遗物奖励。
+**示例参考：** `LanternKey` 使用 `ModifyNextEvent` 替换下一次事件。当前 0.106.1 本体未发现 `ShouldAllowAncient` 的实际覆写，适合 Mod 禁止或放行特定 Ancient 事件。
+
+**奖励相关示例：黑星（Black Star）** — `TryModifyRewards` 在精英战额外添加遗物奖励。
 
 ---
 
@@ -4323,11 +4671,40 @@ AfterRewardTaken(IRunState, Player, Reward)
 ModifyRewards(IRunState, Player, List<Reward>, AbstractRoom?) → IEnumerable<AbstractModel>
 ModifyRewardsLate(IRunState, Player, List<Reward>, AbstractRoom?) → IEnumerable<AbstractModel>
 AfterModifyingRewards(IRunState, IEnumerable<AbstractModel>)
+TryModifyCardRewardOptions(IRunState, Player, List<CardCreationResult>,
+    CardCreationOptions, out List<AbstractModel>) → bool
+ModifyCardRewardAlternatives(IRunState, Player, CardReward,
+    List<CardRewardAlternative>) → IEnumerable<AbstractModel>
 
 // 守卫
 ShouldGenerateTreasure(IRunState, Player) → bool
 ShouldAllowSelectingMoreCardRewards(IRunState, Player, CardReward) → bool
+ShouldForcePotionReward(IRunState, Player, RoomType) → bool
 ```
+
+对应的 `AbstractModel` 覆写入口：
+
+```csharp
+public virtual bool TryModifyRewardsLate(Player player,
+    List<Reward> rewards, AbstractRoom room)
+public virtual bool TryModifyCardRewardOptions(Player player,
+    List<CardCreationResult> cardRewardOptions,
+    CardCreationOptions creationOptions)
+public virtual bool TryModifyCardRewardOptionsLate(Player player,
+    List<CardCreationResult> cardRewardOptions,
+    CardCreationOptions creationOptions)
+public virtual bool TryModifyCardRewardAlternatives(Player player,
+    CardReward cardReward, List<CardRewardAlternative> alternatives)
+public virtual bool ShouldForcePotionReward(Player player, RoomType roomType)
+```
+
+**示例参考：**
+- `TryModifyRewardsLate`：`Driftwood`、`Midas`、`Vintage` 在奖励列表晚阶段增删奖励。
+- `TryModifyCardRewardOptions` / `TryModifyCardRewardOptionsLate`：`FrozenEgg` 一类遗物可在卡牌奖励生成后升级特定类型卡牌。
+- `TryModifyCardRewardAlternatives`：`PaelsWing` 添加卡牌奖励替代选项。
+- `ShouldGenerateTreasure`：`SilverCrucible` 控制是否生成宝箱奖励。
+- `ShouldAllowSelectingMoreCardRewards`：当前 0.106.1 本体未发现实际覆写，用于允许一次卡牌奖励中多选。
+- `ShouldForcePotionReward`：当前 0.106.1 本体未发现实际覆写，用于强制指定房间类型给药水奖励。
 
 ---
 
@@ -4336,14 +4713,21 @@ ShouldAllowSelectingMoreCardRewards(IRunState, Player, CardReward) → bool
 ```csharp
 // 金币
 AfterGoldGained(IRunState, Player)
-ShouldGainGold(IRunState, CombatState?, decimal, Player) → bool
+ShouldGainGold(IRunState, ICombatState?, decimal, Player) → bool
 
 // 星能（STS2 新资源）
-AfterStarsGained(CombatState, int, Player)
-AfterStarsSpent(CombatState, int, Player)
-ShouldGainStars(CombatState, decimal, Player) → bool
-ShouldPayExcessEnergyCostWithStars(CombatState, Player) → bool
+AfterStarsGained(ICombatState, int, Player)
+AfterStarsSpent(ICombatState, int, Player)
+ShouldGainStars(ICombatState, decimal, Player) → bool
+ShouldPayExcessEnergyCostWithStars(ICombatState, Player) → bool
 ```
+
+**示例参考：**
+- `AfterGoldGained`：`BowlerHat`、`DragonFruit` 在金币获得后触发。
+- `ShouldGainGold`：`Ectoplasm` 阻止获得金币。
+- `AfterStarsGained`：`BlackHolePower` 在获得星能后响应。
+- `AfterStarsSpent`：`GalacticDust`、`MiniRegent`、`ChildOfTheStarsPower` 在花费星能后响应。
+- `ShouldGainStars` / `ShouldPayExcessEnergyCostWithStars`：当前 0.106.1 本体未发现实际覆写，是 Mod 控制星能获取和用星能补付能量费用的扩展点。
 
 ---
 
@@ -4351,15 +4735,15 @@ ShouldPayExcessEnergyCostWithStars(CombatState, Player) → bool
 
 ```csharp
 // 锻造
-AfterForge(CombatState, decimal, Player, AbstractModel?)
+AfterForge(ICombatState, decimal, Player, AbstractModel?)
 
 // 召唤
-AfterSummon(CombatState, PlayerChoiceContext, Player, decimal)
-ModifySummonAmount(CombatState, Player, decimal, AbstractModel?) → decimal
+AfterSummon(ICombatState, PlayerChoiceContext, Player, decimal)
+ModifySummonAmount(ICombatState, Player, decimal, AbstractModel?) → decimal
 
 // 洗牌
 AfterShuffle(PlayerChoiceContext, Player)
-ModifyShuffleOrder(CombatState, Player, List<CardModel>, bool isInitialShuffle)
+ModifyShuffleOrder(ICombatState, Player, List<CardModel>, bool isInitialShuffle)
 
 // 幕切换
 AfterActEntered(IRunState)
@@ -4368,8 +4752,17 @@ AfterActEntered(IRunState)
 AfterHandEmptied(PlayerChoiceContext, Player)
 
 // 自动出牌
-AfterCardAutoPlayed(CombatState, CardModel, Creature?, AutoPlayType)
+AfterCardAutoPlayed(ICombatState, CardModel, Creature?, AutoPlayType)
 ```
+
+**示例参考：**
+- `AfterForge`：`HammerTimePower` 在锻造后触发。
+- `AfterSummon` / `ModifySummonAmount`：当前 0.106.1 本体未发现实际覆写，可用于 Mod 响应召唤或修改召唤数量。
+- `AfterShuffle`：`TheAbacus`、`BiiigHug`、`StratagemPower` 在洗牌后触发。
+- `ModifyShuffleOrder`：`PerfectFit` 附魔可把指定牌放到洗牌后牌堆顶部。
+- `AfterActEntered`：`CursedRun` modifier 在进入新幕时处理状态。
+- `AfterHandEmptied`：`UnceasingTop` 在手牌清空后触发抽牌。
+- `AfterCardAutoPlayed`：当前 0.106.1 本体未发现实际覆写，可用于 Mod 统计或响应自动打出的卡牌。
 
 ---
 
@@ -4476,7 +4869,284 @@ bool ShouldDie(Creature creature, out AbstractModel? preventer)
 
 ---
 
-### 23.4 性能考虑与最佳实践
+### 23.4 0.106.1 反射审计补遗
+
+本节列出 2026-05-30 使用本地 `sts2.dll` 0.106.1 反射审计时发现、此前正文未单独覆盖的钩子。以下签名按运行时公开类型记录；nullable 标注请以反编译源码或 IDE 提示为准。
+
+#### 自动打牌阶段
+
+```csharp
+// Hook.cs
+Task AfterAutoPrePlayPhaseEntered(HookPlayerChoiceContext playerChoiceContext,
+    ICombatState combatState, Player player)
+Task AfterAutoPostPlayPhaseEntered(HookPlayerChoiceContext playerChoiceContext,
+    ICombatState combatState, Player player)
+
+// AbstractModel.cs
+Task AfterAutoPrePlayPhaseEnteredEarly(PlayerChoiceContext choiceContext, Player player)
+Task AfterAutoPrePlayPhaseEntered(PlayerChoiceContext choiceContext, Player player)
+Task AfterAutoPrePlayPhaseEnteredLate(PlayerChoiceContext choiceContext, Player player)
+Task AfterAutoPostPlayPhaseEntered(PlayerChoiceContext choiceContext, Player player)
+```
+
+`AfterAutoPrePlayPhaseEntered` 由 Hook 层统一调度 Early / Normal / Late 三段，适合响应自动打牌前阶段进入；`AfterAutoPostPlayPhaseEntered` 用于自动打牌后阶段进入。
+
+**示例：自动打牌阶段进入时重置临时标记**
+
+```csharp
+public override Task AfterAutoPrePlayPhaseEntered(PlayerChoiceContext choiceContext,
+    Player player)
+{
+    if (player != base.Owner.Player) return Task.CompletedTask;
+
+    GetInternalData<Data>().AutoPlayedCardsThisPhase = 0;
+    return Task.CompletedTask;
+}
+```
+
+#### Flush / 保留 / 抽牌阻止
+
+```csharp
+// Hook.cs
+bool ShouldFlush(ICombatState combatState, Player player)
+Task AfterFlush(ICombatState combatState, Player player,
+    PlayerChoiceContext playerChoiceContext,
+    IReadOnlyCollection<CardModel> flushedCards,
+    IReadOnlyCollection<CardModel> retainedCards)
+Task AfterPreventingDraw(ICombatState combatState, AbstractModel modifier)
+
+// AbstractModel.cs
+bool ShouldFlush(Player player)
+Task BeforeFlushLate(PlayerChoiceContext choiceContext, Player player)
+Task AfterFlush(PlayerChoiceContext choiceContext, Player player,
+    IReadOnlyCollection<CardModel> flushedCards,
+    IReadOnlyCollection<CardModel> retainedCards)
+Task AfterPreventingDraw()
+```
+
+`ShouldFlush` 返回 `false` 可阻止回合末 flush；`AfterFlush` 同时给出实际弃置与保留的卡牌集合。`AfterPreventingDraw` 会在 `ShouldDraw` 阻止抽牌后通知阻止者。
+
+**示例：符文金字塔式保留整只手牌**
+
+```csharp
+public override bool ShouldFlush(Player player)
+{
+    if (player != base.Owner) return true;
+
+    return false;
+}
+```
+
+**示例：flush 后统计实际保留的牌**
+
+```csharp
+public override Task AfterFlush(PlayerChoiceContext choiceContext, Player player,
+    IReadOnlyCollection<CardModel> flushedCards,
+    IReadOnlyCollection<CardModel> retainedCards)
+{
+    if (player != base.Owner) return Task.CompletedTask;
+
+    RetainedLastTurn = retainedCards.Count;
+    return Task.CompletedTask;
+}
+```
+
+**实际覆写参考：** `WellLaidPlansPower` 使用 `BeforeFlushLate`；`RunicPyramid`、`RingingTriangle`、`RetainHandPower` 使用 `ShouldFlush`；`Bookmark` 使用 `AfterFlush`；`Fiddle` 使用 `AfterPreventingDraw`。
+
+#### 伤害给予与攻击段数
+
+```csharp
+// Hook.cs
+decimal ModifyAttackHitCount(ICombatState combatState,
+    AttackCommand attackCommand, int originalHitCount)
+Task AfterDamageGiven(PlayerChoiceContext choiceContext, ICombatState combatState,
+    Creature dealer, DamageResult results, ValueProp props,
+    Creature target, CardModel cardSource)
+
+// AbstractModel.cs
+int ModifyAttackHitCount(AttackCommand attack, int hitCount)
+Task AfterDamageGiven(PlayerChoiceContext choiceContext,
+    Creature dealer, DamageResult result, ValueProp props,
+    Creature target, CardModel cardSource)
+```
+
+`ModifyAttackHitCount` 修改一次 `AttackCommand` 的攻击段数；`AfterDamageGiven` 在攻击方造成伤害后触发，适合读取真实 `DamageResult` 做击杀、吸血或追击类效果。
+
+**示例：造成攻击伤害后施加中毒**
+
+```csharp
+public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext,
+    Creature dealer, DamageResult result, ValueProp props,
+    Creature target, CardModel cardSource)
+{
+    if (dealer != base.Owner) return;
+    if (!props.IsPoweredAttack()) return;
+    if (result.TotalDamage <= 0m) return;
+
+    await PowerCmd.Apply<PoisonPower>(target, base.Amount, dealer, cardSource);
+}
+```
+
+**自定义示例：让特定攻击多打一段**
+
+```csharp
+public override int ModifyAttackHitCount(AttackCommand attack, int hitCount)
+{
+    if (attack.Attacker != base.Owner) return hitCount;
+    if (attack.CardSource?.Type != CardType.Attack) return hitCount;
+
+    return hitCount + 1;
+}
+```
+
+**实际覆写参考：** `EnvenomPower`、`HandDrill`、`ReaperFormPower` 等使用 `AfterDamageGiven`；当前 0.106.1 本体未发现 `ModifyAttackHitCount` 的实际覆写。
+
+#### 充能球事件
+
+```csharp
+// Hook.cs
+Task AfterOrbChanneled(ICombatState combatState,
+    PlayerChoiceContext choiceContext, Player player, OrbModel orb)
+Task AfterOrbEvoked(PlayerChoiceContext choiceContext,
+    ICombatState combatState, OrbModel orb, IEnumerable<Creature> targets)
+Task AfterModifyingOrbPassiveTriggerCount(ICombatState combatState,
+    OrbModel orb, IEnumerable<AbstractModel> modifiers)
+
+// AbstractModel.cs
+Task AfterOrbChanneled(PlayerChoiceContext choiceContext, Player player, OrbModel orb)
+Task AfterOrbEvoked(PlayerChoiceContext choiceContext,
+    OrbModel orb, IEnumerable<Creature> targets)
+Task AfterModifyingOrbPassiveTriggerCount(OrbModel orb)
+```
+
+这些通知钩子分别对应充能球被生成、被激发、被动触发次数被修改后的时点。`AfterModifyingOrbPassiveTriggerCount` 的 Hook 层会把参与修改的模型集合传给调度器。
+
+**示例：充能球生成后闪光**
+
+```csharp
+public override Task AfterOrbChanneled(PlayerChoiceContext choiceContext,
+    Player player, OrbModel orb)
+{
+    if (player != base.Owner) return Task.CompletedTask;
+
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+**示例：镀金线缆式增加被动触发次数**
+
+```csharp
+public override int ModifyOrbPassiveTriggerCounts(OrbModel orb, int triggerCount)
+{
+    if (orb.Owner != base.Owner) return triggerCount;
+
+    return triggerCount + 1;
+}
+
+public override Task AfterModifyingOrbPassiveTriggerCount(OrbModel orb)
+{
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+**实际覆写参考：** `Metronome` 使用 `AfterOrbChanneled`；`ThunderPower` 使用 `AfterOrbEvoked`；`GoldPlatedCables` 使用 `ModifyOrbPassiveTriggerCounts` 与 `AfterModifyingOrbPassiveTriggerCount`。
+
+#### 奖励、休息处与费用晚阶段
+
+```csharp
+// Hook.cs
+IEnumerable<AbstractModel> ModifyCardRewardAlternatives(IRunState runState,
+    Player player, CardReward cardReward,
+    List<CardRewardAlternative> alternatives)
+bool ShouldForcePotionReward(IRunState runState, Player player, RoomType roomType)
+
+// AbstractModel.cs
+bool TryModifyCardRewardAlternatives(Player player,
+    CardReward cardReward, List<CardRewardAlternative> alternatives)
+bool TryModifyRewardsLate(Player player, List<Reward> rewards, AbstractRoom room)
+bool TryModifyRestSiteOptions(Player player, ICollection<RestSiteOption> options)
+bool TryModifyEnergyCostInCombatLate(CardModel card,
+    decimal originalCost, out decimal modifiedCost)
+bool ShouldForcePotionReward(Player player, RoomType roomType)
+```
+
+`TryModifyCardRewardAlternatives` 直接修改奖励候选列表并返回是否参与；`TryModifyRewardsLate` 是奖励列表的晚阶段修改；`TryModifyRestSiteOptions` 对休息处选项集合原地增删；`TryModifyEnergyCostInCombatLate` 在常规费用修改后提供短路式晚阶段覆盖。`ShouldForcePotionReward` 返回 `true` 可强制指定房间类型产出药水奖励。
+
+**示例：添加一个卡牌奖励替代选项**
+
+```csharp
+public override bool TryModifyCardRewardAlternatives(Player player,
+    CardReward cardReward, List<CardRewardAlternative> alternatives)
+{
+    if (player != base.Owner) return false;
+
+    alternatives.Add(new CardRewardAlternative("take_gold", async () =>
+        await PlayerCmd.GainGold(25m, player, wasStolenBack: false),
+        PostAlternateCardRewardAction.EndSelectionAndCompleteReward));
+    return true;
+}
+```
+
+**示例：休息处增加一个自定义选项**
+
+```csharp
+public override bool TryModifyRestSiteOptions(Player player,
+    ICollection<RestSiteOption> options)
+{
+    if (player != base.Owner) return false;
+
+    options.Add(new DigRestSiteOption(player));
+    return true;
+}
+```
+
+**实际覆写参考：** `PaelsWing` 使用 `TryModifyCardRewardAlternatives`；`Girya`、`Shovel`、`MeatCleaver` 等使用 `TryModifyRestSiteOptions`；`Driftwood`、`Midas`、`Vintage` 使用 `TryModifyRewardsLate`；`BrilliantScarf` 与 `VoidFormPower` 使用费用短路修改。
+
+#### 牌组、目标与能力移除
+
+```csharp
+// Hook.cs
+bool ShouldPowerBeRemovedOnDeath(PowerModel power)
+
+// AbstractModel.cs
+Task AfterAddToDeckPrevented(CardModel card)
+Task AfterTargetingBlockedVfx(Creature blocker)
+bool ShouldPowerBeRemovedOnDeath(PowerModel power)
+```
+
+`AfterAddToDeckPrevented` 在 `ShouldAddToDeck` 阻止入牌组后触发；`AfterTargetingBlockedVfx` 用于目标选择被拦截时播放或响应拦截方表现；`ShouldPowerBeRemovedOnDeath` 是全局监听器对某个 `PowerModel` 死亡后是否移除的判断，和 `PowerModel.ShouldPowerBeRemovedAfterOwnerDeath()` 这个能力自身方法是两个入口。
+
+**示例：目标被阻止时播放反馈**
+
+```csharp
+public override Task AfterTargetingBlockedVfx(Creature blocker)
+{
+    if (blocker != base.Owner) return Task.CompletedTask;
+
+    Flash();
+    return Task.CompletedTask;
+}
+```
+
+**示例：保护幻象类能力不随死亡移除**
+
+```csharp
+public override bool ShouldPowerBeRemovedOnDeath(PowerModel power)
+{
+    if (power.Owner != base.Owner) return true;
+    if (power is not IllusionPower) return true;
+
+    return false;
+}
+```
+
+**实际覆写参考：** `IllusionPower` 使用 `ShouldPowerBeRemovedOnDeath`。当前 0.106.1 本体未发现 `AfterAddToDeckPrevented` / `AfterTargetingBlockedVfx` 的实际覆写，它们更偏向 Mod 扩展点。
+
+---
+
+### 23.5 性能考虑与最佳实践
 
 1. **选择正确的阶段：** 如果你的钩子不依赖其他钩子的结果，使用 Early 阶段。如果需要看到最终值，使用 Late 阶段。
 2. **避免在 Modify 钩子中做重操作：** Modify 钩子可能每个伤害计算都被调用多次。
@@ -4486,7 +5156,7 @@ bool ShouldDie(Creature creature, out AbstractModel? preventer)
 
 ---
 
-> **文档版本：** v4.0  
-> **最后更新：** 2026-05-03  
-> **覆盖钩子总数：** 110+ 个钩子，65+ 个实际示例  
-> **覆盖范围：** Hook.cs 全部静态方法 + AbstractModel.cs 虚方法 + CardModel.cs 方法/事件 + PowerModel.cs 能力系统 + RelicModel.cs 遗物系统 + PotionModel.cs 药水系统 + CombatManager 战斗循环 + Creature 死亡/格挡流水线 + 房间/地图/奖励钩子 + Mod 系统 API
+> **文档版本：** v4.2
+> **最后更新：** 2026-05-30
+> **覆盖钩子总数：** 130+ 个钩子，65+ 个实际示例
+> **覆盖范围：** Hook.cs 0.106.1 关键静态方法 + AbstractModel.cs 虚方法 + CardModel.cs 方法/事件 + PowerModel.cs 能力系统 + RelicModel.cs 遗物系统 + PotionModel.cs 药水系统 + CombatManager 战斗循环 + Creature 死亡/格挡流水线 + 房间/地图/奖励钩子 + Mod 系统 API

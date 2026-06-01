@@ -1472,21 +1472,32 @@ var trigger = ActivationTrigger.Custom("mymod:OnRelicTriggered");
 MultiEnchantmentScopeSupport.NoteActivation(enchantment, trigger);
 ```
 
-### 游戏 v0.106.0 之后 `EnchantBlockAdditive` 报方法找不到？
+### 游戏 v0.106.x 之后 `EnchantBlockAdditive` 或回合钩子报方法找不到？
 
-v0.106.0 的 vanilla `EnchantmentModel` 把 block 系列虚方法的 `ValueProp` 参数移除了。如果你的附魔重写了这两个方法：
+v0.106.x 的 vanilla `EnchantmentModel` 把 block 系列虚方法的 `ValueProp` 参数移除了。如果你的附魔重写了这两个方法：
 
 ```csharp
-// ❌ v0.105.x 签名（v0.106.0 起运行时抛 MissingMethodException）
+// ❌ v0.105.x 签名（v0.106.x 起运行时抛 MissingMethodException）
 public override decimal EnchantBlockAdditive(decimal originalBlock, ValueProp props) { ... }
 public override decimal EnchantBlockMultiplicative(decimal originalBlock, ValueProp props) { ... }
 
-// ✅ v0.106.0+ 正确签名
+// ✅ v0.106.x+ 正确签名
 public override decimal EnchantBlockAdditive(decimal originalBlock) { ... }
 public override decimal EnchantBlockMultiplicative(decimal originalBlock) { ... }
 ```
 
-伤害管线的 `EnchantDamageAdditive` / `EnchantDamageMultiplicative` 仍然保留 `ValueProp`，**不要改**。MultiEnchantmentMod 本体已经适配 v0.106.0；下游 mod 需要同步调整自己的 override。
+伤害管线的 `EnchantDamageAdditive` / `EnchantDamageMultiplicative` 仍然保留 `ValueProp`，**不要改**。MultiEnchantmentMod 本体已经适配 v0.106.x；下游 mod 需要同步调整自己的 override。
+
+同一轮更新里，原生回合钩子的静态 `Hook` 签名也变了。直接写 Harmony patch 时，请匹配当前签名：
+
+```csharp
+Hook.BeforeSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)
+Hook.AfterSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)
+Hook.BeforeTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
+Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
+```
+
+如果你只使用 MultiEnchantmentMod 的 `.OnSideTurnStart(...)` / `.OnBeforeSideTurnStart(...)` lifecycle 回调，不需要处理 `participants` 参数；框架已经适配并保留 `(card, enchantment, side)` 的稳定回调形状。
 
 ### handler 里调 `RemoveEnchantment` / `Enchant` / `CardCmd.*` 会不会崩？
 
@@ -1610,7 +1621,7 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 清除覆盖
 | `MEM007` | 程序集缺少 API 兼容声明 | 添加 `[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]` |
 | `MEM008` | 同一个附魔模型有多个 `EnchantmentDefinition<T>` | 合并成一个 definition |
 | `MEM009` | `[ModifyDynamicVar]` 方法签名错误 | 改成 `decimal Method(EnchantmentStackSnapshot snapshot, decimal currentValue)` |
-| `MEM011` | `MaxActivations` 没写 `Activation`，默认会变成 `OnPlay` | 显式写 `Activation = ActivationTrigger.AfterCardPlayed` 等 |
+| `MEM011` | `MaxActivations` 走 attribute 默认触发器，默认会变成 `OnPlay` | 需要非默认触发器时，用 fluent `.MaxActivations(N, ActivationTrigger.AfterCardPlayed)` 或 `EnchantmentDefinition.Scope`；不要在 attribute 里写 `Activation = ...` |
 | `MEM012` | 非 `MergeAmount` 附魔覆写了 `OnMergedDelta` | 改成 `MergeAmount`，或删除这个覆写 |
 | `MEM013` | `[ModifyEnergyCost]` / `[ModifyCardPlayCount]` 方法签名错误 | 费用用 `decimal Method(EnchantmentStackSnapshot snapshot, decimal currentCost)`；次数用 `int Method(EnchantmentStackSnapshot snapshot, int currentPlayCount)` |
 

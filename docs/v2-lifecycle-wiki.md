@@ -297,6 +297,8 @@ MultiEnchantmentApi.Register<LifecycleEnchant>()
 | `OnBeforeAttack` | `Hook.BeforeAttack` | 所有玩家的所有卡 | `(card, enchantment, command)` |
 | `OnAfterAttack` | `Hook.AfterAttack` | 所有玩家的所有卡 | `(card, enchantment, command)` |
 
+> 0.106.x 备注：原生 `Hook.BeforeSideTurnStart` / `Hook.AfterSideTurnStart` 现在额外携带 `participants`，并使用 `ICombatState`。这里列出的 lifecycle 桥接回调刻意保持 `(card, enchantment, side)`，框架内部负责适配原生签名；只有直接 patch vanilla `Hook` 时才需要写完整参数。
+
 #### Vanilla Hook 桥接回调（伤害/格挡/死亡）
 
 | 回调 | 桥接的 Vanilla Hook | 作用域 | 参数 |

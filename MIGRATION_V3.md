@@ -116,6 +116,19 @@ MultiEnchantmentApi.Register<MyEnchantment>()
 
 v0.106 玩家日志中的 `SavedProperty name MultiEnchantmentMergedStackAmounts could not be mapped to any net ID!` 来自旧存档里残留的 `MultiEnchantment*` 字段。新版会在加载/保存路径把这些字段同步到 `multi_enchantment_save_sidecar.json`，并在本地 run save 写盘前从 vanilla 存档 DTO 中剥离，避免卸载 mod 后 vanilla 再序列化这些字段时报错。
 
+### v0.106.x 原生签名变更提醒
+
+当前本仓库按 0.106.1 系列 DLL 复核。直接 patch vanilla `Hook` 或重写 vanilla block 附魔方法时，请同步以下签名：
+
+- `Hook.BeforeSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)`
+- `Hook.AfterSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)`
+- `Hook.BeforeTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)`
+- `Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)`
+- `EnchantmentModel.EnchantBlockAdditive(decimal originalBlock)`
+- `EnchantmentModel.EnchantBlockMultiplicative(decimal originalBlock)`
+
+`EnchantDamageAdditive` / `EnchantDamageMultiplicative` 仍保留 `ValueProp` 参数。MultiEnchantmentMod 的 public lifecycle 回调仍保持稳定形状，例如 `.OnSideTurnStart((card, enchantment, side) => ...)`；只有直接面向 vanilla API 时才需要处理 `participants`。
+
 迁移步骤：
 
 1. 先安装新版 MultiEnchantmentMod。
@@ -168,7 +181,7 @@ new StackDefinition(StackBehavior.DuplicateInstance, StatusAggregation.PerInstan
 
 - **MEM007** 严重级别从 Info 提升到 Warning。
 - **MEM009**：`[ModifyDynamicVar]` 标注的方法签名必须是 `decimal(EnchantmentStackSnapshot, decimal)`，不符合编译报 Error。
-- **MEM011**：`[Enchantment(MaxActivations=N)]` 但没显式设置 `Activation` 时 Warn（默认 OnPlay 可能不是作者意图）。
+- **MEM011**：`[Enchantment(MaxActivations=N)]` 使用默认 `ActivationTrigger.OnPlay` 时 Warn（这可能不是作者意图）。`ActivationTrigger` 不是合法的 C# attribute named-argument 类型；需要非默认触发器时，用 fluent `.MaxActivations(N, trigger)` 或 `EnchantmentDefinition.Scope`。
 - **MEM012**：Definition class override `OnMergedDelta` 但 Stack 不是 `MergeAmount` 时 Warn（override 不会被调用）。
 
 ### F. 热路径性能
@@ -370,3 +383,51 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 清除覆盖�
 - 想让同一种附魔在不同来源下有不同生命周期时，优先用 `MultiEnchantmentApi.Enchant(..., scopeOverride: ...)`，不用再拆成多个 EnchantmentModel 类型。
 - 已挂上的实例需要临时变更生命周期时，用 `SetScopeOverride(card, enchantment, scope)`；传 `null` 清除覆盖。
 - 不要把带谓词的 `ConditionalActive` / `RemoveWhen` 当作实例覆盖；这类逻辑仍应注册在类型级 scope 上。
+
+---
+
+## v2.3.0 新增（附魔主题卡组支撑）
+
+这一轮为下游「注入 / 附灵 / 觉醒 / 激发 / 再次注入」卡组动词补齐 API，**纯加法**，向后兼容。
+
+### Q. 异步应用与「被附魔时」通知
+
+| API | 用途 |
+| :-- | :-- |
+| `Task<EnchantmentModel?> EnchantAsync(PlayerChoiceContext?, card, enchantment, amount = 1, scopeOverride = null)` | `Enchant` 的异步版，把 `PlayerChoiceContext` 透传给应用后钩子，并 await 它们——可在附魔落定后安全地发命令 / autoplay。 |
+| `IDisposable AfterCardEnchanted(AfterCardEnchantedHandler)` | 订阅卡级「被附魔」通知，用于 keyword/marker 系统（如 **激发**：被附魔时把这张牌打出），无需把 marker 建模成附魔。 |
+| `AfterSiblingAppliedStacked` （stacked 钩子 + `StackedAfterSiblingAppliedContext` / `StackedAfterSiblingAppliedHandler`） | 按附魔类型粒度反应「同卡又挂了一个附魔」，携带 `EnchantmentStackSnapshot`。 |
+
+**关键契约（务必注意）：**
+
+- `AfterCardEnchanted` **只在异步路径**（`EnchantAsync` / `CopyEnchantmentAsync`）触发；同步 `Enchant` / `CopyEnchantment` 及 vanilla 附魔路径**不触发**。激发 / autoplay 必须走 `EnchantAsync`。
+- `AfterSiblingAppliedStacked` 在**同步和异步路径都触发**，但同步路径以 `.GetAwaiter().GetResult()` 阻塞分发——处理器**不得** await 真正的游戏命令，否则可能卡死游戏线程。命令式逻辑请用 `AfterCardEnchanted` + `EnchantAsync`。
+
+> docs/public-api.md「Reacting to "this card just got enchanted": which hook?」一节给了二者的决策表。
+
+### R. 复制 / 再次注入
+
+| API | 用途 |
+| :-- | :-- |
+| `EnchantmentModel? CopyEnchantment(target, source, scopeOverride = null)` | clone 一个 live 附魔实例（保留 Amount/Props/自定义字段）并通过 v2 管线重新挂到 `target`，重置运行时 scope 计数。 |
+| `Task<EnchantmentModel?> CopyEnchantmentAsync(PlayerChoiceContext?, target, source, scopeOverride = null)` | 异步版，重置 scope 后再发 `AfterCardEnchanted` 通知。 |
+| `EnchantmentModel? GetMostRecentlyAppliedEnchantment(card)` | 当前 live、最近一次被应用 / 合并的附魔实例。 |
+| `EnchantmentModel? GetMostRecentlyAppliedEnchantmentThisTurn(card)` | **本回合**内最近被应用的附魔；每个玩家回合开始时重置，本回合没注入则返回 `null`。对应卡面「本回合你最后注入过的附魔再次注入」。瞬时状态，不进存档。 |
+
+「再次注入」典型写法：`GetMostRecentlyAppliedEnchantmentThisTurn(source)` 取到本回合最后注入的附魔，再 `CopyEnchantment(target, last)` 注到另一张手牌。
+
+参见 [Sample 30 — InjectInfuseAwaken](MultiEnchantmentMod.Samples/Samples/30_InjectInfuseAwaken.cs)。
+
+### S. 公开 API 基线增量（v2.3.0）
+
+[docs/public-api.md](docs/public-api.md) 同步新增：`EnchantAsync`、`AfterCardEnchanted` / `AfterCardEnchantedContext` / `AfterCardEnchantedHandler`、`CopyEnchantment` / `CopyEnchantmentAsync`、`GetMostRecentlyAppliedEnchantment` / `GetMostRecentlyAppliedEnchantmentThisTurn`、`AfterSiblingAppliedStacked` / `StackedAfterSiblingAppliedContext` / `StackedAfterSiblingAppliedHandler`。
+
+### T. 附魔卡集缺口补全（条件判定 / 级联守护 / 动词标签 / 移动）
+
+针对火/灼烧 + 附魔扩展卡集的缺口排查补齐，**纯加法**。
+
+- **条件判定**：`HasAnyEnchantment(card)`、`GetEnchantmentCount(card)` 默认只统计 gameplay 附魔，排除 `ExtraIconEnchantmentModel` 这类纯 UI marker；需要把 marker 也算进去时传 `includeExtraIcons: true`。覆盖「若这张牌有附魔」「所有手牌都有附魔才能打出」「每有一张有附魔的牌造成 X」「费用最低的有附魔的牌」等。
+- **级联守护**：`AfterCardEnchantedContext` 增 `CascadeDepth`——顶层 `0`，由某个 `AfterCardEnchanted` 处理器内再次附魔触发的嵌套回调为 `>0`。旧神咏唱 / 焚心契约 / 灵魂火炉 等「附魔时再附魔」卡用 `if (ctx.CascadeDepth > 0) return;` 一行防无限递归。`DispatchAfterCardEnchanted` 用 `[ThreadStatic]` 计数器实现（沿用 ModifyDynamicVar 重入栈的单线程假设）。
+- **移动**：`MoveEnchantment(source, target, e)` = 保留 scope 进度复制后从 source 移除；`CopyEnchantment(..., preserveScopeProgress: true)` 保留剩余回合/激活数（默认仍重置，用于「再次注入」）。灵纹转写 / 万象同调逐个调用。
+
+> **边界说明**：「注入 / 附灵 / 觉醒」是下游火/附魔卡包的主题词，**不进**前置 API。前置只提供通用的 `EnchantAsync` + `AfterCardEnchanted`（含 `Card` / `AppliedEnchantment` / `ScopeOverride` / `CascadeDepth`）。动词命名、统计、专属事件由下游自己包一层（例如 `EmberVerbs.Inject/Infuse/Awaken` 转发 `EnchantAsync(scope)` 后派发下游自己的 `AfterVerbEnchanted` 事件）。
