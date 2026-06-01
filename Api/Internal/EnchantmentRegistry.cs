@@ -600,13 +600,26 @@ internal static class EnchantmentRegistry
             MethodInfo? method = enchantmentType.GetMethod(
                 methodName,
                 BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (method != null && method.DeclaringType == enchantmentType)
+            if (method?.DeclaringType != null &&
+                method.DeclaringType != typeof(EnchantmentModel) &&
+                IsNonVanillaEnchantmentType(method.DeclaringType))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static bool IsNonVanillaEnchantmentType(Type type)
+    {
+        if (!typeof(EnchantmentModel).IsAssignableFrom(type))
+        {
+            return false;
+        }
+
+        string? ns = type.Namespace;
+        return ns == null || !ns.StartsWith("MegaCrit.Sts2", StringComparison.Ordinal);
     }
 
     internal static bool DeclaresSavedProperties(Type enchantmentType)
