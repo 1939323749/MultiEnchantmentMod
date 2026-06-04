@@ -1,83 +1,103 @@
-# Extra Icon Wiki for Downstream Mods
+# Extra Icon Manual
 
-This page is for mod authors who want to use `MultiEnchantmentMod` as a prerequisite only for
-card UI icons. It intentionally skips normal enchantment design. Use this when your feature is a
-marker, keyword badge, state flag, card-family icon, or preview/library indicator that should not
-behave like a gameplay enchantment.
+Use this page when you want to add a small card badge for a downstream mod.
 
-Chinese version: [`docs/extra-icon-wiki.zh.md`](extra-icon-wiki.zh.md). Full type reference:
-[`docs/public-api.md`](public-api.md).
+An extra icon is for UI information. It should not change damage, block, card text, cost, hooks, or
+other gameplay behavior. If the card should behave differently, use a normal `EnchantmentModel`
+instead.
 
-## Contents
+For the full API list, see [`public-api.md`](public-api.md). For project setup, see
+[`integration.md`](integration.md).
 
-- [What extra icons are](#what-extra-icons-are)
-- [Two flavors at a glance](#two-flavors-at-a-glance)
-- [Quick start: a static icon marker](#quick-start-a-static-icon-marker)
-- [Choosing an approach](#choosing-an-approach)
-- [Dependency setup & registration lifecycle](#dependency-setup--registration-lifecycle)
-- [Presentation styling](#presentation-styling)
-- [`ExtraIconDisplay` fields (provider path)](#extraicondisplay-fields-provider-path)
-- [Dynamic providers & `ExtraIconDisplayContext`](#dynamic-providers--extraicondisplaycontext)
-- [Icon resolution contract](#icon-resolution-contract)
-- [Removing & updating icons](#removing--updating-icons)
-- [Hover tips: explaining your icon](#hover-tips-explaining-your-icon)
-- [Stored (live) marker instances](#stored-live-marker-instances)
-- ["Has enchantment" checks](#has-enchantment-checks)
-- [Performance & best practices](#performance--best-practices)
-- [Troubleshooting](#troubleshooting)
+## 1. Pick the right path
 
-## What extra icons are
+Use this table first.
 
-An extra icon is a card badge rendered by the multi-enchantment UI layer. It can use an
-`EnchantmentModel` icon and presentation style, but by default it is not counted as a gameplay
-enchantment.
+| Need | Use |
+|---|---|
+| One simple badge decided by a card predicate | `RegisterExtraIcon<TMarker>` |
+| Badge amount/icon/style changes per card | `RegisterExtraIconDisplayProvider` |
+| One provider returns several badges | `RegisterExtraIconDisplayProvider` |
+| Marker has saved per-card data | Stored `ExtraIconEnchantmentModel` |
+| Card behavior changes | Normal `EnchantmentModel` |
 
-Extra icons are excluded from:
+Recommendation: start with display-only registration. It is cheaper to reason about, and it does not
+make gameplay checks like `HasAnyEnchantment(card)` return true by accident.
 
-- `MultiEnchantmentApi.HasAnyEnchantment(card)` and `GetEnchantmentCount(card)`.
-- sibling reads such as `GetSiblings(card)`.
-- stack snapshots for gameplay enchantments.
-- damage, block, replay-count, energy-cost, and dynamic-var contributions.
-- lifecycle hooks such as `OnPlay`, `OnCombatStart`, `OnApplied`, and sibling callbacks.
-- compatible transform copy and public copy/move helpers.
-- battle history, unless you explicitly build a gameplay enchantment instead.
+### How the three differ (normal enchantment / stored marker / display-only marker)
 
-They *are* included in: card-UI rendering, the visual active-status sweep (so `HideWhenDisabled`
-works), type-keyed queries (`HasEnchantment<TMarker>` / `GetEnchantmentCount(card, typeof(TMarker))`
-report markers because the queried type is a marker type), and — for stored markers — save/load.
+All three can "show something" on a card, but they are **fundamentally different**. The root of the
+difference is one line: internally the mod treats every `ExtraIconEnchantmentModel` as non-gameplay
+via `IsGameplayEnchantment(e) = e is not ExtraIconEnchantmentModel`.
 
-Use `includeExtraIcons: true` only when you explicitly want UI markers included in a count:
+| Aspect | Normal enchantment `EnchantmentModel` | Stored marker (`ExtraIconEnchantmentModel` instance) | Display-only marker (provider / `RegisterExtraIcon`) |
+|---|---|---|---|
+| A real enchantment instance | ✅ Yes | ✅ Yes | ❌ No — recomputed from a predicate at render time |
+| How it is created | `Enchant(card, model)` | `Enchant(card, an ExtraIconEnchantmentModel)` | `RegisterExtraIcon` / `RegisterExtraIconDisplayProvider` / `IconState` |
+| Saved + carried on card clone | ✅ | ✅ | ❌ |
+| Found by `GetEnchantment<T>`/`HasEnchantment<T>` | ✅ | ✅ | ❌ |
+| Found by `GetMarkers`/`GetMarker<T>` | ❌ (it is not a marker) | ✅ | ❌ |
+| Runs combat hooks / damage / block / DynamicVar / energy pipelines | ✅ | ❌ | ❌ |
+| Fires `OnApplied`/`OnPlay`/`AfterCardEnchanted` lifecycle | ✅ | ❌ | ❌ (no instance at all) |
+| Counted by `HasAnyEnchantment`/`GetEnchantmentCount` | ✅ by default | ❌ not by default (need `includeExtraIcons: true`) | ❌ |
+| Enters application order / battle history | ✅ | ❌ (history defaults to `Hidden`) | ❌ |
+| Can read/write `Amount`/`Props` as data | ✅ | ✅ | ❌ (no instance; change the state the predicate reads) |
+| Default visuals | Badge backing, can show amount + extra card text | No backing, no amount/extra text, hidden when disabled, `DisplayPriority=1000` | Same stored-marker defaults (`ExtraIconPresentation.Default`) |
+| Typical use | Actually change card behavior | A persistent, save-backed "flag/counter" you can query by type, with no effect of its own | A purely decorative badge shown by condition |
+
+Quick decision:
+
+- Changes **card behavior** → normal `EnchantmentModel`.
+- No behavior change, but you need "a real marker on the card that is saved, can be retrieved with
+  `GetMarker`, and can hold `Amount`/`Props`" → stored `ExtraIconEnchantmentModel`.
+- No behavior change and **no need to persist**, just "show an icon when a condition holds" →
+  display-only marker (lightest; prefer this).
+
+Key point: a stored marker and a normal enchantment **are both real instances, both saved, both
+queryable by type**; the only difference is the marker is flagged non-gameplay, so it **runs no
+combat logic/hooks, is not counted as an enchantment, never enters history, and by default draws
+just a small backing-less icon**.
+
+## 2. Add the API guard
+
+In your mod assembly, declare compatibility once:
 
 ```csharp
-bool hasGameplayEnchantments = MultiEnchantmentApi.HasAnyEnchantment(card);
-bool hasGameplayOrMarkers = MultiEnchantmentApi.HasAnyEnchantment(card, includeExtraIcons: true);
+using MultiEnchantmentMod.Api;
 
-int gameplayCount = MultiEnchantmentApi.GetEnchantmentCount(card);
-int gameplayOrMarkerCount = MultiEnchantmentApi.GetEnchantmentCount(card, includeExtraIcons: true);
+[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]
 ```
 
-## Two flavors at a glance
+During initialization, check the version before registering icons:
 
-`ExtraIconEnchantmentModel` is used two different ways. Most mods only need the first.
+```csharp
+public static void Initialize()
+{
+    if (!MultiEnchantmentApi.RequireApiVersion(MultiEnchantmentApiVersion.Current))
+    {
+        return;
+    }
 
-| | **Display-only provider marker** | **Stored marker instance** |
-|---|---|---|
-| How it gets on a card | a provider you register synthesizes it at UI time | you `Enchant` an `ExtraIconEnchantmentModel` onto the card |
-| Lives in the card's enchantment list | no | yes (in the extra slot) |
-| Saved to the run file | no — regenerated by the provider | yes |
-| Needs predicate to decide visibility | yes (`appliesTo` / `ShouldDisplay`) | no — present until removed |
-| Works on library / reward / preview cards with no runtime state | yes | only if you put it there |
-| Typical use | keyword/family/rarity badge, "this card is special" glyph | per-card saved cosmetic state |
+    BloodMarkedIcons.Install();
+}
+```
 
-When in doubt, use a display-only provider.
+Note: reference `MultiEnchantmentMod.dll` as a prerequisite. Do not copy it into your own output
+folder.
 
-## Quick start: a static icon marker
+## 3. Create a simple static marker
 
-The smallest pattern is:
+Create an empty marker type:
 
-1. Create a marker class that inherits `ExtraIconEnchantmentModel`.
-2. Give it the icon the UI should draw.
-3. Register a predicate that says which cards should show the icon.
+```csharp
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
+{
+}
+```
+
+Then register it:
 
 ```csharp
 using System;
@@ -85,25 +105,25 @@ using Godot;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api;
 
-// The marker type is just a key — no body needed. EnchantmentModel.Icon is NOT overridable
-// (it is non-virtual), so supply the image via the `icon` parameter below.
-public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
-{
-}
-
 public static class BloodMarkedIcons
 {
+    private static Texture2D? _icon;
     private static IDisposable? _registration;
 
     public static void Install()
     {
+        _icon ??= GD.Load<Texture2D>("res://images/markers/blood_marked.png");
+
         _registration ??= MultiEnchantmentApi.RegisterExtraIcon<BloodMarkedIcon>(
             appliesTo: card => card.Id.Entry.StartsWith("Vampire", StringComparison.Ordinal),
-            presentationStyle: ExtraIconPresentation.Default with
+            options: new ExtraIconRegistrationOptions
             {
-                IconScale = 1.25f,
-            },
-            icon: GD.Load<CompressedTexture2D>("res://images/enchantments/blood_marked.png"));
+                Icon = _icon,
+                PresentationStyle = ExtraIconPresentation.Default with
+                {
+                    IconScale = 1.2f,
+                },
+            });
     }
 
     public static void Uninstall()
@@ -114,153 +134,71 @@ public static class BloodMarkedIcons
 }
 ```
 
-`RegisterExtraIcon<T>` is the convenience entry point: `appliesTo` plus optional `presentationStyle`,
-`shouldDisplay`, and `icon`. To set an amount label, coexist with a live enchantment, or vary the
-icon per card, use the [provider API](#dynamic-providers--extraicondisplaycontext).
+Replace these parts:
 
-## Choosing an approach
+- `BloodMarkedIcon`: your marker type.
+- `res://images/markers/blood_marked.png`: your imported texture path.
+- `appliesTo`: the condition for showing the badge.
 
-| Use… | when |
-|---|---|
-| `RegisterExtraIcon<T>` | one static icon per card, decided by a simple predicate. |
-| `RegisterExtraIconDisplayProvider` | one provider may return several icons, the icon/style/amount depends on the card, or you need `ShowAmount` / `ShowWithLiveEnchantment`. |
-| a stored `ExtraIconEnchantmentModel` instance | the marker has per-card saved state, should clear/restore with the card, but must not affect gameplay math. |
-| a normal `EnchantmentModel` (+ `PresentationStyle`) | the card's text/numbers/cost/play count change, effects run on play/draw/combat/turn/removal, or other mods should see it as a real enchantment. |
+Note: `BloodMarkedIcon` can be empty. The type is the marker key. The UI uses it for sorting,
+deduplication, same-type suppression, and query APIs.
 
-## Dependency setup & registration lifecycle
+Validate:
 
-Reference `MultiEnchantmentMod.dll` as a prerequisite, not as a copied dependency. See
-[`docs/integration.md`](integration.md) for the full project-file setup. Declare API compatibility
-once per assembly:
+- Build your mod.
+- Open a card that matches `appliesTo`.
+- The badge should appear in the card icon row.
+- If it does not appear, check the predicate and the icon path first.
 
-```csharp
-using MultiEnchantmentMod.Api;
+## 4. Set fixed options
 
-[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]
-```
-
-Check the API version before registering:
+Use `ExtraIconRegistrationOptions` when the static marker needs common settings.
 
 ```csharp
-public static void Initialize()
+options: new ExtraIconRegistrationOptions
 {
-    if (!MultiEnchantmentApi.RequireApiVersion(MultiEnchantmentApiVersion.Current))
+    Icon = _icon,
+    PresentationStyle = ExtraIconPresentation.Default with
     {
-        return;
-    }
-
-    MyExtraIcons.Install();
-}
-```
-
-Lifecycle rules:
-
-- **Late registration is allowed.** Unlike enchantment registration, display providers are a
-  UI-only registry and are **not** frozen by `SealRegistry()`. Registering lazily (e.g. on first
-  card-library open) is fine; the icon appears on the next visual refresh.
-- **Always dispose.** Keep the returned `IDisposable` and dispose it when your mod unloads or the
-  feature toggles off, or the provider keeps running on every card forever. The `??=` guard in the
-  examples keeps a re-entrant `Install()` from double-registering.
-- **Bad providers are auto-disabled.** After a handful of consecutive exceptions the framework
-  disables a throwing provider (logging once at error level) so it stops running on every card's
-  refresh. A later successful call resets the counter, so a transient failure is tolerated.
-
-## Presentation styling
-
-Markers reuse `EnchantmentPresentationStyle`. Start from `ExtraIconPresentation.Default` and adjust
-with a `with` expression:
-
-```csharp
-presentationStyle: ExtraIconPresentation.Default with
-{
-    ShowBadgeBacking = false,
-    IconScale = 1.35f,
-    IconOffset = new Vector2(0, -3),
-    IconTint = Colors.White,
-    DisabledIconTint = new Color(0.5f, 0.5f, 0.5f, 0.75f),
-    HideWhenDisabled = true,
-    DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 50,
-}
-```
-
-`ExtraIconPresentation.Default` is `ShowBadgeBacking = false`, `HideWhenDisabled = true`,
-`DisplayPriority = 1000` (= `ExtraIconPresentation.DefaultDisplayPriority`).
-
-| Field | Default (raw style / `ExtraIconPresentation.Default`) | Effect |
-|---|---|---|
-| `ShowBadgeBacking` | `true` / `false` | draw the vanilla badge backing plate behind the icon. |
-| `BadgeBackingTexture` | `null` | override the backing plate texture (only when `ShowBadgeBacking`). |
-| `IconScale` | `1f` | scale of the `%Enchantment/Icon` node only. `0`, negatives, `NaN`, infinity → `1f`. |
-| `IconOffset` | `Vector2.Zero` | pixel offset of the icon node. |
-| `IconTint` | `null` (white) | `SelfModulate` applied to the icon. |
-| `DisabledIconTint` | `null` | tint when the marker's status is Disabled. With a badge backing the vanilla desaturating shader already dims it, so leave this null unless you want a specific disabled color. |
-| `HideWhenDisabled` | `false` / `true` | hide the entry entirely when disabled instead of dimming it. |
-| `DisplayPriority` | `0` / `1000` | sort key, **higher renders earlier**. See below. |
-| `PreserveExtraTextBbCode` | `false` | only relevant to gameplay enchantment card text; markers set `HasExtraCardText = false`, so ignore it. |
-
-`IconScale` changes only the rendered icon node — not the source PNG, badge spacing, or amount
-label.
-
-### DisplayPriority and the primary slot
-
-Visual entries render highest-`DisplayPriority`-first, and the first entry occupies the card's
-*primary* (vanilla) badge slot. Because `ExtraIconPresentation.Default` uses `1000` and gameplay
-enchantments default to `0`, **a default marker renders ahead of normal enchantment badges and
-takes the primary slot**. That is intended for prominent markers.
-
-If you instead want the marker to sit *after* the card's real enchantment badges, give it a
-priority below the gameplay default:
-
-```csharp
-ExtraIconPresentation.Default with { DisplayPriority = -1 }
-```
-
-Ties keep application / provider order.
-
-## `ExtraIconDisplay` fields (provider path)
-
-A provider yields `ExtraIconDisplay` records:
-
-- `EnchantmentType` (required): the type that keys the marker (dedup, suppression, visual id).
-  Should be an `ExtraIconEnchantmentModel` subclass; the framework logs a one-time warning if it is
-  a plain gameplay enchantment type, because the marker presentation defaults are not meant for those.
-- `Icon`: an explicit `Texture2D` to draw, overriding everything else. This is the way to use
-  arbitrary art (see the [icon resolution contract](#icon-resolution-contract)).
-- `Enchantment`: an optional pre-built model to read the icon from. When both this and `Icon` are
-  omitted, the framework looks up `EnchantmentType`'s canonical model (via `ModelDb`) and reads its
-  icon.
-- `PresentationStyle`: per-display style override; falls back to the registered style for the type.
-- `ShouldDisplay`: per-refresh predicate (see context below).
-- `ShowAmount` + `Amount`: draw a number on the icon. `ExtraIconEnchantmentModel` hard-disables its
-  own `ShowAmount`, so this is the only way a display-only marker shows a count (defaults: `false` / `1`).
-- `ShowWithLiveEnchantment`: by default a marker is suppressed when the card already carries a live
-  enchantment (or another marker) of the same type, so the real badge wins its slot. Set this to
-  render the marker anyway — e.g. a decorative overlay that should coexist with the live badge.
-
-Amount example — a stacking-charge glyph that reads a count off the card:
-
-```csharp
-yield return new ExtraIconDisplay
-{
-    EnchantmentType = typeof(ChargeMarker),
-    Icon = GD.Load<CompressedTexture2D>("res://images/markers/charge.png"),
+        DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 20,
+    },
     ShowAmount = true,
-    Amount = GetChargeCount(card),
-    PresentationStyle = ExtraIconPresentation.Default,
-};
+    Amount = 3,
+    ShowWithLiveEnchantment = false,
+}
 ```
 
-## Dynamic providers & `ExtraIconDisplayContext`
+Field notes:
 
-Use `RegisterExtraIconDisplayProvider` when one provider may return several icons, or when the icon
-instance / style / amount depends on the card.
+- `Icon`: explicit texture. This is the safest way to provide art.
+- `PresentationStyle`: icon size, tint, badge backing, disabled behavior, and priority.
+- `ShowAmount`: set `true` before `Amount` is drawn.
+- `Amount`: fixed number for every matching card.
+- `ShowWithLiveEnchantment`: set `true` only when this marker should coexist with a live
+  enchantment of the same exact type.
+
+If `Amount` must depend on the card, do not use this static path. Use a provider.
+
+## 5. Create a dynamic provider
+
+Use a provider when the output depends on card state.
 
 ```csharp
+using System;
 using System.Collections.Generic;
+using Godot;
+using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api;
 
-public static class DynamicMarkerIcons
+public sealed class BloodChargeIcon : ExtraIconEnchantmentModel
 {
+}
+
+public static class BloodChargeIcons
+{
+    private static readonly Texture2D ChargeIcon =
+        GD.Load<Texture2D>("res://images/markers/blood_charge.png");
+
     private static IDisposable? _registration;
 
     public static void Install()
@@ -268,204 +206,433 @@ public static class DynamicMarkerIcons
         _registration ??= MultiEnchantmentApi.RegisterExtraIconDisplayProvider(GetIcons);
     }
 
+    public static void Uninstall()
+    {
+        _registration?.Dispose();
+        _registration = null;
+    }
+
     private static IEnumerable<ExtraIconDisplay> GetIcons(CardModel card)
     {
-        if (!ShouldShowBloodMarker(card))
+        int charges = BloodState.GetCharges(card);
+        if (charges <= 0)
         {
             yield break;
         }
 
         yield return new ExtraIconDisplay
         {
-            EnchantmentType = typeof(BloodMarkedIcon),
-            Icon = GD.Load<CompressedTexture2D>("res://images/enchantments/blood_marked.png"),
-            PresentationStyle = ExtraIconPresentation.Default with
-            {
-                IconScale = card.IsEnchantmentPreview ? 1.15f : 1.3f,
-            },
-            ShouldDisplay = context =>
-                context.IsPreviewCard ||
-                context.IsCombatCard ||
-                !context.HasLiveEnchantment,
+            EnchantmentType = typeof(BloodChargeIcon),
+            Icon = ChargeIcon,
+            ShowAmount = true,
+            Amount = charges,
+            PresentationStyle = ExtraIconPresentation.Default,
+            ShouldDisplay = context => context.IsCombatCard || context.IsPreviewCard,
         };
     }
 }
 ```
 
+Replace `BloodState.GetCharges(card)` with your own state lookup.
+
+`ExtraIconDisplay` fields:
+
+- `EnchantmentType`: required marker key. Prefer an `ExtraIconEnchantmentModel` subclass.
+- `Icon`: texture to draw.
+- `Enchantment`: optional model source for icon/status/hover tips.
+- `PresentationStyle`: per-display style.
+- `ShouldDisplay`: final visibility predicate.
+- `ShowAmount` / `Amount`: number on the badge.
+- `ShowWithLiveEnchantment`: allow same-type coexistence.
+
 `ExtraIconDisplayContext` gives:
 
-- `Card`: the UI card being refreshed. This is the full `CardModel`, so a predicate can read
-  anything it needs directly — `card.Pile` (deck / hand / draw / discard), `card.Keywords`,
-  `card.Type`, etc. There is no need for the context to mirror every card field.
-- `HasLiveEnchantment`: whether that exact marker type already exists on the card as a live
-  enchantment instance.
-- `IsCombatCard`: true when the card currently has combat state. Use this for a combat-only marker:
-  `ShouldDisplay = ctx => ctx.IsCombatCard`. Library / encyclopedia / reward cards are not combat
-  cards, so this keeps a battle marker out of those surfaces.
+- `Card`: the `CardModel` being refreshed.
+- `HasLiveEnchantment`: whether the exact marker type already exists on this card.
+- `IsCombatCard`: true for combat cards.
 - `IsPreviewCard`: true for enchantment preview cards.
 
-A provider runs for **every** card on **every** visual refresh once it is registered, so keep the
-predicate cheap (see [Performance](#performance--best-practices)).
+Validate:
 
-## Icon resolution contract
+- Change the state read by `GetIcons`.
+- Call `MultiEnchantmentApi.RefreshExtraIcons(card)`.
+- The icon should appear, disappear, or update its number.
 
-**`EnchantmentModel.Icon` is not overridable** — it is non-virtual and resolves the texture from a
-convention path derived from the model id. So `public override Texture2D Icon => …` does **not**
-compile, and a marker with no texture at its convention path has a null `Icon`. The framework picks
-the icon in this order:
+## 6. Refresh after state changes
 
-1. `ExtraIconDisplay.Icon` (or the `icon:` parameter of `RegisterExtraIcon`) — an explicit texture.
-   This is the way to use arbitrary art, e.g. `GD.Load<CompressedTexture2D>("res://…png")`, or borrow
-   another enchantment's icon with `ModelDb.Enchantment<SomeEnchantment>().Icon`.
-2. `ExtraIconDisplay.Enchantment`'s `Icon`.
-3. `EnchantmentType`'s canonical model icon, fetched from `ModelDb` (the framework never constructs
-   a model — `new`-ing one throws `DuplicateModelException`). This resolves to non-null only if you
-   ship a texture at that type's convention icon path.
+Display-only icons are recomputed from provider state. There is no "edit this registration" call.
 
-If none yields a non-null texture the marker is **skipped** (logged once) — there is **no
-placeholder / "missing icon" fallback**, by design (it would paint broken-texture boxes on real
-cards). To customize an enchantment's own `Icon` rather than supply a display texture, ship a file
-at its icon path or Harmony-patch `EnchantmentModel.get_Icon` (advanced).
-
-## Removing & updating icons
-
-Both flavors support removal and modification. There is no "edit a registration in place" call —
-display-only icons are predicate-driven, so you change behavior by changing what your provider
-returns.
-
-**Display-only provider icons**
-
-- *Remove the whole registration:* dispose the `IDisposable` returned by `RegisterExtraIcon` /
-  `RegisterExtraIconDisplayProvider`.
-- *Show / hide / restyle per card:* return (or don't) an `ExtraIconDisplay` from your provider, or
-  gate it with `ShouldDisplay`. The provider re-runs on every refresh, so changing the state it
-  reads is how you "modify" an icon (different icon / style / amount).
-- *Make a change take effect now:* a card already on screen — especially a static one like a
-  compendium entry — does not re-render on its own. Call `RefreshExtraIcons(card)` after changing
-  provider state or disposing a provider, or `RefreshExtraIcons()` to refresh every rendered card.
+Use this after changing one card:
 
 ```csharp
-// stop showing the marker, and update any card already on screen
-_registration?.Dispose();
-_registration = null;
-MultiEnchantmentApi.RefreshExtraIcons();          // or RefreshExtraIcons(specificCard)
+MultiEnchantmentApi.RefreshExtraIcons(card);
 ```
 
-**Stored marker instances**
-
-- *Remove:* `MultiEnchantmentApi.RemoveEnchantment(card, marker)` — markers skip the gameplay
-  `OnRemoved` veto, so they always come off.
-- *Modify:* mutate the marker's `Props` / `Amount`, then `MultiEnchantmentApi.NotifyPropsChanged(marker)`
-  to refresh derived state and redraw. Remove/modify on stored markers refresh the card
-  automatically — you do **not** need `RefreshExtraIcons` for them.
-
-## Hover tips: explaining your icon
-
-Vanilla shows enchantment hover text at the **card** level (hovering the card lists
-`Enchantment.HoverTips`) — there is no tooltip pinned to an individual badge. Markers use the same
-mechanism. The override point on `EnchantmentModel` is the protected `ExtraHoverTips`; the public
-`HoverTips` aggregates it (plus keyword tips). Override `ExtraHoverTips` on your marker type, and
-when the marker is showing on a card those tips appear in the card hover.
+Use this after changing global state:
 
 ```csharp
-using System.Collections.Generic;
-using MegaCrit.Sts2.Core.HoverTips;
+MultiEnchantmentApi.RefreshExtraIcons();
+```
 
-public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
+Note: stored marker instances already refresh when you remove them or call `NotifyPropsChanged`.
+Provider markers need a refresh when the UI should update immediately.
+
+## 7. Mirror model state as an icon
+
+Common case: a real card, ability, relic, or normal enchantment owns the gameplay state. You only
+want an extra icon to show that state on the card.
+
+Treat `IconState<TMarker>` as a UI projection. It is not the gameplay owner.
+
+Recommended pattern:
+
+1. Create one `IconState<TMarker>` (one instance per marker type).
+2. Store the real state on your real model.
+3. After that model changes, sync the display value with `Set`/`Show` or `Remove`.
+
+`IconState<TMarker>` is a small wrapper around the provider pattern. It stores temporary per-card
+UI state, draws the marker, and refreshes the card after each mutation. Calling `Register()` is
+optional — the first mutation auto-registers the provider.
+
+It offers two ways to project a marker:
+
+- **Amount-gated** (`Set`, `Add`): the marker shows only while the amount is positive; an amount of
+  zero or less removes it. Best when the icon mirrors a count that disappears at zero.
+- **Explicit presence** (`Show`): the marker stays shown until `Remove`/`Clear`, the amount is just a
+  label that may be `0`, and an `IconStateOverride` can vary that card's icon / hover tip /
+  presentation / amount label. Best for per-card art or a counter that should display `0`.
+
+`Has(card)` is a presence check (true even for a `Show`n marker at amount 0); `Get(card)` returns the
+numeric amount.
+
+Create the marker and icon projection:
+
+```csharp
+using System;
+using Godot;
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodChargeIcon : ExtraIconEnchantmentModel
 {
-    public override Texture2D Icon =>
-        GD.Load<Texture2D>("res://images/enchantments/blood_marked.png");
+}
 
-    // Protected override point (NOT HoverTips). The public HoverTips will include whatever you
-    // return here. Fill the array with your tips, e.g. HoverTipFactory.FromKeyword(CardKeyword.X).
-    protected override IEnumerable<IHoverTip> ExtraHoverTips => new IHoverTip[]
+public static class BloodChargeIcons
+{
+    public static readonly IconState<BloodChargeIcon> State = new(
+        icon: GD.Load<Texture2D>("res://images/markers/blood_charge.png"),
+        presentationStyle: ExtraIconPresentation.Default,
+        showAmount: true);
+
+    public static void Install()
     {
-        /* your keyword / explanatory IHoverTip(s) */
-    };
+        // Optional: the first Set/Add/Show would auto-register anyway.
+        State.Register();
+    }
+
+    public static void Uninstall()
+    {
+        // Dispose is terminal: it unregisters AND clears all projections.
+        State.Dispose();
+    }
 }
 ```
 
-This works for both stored markers and display-only provider markers. A marker suppressed by a live
-enchantment of the same type contributes no tips (that enchantment already shows its own), so there
-are no duplicates.
+Then sync from the real model.
 
-## Stored (live) marker instances
+This example uses a normal enchantment as the gameplay owner. The enchantment is attached to the
+card; the icon only mirrors `enchantment.Amount`.
 
-Most marker icons should be display-only providers, especially for card library and preview UI.
-If you do attach an `ExtraIconEnchantmentModel` instance to a card, the framework forces it into
-the extra slot rather than `card.Enchantment`. It still renders, and can have an active-status
-predicate for dimming/hiding (`HideWhenDisabled` works because the visual active-status sweep
-includes markers).
-
-It still does not behave like a gameplay enchantment:
-
-- it does not call `ModifyCard`,
-- it does not fire `OnApplied` / sibling lifecycle hooks,
-- it does not fire `AfterCardEnchanted`,
-- it does not contribute to damage/block/dynamic-var pipelines,
-- it never enters the gameplay application/replay order (`ApplicationOrder`); markers order purely
-  by `DisplayPriority`.
-
-**What a stored marker travels with** — the rule is "follows the same card object, not card-identity
-changes":
-
-| Operation | Marker carried? | Why |
-|---|---|---|
-| Save / load | yes | same card, persisted per-card state |
-| Card duplicate / clone | yes | same logical card |
-| Compatible **transform** copy (`TryCopyCompatibleEnchantments`) | no | the card becomes a *different* card; only gameplay enchantments transfer |
-| Deck-version sync | no | a marker added in combat is not a permanent deck enchantment |
-
-If you need a marker to survive transforms or persist into the deck, model it as a normal
-enchantment instead.
-
-## "Has enchantment" checks
-
-Downstream cards and relics should use the default helpers for gameplay decisions:
+Note: this uses the mod lifecycle wrapper, not a vanilla game override. The wrapper signature is
+`OnCardDrawn(CardModel card, TEnchantment enchantment)`.
 
 ```csharp
-if (MultiEnchantmentApi.HasAnyEnchantment(card))
+using MegaCrit.Sts2.Core.Models;
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodCharge : EnchantmentModel
 {
-    // Gameplay enchantment only. Extra icons do not count.
+}
+
+public sealed class BloodChargeDefinition : EnchantmentDefinition<BloodCharge>
+{
+    protected override void OnApplied(CardModel card, BloodCharge enchantment)
+    {
+        BloodChargeIcons.State.Set(card, (int)enchantment.Amount);
+    }
+
+    protected override void OnCardDrawn(CardModel card, BloodCharge enchantment)
+    {
+        enchantment.Amount += 1;
+
+        // BloodCharge owns the state. BloodChargeIcon only shows it.
+        BloodChargeIcons.State.Set(card, (int)enchantment.Amount);
+        MultiEnchantmentApi.NotifyPropsChanged(enchantment);
+    }
+
+    protected override bool OnRemoved(
+        CardModel card,
+        BloodCharge enchantment,
+        RemovalReason reason)
+    {
+        _ = enchantment;
+        _ = reason;
+        BloodChargeIcons.State.Remove(card);
+        return true;
+    }
 }
 ```
 
-Only pass `includeExtraIcons: true` for UI / debug logic:
+If you are overriding the game's vanilla hook directly, keep the game signature:
 
 ```csharp
-int badgeLikeThings = MultiEnchantmentApi.GetEnchantmentCount(card, includeExtraIcons: true);
+using System.Threading.Tasks;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Models;
+
+public override Task AfterCardDrawn(
+    PlayerChoiceContext choiceContext,
+    CardModel card,
+    bool fromHandDraw)
+{
+    if (!ReferenceEquals(card, this))
+    {
+        return Task.CompletedTask;
+    }
+
+    int displayAmount = GetDisplayAmountForThisCard();
+    BloodChargeIcons.State.Set(card, displayAmount);
+    return Task.CompletedTask;
+}
 ```
 
-This keeps marker badges from accidentally enabling effects such as "if this card is enchanted",
-"all cards in hand must be enchanted", or "gain bonus damage for each enchanted card".
+### Per-card icon / tooltip via `Show`
 
-Note the type-keyed helpers are an exception: `HasEnchantment<TMarker>(card)` and
-`GetEnchantmentCount(card, typeof(TMarker))` *do* report a marker type, because asking specifically
-about a marker type clearly wants markers included.
+To vary art or hover text per card while sharing one `IconState`, project with `Show` and an
+`IconStateOverride`. Fields left `null` fall back to the constructor values.
 
-## Performance & best practices
+```csharp
+// Same marker type, different icon + tooltip per card, and a counter that may read "0".
+BloodChargeIcons.State.Show(cardA, amount: 0, overrides: new IconStateOverride
+{
+    Icon = GD.Load<Texture2D>("res://images/markers/blood_charge_empty.png"),
+    ShowAmount = true,
+});
 
-- Once any provider is registered, every card runs every provider on every `UpdateVisuals` and on
-  every card-hover. Keep predicates allocation-free and cheap; do not load textures, scan the whole
-  deck, or allocate per call. When no provider is registered the whole path is a cheap no-op
-  (`HasProviders` short-circuit), so unused mods pay nothing.
-- Resolve textures once (a cached field or `GD.Load` of an already-imported resource), not per
-  refresh.
-- Prefer one provider that yields several `ExtraIconDisplay`s over many separate providers.
-- Dispose registrations on unload; rely on the circuit breaker only as a safety net, not as normal
-  flow control.
+BloodChargeIcons.State.Show(cardB, amount: 3, overrides: new IconStateOverride
+{
+    Icon = GD.Load<Texture2D>("res://images/markers/blood_charge_full.png"),
+    Enchantment = someEnchantmentForThisCardsHoverTip, // drives this card's hover tip
+});
+```
 
-## Troubleshooting
+CRUD mapping:
 
-| Symptom | Likely cause / fix |
+| Operation | Call |
 |---|---|
-| Icon never appears | most often no texture resolved — pass `icon:` to `RegisterExtraIcon` or set `ExtraIconDisplay.Icon` (you cannot `override` `EnchantmentModel.Icon`; it is non-virtual). See the [icon resolution contract](#icon-resolution-contract) and the one-time failure log; also verify the predicate returns true and the provider is registered (and not disabled — see below). |
-| Icon shows in library / reward / encyclopedia where you only wanted combat | gate with `ShouldDisplay = ctx => ctx.IsCombatCard`. |
-| Marker takes the primary badge slot and pushes the real enchantment aside | expected: default `DisplayPriority` is `1000`. Use `DisplayPriority = -1` (below the gameplay default of `0`) to render after gameplay badges. |
-| Marker doesn't show when the card already has a same-type live enchantment | by design — set `ShowWithLiveEnchantment = true` to coexist. |
-| Amount label not showing | `RegisterExtraIcon<T>` can't set it; use the provider path with `ShowAmount = true` and `Amount`. |
-| Hover tooltip not appearing | override `HoverTips` on the marker type; tips only show while the marker is actually showing and not suppressed by a same-type live enchantment. |
-| Changed provider state (or disposed it) but a visible card still shows the old icon | the card hasn't had a visual pass yet — call `RefreshExtraIcons(card)` or `RefreshExtraIcons()`. Static screens like the compendium do not refresh on their own. |
-| Provider silently stopped running | it threw too many times in a row and was auto-disabled — check the log for the error line and fix the exception. |
-| Marker vanished after the card transformed | expected; transform copy carries only gameplay enchantments (see the travel table). |
-| `HasAnyEnchantment` returns false even though the marker shows | by design — markers are excluded from gameplay counts; pass `includeExtraIcons: true` for UI counts. |
+| Register provider (optional; first mutation auto-registers) | `BloodChargeIcons.State.Register()` |
+| Show current model state (amount-gated) | `BloodChargeIcons.State.Set(card, displayAmount)` |
+| Show with per-card art / allow "0" | `BloodChargeIcons.State.Show(card, amount, overrides)` |
+| Increase UI-only projection | `BloodChargeIcons.State.Add(card, amount)` |
+| Hide projection | `BloodChargeIcons.State.Remove(card)` |
+| Clear all cards (refreshes only tracked cards) | `BloodChargeIcons.State.Clear()` |
+| Refresh only tracked cards | `BloodChargeIcons.State.RefreshTracked()` |
+| List tracked cards | `BloodChargeIcons.State.GetTrackedCards()` |
+| Unregister + clear (terminal) | `BloodChargeIcons.State.Dispose()` |
+| Check amount / presence | `BloodChargeIcons.State.Get(card)` / `Has(card)` |
+| Check final UI row | `MultiEnchantmentApi.GetShownExtraIconDetails(card)` |
+
+Use `IconState<TMarker>` for temporary UI projection. If the marker itself must be saved card state,
+use a stored `ExtraIconEnchantmentModel` instead. If the marker changes gameplay, use a normal
+`EnchantmentModel`.
+
+Validate:
+
+- Draw the card.
+- `BloodCharge.Amount` changes.
+- `BloodChargeIcons.State.Set(card, amount)` runs.
+- The badge mirrors the enchantment amount.
+- `GetShownExtraIconDetails(card)` includes `BloodChargeIcon`.
+
+## 8. Style the badge
+
+Start from `ExtraIconPresentation.Default`.
+
+```csharp
+PresentationStyle = ExtraIconPresentation.Default with
+{
+    ShowBadgeBacking = false,
+    IconScale = 1.25f,
+    IconOffset = new Vector2(0, -3),
+    IconTint = Colors.White,
+    DisabledIconTint = new Color(0.5f, 0.5f, 0.5f, 0.75f),
+    HideWhenDisabled = true,
+    DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 10,
+}
+```
+
+Default marker style:
+
+- `ShowBadgeBacking = false`
+- `HideWhenDisabled = true`
+- `DisplayPriority = 1000`
+
+Ordering rule:
+
+- Higher `DisplayPriority` renders earlier.
+- Disabled markers are hidden when `HideWhenDisabled = true`.
+- Two displays with the same exact `EnchantmentType` collapse unless the later one sets
+  `ShowWithLiveEnchantment = true`.
+
+## 9. Provide an icon correctly
+
+Do not override `EnchantmentModel.Icon`. It is non-virtual.
+
+Use one of these methods:
+
+| Method | When to use |
+|---|---|
+| `Icon = GD.Load<Texture2D>("res://...png")` | Recommended for custom art |
+| `icon: ModelDb.Enchantment<Sharp>().Icon` | Borrow an existing icon |
+| `ExtraIconDisplay.Enchantment = someModel` | Need icon/status/hover tips from a model |
+| Convention icon path | Your marker is registered as a canonical model |
+
+Note: if no texture resolves, the marker is skipped and logged once. There is no missing-icon
+placeholder.
+
+## 10. Add hover tips
+
+Card hover tips come from `Enchantment.HoverTips`. Provider markers can contribute hover tips only
+when they have a model source.
+
+Use one of these:
+
+- Pass `ExtraIconDisplay.Enchantment`.
+- Make `EnchantmentType` resolve to a canonical model that defines `ExtraHoverTips`.
+
+Do not expect a raw `Icon` texture to provide hover text. It can draw the badge, but it has no text
+source.
+
+## 11. Use stored markers only when needed
+
+Use a stored `ExtraIconEnchantmentModel` only when the marker needs real per-card state.
+
+It is still not gameplay:
+
+- no `ModifyCard`
+- no lifecycle hooks such as `OnApplied`
+- no `AfterCardEnchanted`
+- no damage/block/dynamic-var contribution
+- no gameplay application order
+
+Stored markers:
+
+- are returned by `GetMarkers(card)`;
+- can save/load with the same card object;
+- can be carried by ordinary card clone;
+- do not transfer through compatible transform copy;
+- do not become permanent deck enchantments just because they were created in combat.
+
+If the marker should affect gameplay, make it a normal `EnchantmentModel`.
+
+## 12. Query stored state
+
+Use these when you want card-owned enchantment instances.
+
+```csharp
+bool hasGameplay = MultiEnchantmentApi.HasAnyEnchantment(card);
+
+bool hasGameplayOrStoredMarkers =
+    MultiEnchantmentApi.HasAnyEnchantment(card, includeExtraIcons: true);
+
+IReadOnlyList<EnchantmentModel> gameplay =
+    MultiEnchantmentApi.GetEnchantments(card);
+
+IReadOnlyList<EnchantmentModel> gameplayAndStoredMarkers =
+    MultiEnchantmentApi.GetEnchantments(card, includeExtraIcons: true);
+
+IReadOnlyList<ExtraIconEnchantmentModel> storedMarkers =
+    MultiEnchantmentApi.GetMarkers(card);
+```
+
+Note: `includeExtraIcons: true` includes stored `ExtraIconEnchantmentModel` instances. It does not
+include display-only provider markers.
+
+Typed marker lookup:
+
+```csharp
+BloodStoredMarker? marker = MultiEnchantmentApi.GetMarker<BloodStoredMarker>(card);
+bool hasMarker = MultiEnchantmentApi.HasEnchantment<BloodStoredMarker>(card);
+```
+
+## 13. Query visible icons
+
+Use these when you want the final icon row.
+
+```csharp
+bool visible = MultiEnchantmentApi.IsExtraIconShown<BloodMarkedIcon>(card);
+
+IReadOnlyList<Type> visibleTypes =
+    MultiEnchantmentApi.GetShownExtraIcons(card);
+
+IReadOnlyList<ShownExtraIcon> visibleIcons =
+    MultiEnchantmentApi.GetShownExtraIconDetails(card);
+
+foreach (ShownExtraIcon icon in visibleIcons)
+{
+    if (icon.ShowAmount)
+    {
+        GD.Print($"{icon.EnchantmentType.Name}: {icon.DisplayAmount}");
+    }
+
+    if (icon.IsStoredMarker)
+    {
+        ExtraIconEnchantmentModel stored = icon.StoredMarker!;
+    }
+}
+```
+
+These queries run after:
+
+- provider evaluation;
+- `ShouldDisplay`;
+- same-type suppression;
+- disabled-marker hiding;
+- icon resolution;
+- `DisplayPriority` ordering.
+
+## 14. Keep providers cheap
+
+Provider code runs often. Keep it small.
+
+Do:
+
+- cache textures;
+- read card/local state;
+- use one provider that yields several icons;
+- dispose registrations on unload.
+
+Avoid:
+
+- `GD.Load` inside the provider loop;
+- scanning the full deck every refresh;
+- allocating large temporary collections;
+- relying on the provider exception circuit breaker.
+
+## 15. Troubleshoot
+
+| Symptom | Check |
+|---|---|
+| Icon never appears | `appliesTo`, `ShouldDisplay`, icon path, same-type suppression |
+| Icon appears only after reopening UI | call `RefreshExtraIcons(card)` |
+| Amount is missing | set `ShowAmount = true` |
+| Hover tip is missing | provide `ExtraIconDisplay.Enchantment` or canonical model hover tips |
+| `HasAnyEnchantment(card)` is false | expected for display-only markers; use visible-icon queries |
+| Two markers collapsed | use different marker types or `ShowWithLiveEnchantment = true` |
+| Provider stops running | check logs for repeated exceptions |
+
+Success check:
+
+- Matching cards show the badge.
+- Non-matching cards do not show it.
+- `GetShownExtraIconDetails(card)` reports the same icons you see in the UI.
+- Gameplay checks still ignore display-only markers.

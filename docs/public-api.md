@@ -37,14 +37,31 @@ Top-level facade.
 - `static IDisposable RegisterExtraIconDisplayProvider(ExtraIconDisplayProvider provider)` - registers display-only extra icons for card UI refreshes, including library / preview cards that have no live enchantment instance.
 - `static IDisposable RegisterExtraIcon<TEnchantment>(Func<CardModel, bool> appliesTo, EnchantmentPresentationStyle? presentationStyle = null, ExtraIconDisplayPredicate? shouldDisplay = null) where TEnchantment : ExtraIconEnchantmentModel, new()` - convenience wrapper for static marker icons keyed by a card predicate. **Delete** a registration by disposing the returned `IDisposable`.
 - `static IDisposable RegisterExtraIcon<TEnchantment>(Func<CardModel, bool> appliesTo, Texture2D? icon, EnchantmentPresentationStyle? presentationStyle = null, ExtraIconDisplayPredicate? shouldDisplay = null) where TEnchantment : ExtraIconEnchantmentModel, new()` - overload that supplies an explicit icon texture, the way to use custom art (`EnchantmentModel.Icon` is non-virtual / not overridable).
+- `static IDisposable RegisterExtraIcon<TEnchantment>(Func<CardModel, bool> appliesTo, ExtraIconRegistrationOptions? options) where TEnchantment : ExtraIconEnchantmentModel, new()` - convenience overload for static markers that need amount labels, same-type live-enchantment coexistence, custom icon/style, or a `ShouldDisplay` predicate without writing a full provider.
 - `static void RefreshExtraIcons(CardModel? card)` - re-runs display providers and redraws extra-icon badges for one card now (so provider edits / disposals show up on an already-rendered card such as a compendium entry instead of waiting for the next visual pass). No-op for null.
 - `static void RefreshExtraIcons()` - same, for every currently-rendered card; use after changing a global condition many providers read.
 - `static bool HasEnchantment<TEnchantment>(CardModel? card) where TEnchantment : EnchantmentModel`
 - `static bool HasEnchantment(CardModel? card, Type enchantmentType)`
+- `static TEnchantment? GetEnchantment<TEnchantment>(CardModel? card) where TEnchantment : EnchantmentModel` - first live instance assignable to `TEnchantment`, or `null`.
+- `static EnchantmentModel? GetEnchantment(CardModel? card, Type enchantmentType)` - first live instance assignable to `enchantmentType`, or `null`.
+- `static IReadOnlyList<TEnchantment> GetEnchantments<TEnchantment>(CardModel? card) where TEnchantment : EnchantmentModel` - all live instances assignable to `TEnchantment`.
+- `static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card)` - all gameplay enchantments, excluding `ExtraIconEnchantmentModel` markers.
+- `static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card, bool includeExtraIcons)` - all enchantments; pass `true` to include stored markers.
+- `static IReadOnlyList<ExtraIconEnchantmentModel> GetMarkers(CardModel? card)` - stored marker instances only; display-provider icons are not card state.
+- `static TMarker? GetMarker<TMarker>(CardModel? card) where TMarker : ExtraIconEnchantmentModel`
+- `static bool HasAnyMarker(CardModel? card)` - `true` when the card carries at least one stored marker instance.
+- `static IReadOnlyList<Type> GetShownExtraIcons(CardModel? card)` - extra-icon marker types currently visible on the icon row, including stored markers and display-only providers.
+- `static IReadOnlyList<ShownExtraIcon> GetShownExtraIconDetails(CardModel? card)` - rich snapshots for currently visible extra icons: resolved icon, amount label, status, presentation style, and source.
+- `static bool IsExtraIconShown(CardModel? card, Type markerType)` - validates `markerType` is `EnchantmentModel`-derived and checks for a currently visible marker assignable to that type.
+- `static bool IsExtraIconShown<TMarker>(CardModel? card) where TMarker : ExtraIconEnchantmentModel`
 - `static bool HasAnyEnchantment(CardModel? card)` - `true` when the card carries any gameplay enchantment, excluding `ExtraIconEnchantmentModel` marker icons by default.
 - `static bool HasAnyEnchantment(CardModel? card, bool includeExtraIcons)` - pass `true` to count lightweight marker icons too.
 - `static int GetEnchantmentCount(CardModel? card)` - total gameplay enchantment **instances** on the card, excluding `ExtraIconEnchantmentModel` marker icons by default.
 - `static int GetEnchantmentCount(CardModel? card, bool includeExtraIcons)` - pass `true` to count lightweight marker icons too.
+- `static int GetEnchantmentCount<TEnchantment>(CardModel? card) where TEnchantment : EnchantmentModel` - number of instances assignable to `TEnchantment`.
+- `static int GetEnchantmentCount(CardModel? card, Type enchantmentType)` - number of instances assignable to `enchantmentType`.
+- `static int GetTotalAmount<TEnchantment>(CardModel? card) where TEnchantment : EnchantmentModel` - sum of `Amount` across instances assignable to `TEnchantment`.
+- `static int GetTotalAmount(CardModel? card, Type enchantmentType)` - sum of `Amount` across instances assignable to `enchantmentType`.
 - `static EnchantmentModel? GetMostRecentlyAppliedEnchantment(CardModel? card)` — returns the current live instance most recently applied or merged onto the card, or `null` when none exist.
 - `static EnchantmentModel? GetMostRecentlyAppliedEnchantmentThisTurn(CardModel? card)` — returns the enchantment most recently applied during the current player turn, or `null` when nothing was applied since the turn started. Resets at the start of every player turn; unlike the unscoped variant it does not fall back to pre-existing enchantments. Transient (never persisted).
 - `static EnchantmentModel? CopyEnchantment(CardModel target, EnchantmentModel source, EnchantmentScope? scopeOverride = null, bool preserveScopeProgress = false)` — clones a live enchantment instance and reapplies it through the fresh-application pipeline. Resets runtime scope counters by default; pass `preserveScopeProgress: true` to carry the source's remaining turns/activations over.
@@ -176,6 +193,7 @@ Card-UI presentation settings.
 - `Texture2D? BadgeBackingTexture { get; init; }` - optional replacement texture for the badge backing.
 - `bool HideWhenDisabled { get; init; } = false` - hides disabled visual entries instead of rendering a dimmed icon.
 - `int DisplayPriority { get; init; } = 0` - higher values render before lower-priority enchantment badges; ties keep the existing application order.
+- `bool RightAligned { get; init; } = false` - set `true` to render the badge in a right-side column mirrored across the card's vertical centerline (symmetric to the energy/star-cost icon). The badge backing is flipped horizontally (icon and amount label stay upright), and the right column ignores the vanilla no-star-cost vertical shift, so it stays put regardless of star cost. Left- and right-aligned badges form two independent downward-stacking columns.
 
 ### `abstract class ExtraIconEnchantmentModel : EnchantmentModel`
 Base class for marker-style enchantments that should behave like lightweight extra icons.
@@ -207,6 +225,58 @@ Display-only extra icon descriptor returned by `ExtraIconDisplayProvider`.
 
 ### `sealed record ExtraIconDisplayContext(CardModel Card, bool HasLiveEnchantment, bool IsCombatCard, bool IsPreviewCard)`
 Context passed to a display-only extra icon predicate.
+
+### `sealed record ExtraIconRegistrationOptions`
+Options for the static `RegisterExtraIcon<TEnchantment>(appliesTo, options)` convenience path.
+- `Texture2D? Icon { get; init; }`
+- `EnchantmentPresentationStyle? PresentationStyle { get; init; }`
+- `ExtraIconDisplayPredicate? ShouldDisplay { get; init; }`
+- `bool ShowAmount { get; init; } = false`
+- `int Amount { get; init; } = 1`
+- `bool ShowWithLiveEnchantment { get; init; } = false`
+
+### `sealed class IconState<TMarker> : IDisposable where TMarker : ExtraIconEnchantmentModel`
+Helper for projecting card / relic / ability / enchantment state into a display-only extra icon.
+Stores temporary per-`CardModel` UI projection state, registers one provider, and refreshes affected
+cards after mutations. The authoritative gameplay state should still live on the real model; use a
+stored `ExtraIconEnchantmentModel` when the marker itself must be saved card state.
+- Constructor:
+  - `IconState(Texture2D? icon = null, EnchantmentModel? enchantment = null, EnchantmentPresentationStyle? presentationStyle = null, ExtraIconDisplayPredicate? shouldDisplay = null, bool showAmount = false, bool showWithLiveEnchantment = false)`
+- `bool IsRegistered { get; }` - true once registered (explicitly or by the first mutation) and before disposal.
+- `void Register()` - optionally registers the display provider early; the first mutation auto-registers. Throws after disposal. Safe to call more than once.
+- `void Dispose()` - terminal: unregisters, clears all projections, and makes later mutations throw `ObjectDisposedException`. Idempotent.
+- `void Set(CardModel card, int amount = 1, bool refresh = true)` - amount-gated: shows/updates the marker while amount is positive; non-positive amounts remove it. Preserves any per-card override. Auto-registers.
+- `void Add(CardModel card, int amount = 1, bool refresh = true)` - amount-gated atomic add; non-positive results remove it. Auto-registers.
+- `void Show(CardModel card, int amount = 0, IconStateOverride? overrides = null, bool refresh = true)` - explicit presence: keeps the marker shown until removed, allows amount 0 (renders "0" when the amount label is on), and stores per-card `overrides` (icon / hover / presentation / amount label). Auto-registers.
+- `bool Remove(CardModel card, bool refresh = true)` - removes the marker from one card.
+- `void Clear(bool refresh = true)` - clears all tracked card states; refreshes only the cards that were tracked.
+- `int Get(CardModel? card)` - current marker amount (count), or zero.
+- `bool Has(CardModel? card)` - presence check (true even for a `Show`n marker at amount 0).
+- `IReadOnlyList<CardModel> GetTrackedCards()` - point-in-time snapshot of the cards currently projected onto.
+- `void RefreshTracked()` - refreshes only this state's tracked cards (no global churn). No-op after disposal.
+
+### `sealed record IconStateOverride`
+Per-card display overrides for `IconState<TMarker>.Show`. Each property defaults to `null`, meaning
+"use the `IconState` constructor value" (you cannot override back to `null`).
+- `Texture2D? Icon { get; init; }`
+- `EnchantmentModel? Enchantment { get; init; }` - drives the per-card icon fallback and hover tip.
+- `EnchantmentPresentationStyle? PresentationStyle { get; init; }`
+- `bool? ShowAmount { get; init; }`
+- `bool? ShowWithLiveEnchantment { get; init; }`
+
+### `sealed record ShownExtraIcon`
+Read-only snapshot for an extra-icon marker currently visible on a card's icon row. Returned by
+`MultiEnchantmentApi.GetShownExtraIconDetails(card)`.
+- `Type EnchantmentType { get; }` - marker type keyed by stored marker instance or provider display.
+- `Texture2D Icon { get; }` - resolved icon texture the UI uses.
+- `int DisplayAmount { get; }`
+- `bool ShowAmount { get; }`
+- `EnchantmentStatus Status { get; }`
+- `EnchantmentPresentationStyle PresentationStyle { get; }`
+- `bool IsDisplayOnly { get; }` - true for provider-backed markers.
+- `ExtraIconEnchantmentModel? StoredMarker { get; }` - live stored marker instance, or null for display-only markers.
+- `EnchantmentModel? IconSource { get; }` - model used for icon/status/hover-tip resolution when one exists.
+- `bool IsStoredMarker { get; }`
 
 ### `delegate ExtraIconDisplayProvider`
 Signature: `IEnumerable<ExtraIconDisplay> ExtraIconDisplayProvider(CardModel card)`.
@@ -336,6 +406,7 @@ without notice. Do not reference them by reflection.
 
 ## Change log
 
+- _2026-06-02_: Query API gap fills. Added read accessors for live enchantments (`GetEnchantment(s)`), typed count/amount helpers, stored marker queries (`GetMarkers`, `GetMarker`, `HasAnyMarker`), and visible extra-icon queries (`GetShownExtraIcons`, `GetShownExtraIconDetails`, `IsExtraIconShown`). Generic and `Type`-based enchantment queries both use assignable-type matching; visible extra-icon queries report the final icon-row output after provider predicates, stored-marker visibility, `HideWhenDisabled`, and display-priority ordering. Added `ExtraIconRegistrationOptions` plus a `RegisterExtraIcon<T>(appliesTo, options)` overload so static marker registrations can set fixed amount labels and same-type live-enchantment coexistence without a full provider. Added `IconState<TMarker>` for projecting real model state into temporary display-only extra icons.
 - _2026-05-31_: Generic enchantment-pack gap fills. Added `HasAnyEnchantment(card)` and `GetEnchantmentCount(card)` for type-agnostic "has any / how many" checks. Added cascade safety to `AfterCardEnchanted`: `AfterCardEnchantedContext.CascadeDepth` (`0` top-level, `> 0` when triggered from inside another handler) so re-enchant cascade cards can early-out. Added `MoveEnchantment(...)` and `CopyEnchantment(..., preserveScopeProgress)` for move-with-lifetime semantics. (Theme-specific "verb" vocabulary such as inject/infuse/awaken is intentionally left to downstream packs, not modelled in this API.)
 - _2026-05-30_: Documentation-only public API baseline refresh. Added missing `HistoryDisplayMode` / `HistoryTextFormatter`, `HistoryDisplay(...)` / `HistoryText(...)`, `WhenActiveStatus(...)`, and `[Enchantment]` history properties that were already present in code. Updated game compatibility wording to v0.106.x / local v0.106.1 signature reality (`ICombatState` plus `participants` on side-turn and turn-end hooks).
 - _2026-05-25_: Added stack-aware async hook surface (`OnPlayStacked`, `BeforeCardPlayedStacked`, `AfterCardPlayedStacked`, `AfterCardDrawnStacked`, `AfterAnyCardDrawnStacked`, `BeforeFlushStacked`, `AfterDamageGivenStacked`) for side effects that must aggregate prompts, random targets, animations, command execution, or damage results once per enchantment type. Added `ModifyEnergyCostAttribute`, `ModifyCardPlayCountAttribute`, fluent `ModifyEnergyCostInCombat` / `ModifyCardPlayCount`, and analyzer rule MEM013 for numeric contribution signatures.

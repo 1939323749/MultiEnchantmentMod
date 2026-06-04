@@ -1,75 +1,91 @@
-# Extra Icon 下游作者中文 Wiki
+# Extra Icon 实操手册
 
-这篇文档面向想把 `MultiEnchantmentMod` 作为前置、只借用卡牌 UI 图标能力的下游作者。这里刻意跳过普通附魔的设计细节。适用场景包括：状态标记、关键词徽章、卡牌家族图标、牌库/预览界面的提示图标，且这些图标不应该被当成 gameplay 附魔。
+用这篇文档给下游 mod 添加卡牌小徽章。
 
-英文版见 [`docs/extra-icon-wiki.md`](extra-icon-wiki.md)。完整类型参考见 [`docs/public-api.md`](public-api.md)。
+Extra icon 只表示 UI 信息。它不应该改伤害、格挡、卡牌文本、费用、hook 或其他 gameplay 行为。如果你的效果会改变卡牌行为，请用普通 `EnchantmentModel`。
 
-## 目录
+完整 API 看 [`public-api.md`](public-api.md)。项目引用方式看 [`integration.md`](integration.md)。
 
-- [Extra Icon 是什么](#extra-icon-是什么)
-- [两种形态速览](#两种形态速览)
-- [快速上手：静态图标 Marker](#快速上手静态图标-marker)
-- [怎么选](#怎么选)
-- [前置依赖与注册生命周期](#前置依赖与注册生命周期)
-- [显示样式](#显示样式)
-- [`ExtraIconDisplay` 字段（provider 路径）](#extraicondisplay-字段provider-路径)
-- [动态 provider 与 `ExtraIconDisplayContext`](#动态-provider-与-extraicondisplaycontext)
-- [图标解析契约](#图标解析契约)
-- [删除与更新图标](#删除与更新图标)
-- [Hover 提示：解释你的图标](#hover-提示解释你的图标)
-- [存储型（live）marker 实例](#存储型live-marker-实例)
-- [“是否有附魔”的判断](#是否有附魔的判断)
-- [性能与最佳实践](#性能与最佳实践)
-- [排错](#排错)
+## 1. 先选方案
 
-## Extra Icon 是什么
+先看这张表。
 
-Extra icon 是由 multi-enchantment UI 层渲染的卡牌徽章。它可以复用 `EnchantmentModel` 的图标和显示样式，但默认不计入 gameplay 附魔。
+| 需求 | 推荐用法 |
+|---|---|
+| 一个简单徽章，由卡牌条件决定 | `RegisterExtraIcon<TMarker>` |
+| 图标、数量、样式要按牌变化 | `RegisterExtraIconDisplayProvider` |
+| 一个 provider 返回多个徽章 | `RegisterExtraIconDisplayProvider` |
+| marker 需要保存每张牌自己的数据 | 存储型 `ExtraIconEnchantmentModel` |
+| 卡牌行为会改变 | 普通 `EnchantmentModel` |
 
-Extra icon 默认会从以下行为中排除：
+建议：能用显示层 marker 就先用显示层 marker。它不会让 `HasAnyEnchantment(card)` 这种 gameplay 判断被装饰徽章干扰。
 
-- `MultiEnchantmentApi.HasAnyEnchantment(card)` 和 `GetEnchantmentCount(card)`。
-- `GetSiblings(card)` 这类 sibling 读取。
-- gameplay 附魔的 stack snapshot。
-- 伤害、格挡、重放次数、费用、动态变量贡献。
-- `OnPlay`、`OnCombatStart`、`OnApplied`、sibling callbacks 等生命周期。
-- compatible transform copy，以及 public copy/move helpers。
-- 战斗记录，除非你把它建模成真正的 gameplay 附魔。
+### 三者本质区别（正常附魔 / 存储型 marker / 显示层 marker）
 
-它**会**参与：卡牌 UI 渲染、视觉 active-status 扫描（所以 `HideWhenDisabled` 能用）、按类型查询（`HasEnchantment<TMarker>` / `GetEnchantmentCount(card, typeof(TMarker))` 会算上 marker，因为查询的类型本身就是 marker 类型），以及——对存储型 marker——存档/读档。
+三种东西在卡上都能“显示点什么”，但**本质完全不同**。区别的根源是一句话：mod 内部用 `IsGameplayEnchantment(e) = e is not ExtraIconEnchantmentModel` 把所有 `ExtraIconEnchantmentModel` 划成“非 gameplay”。
 
-只有在你明确想把 UI marker 也算进去时，才传 `includeExtraIcons: true`：
+| 维度 | 正常附魔 `EnchantmentModel` | 存储型 marker（`ExtraIconEnchantmentModel` 实例） | 显示层 marker（provider / `RegisterExtraIcon`） |
+|---|---|---|---|
+| 是不是真实附魔实例 | ✅ 是 | ✅ 是 | ❌ 不是，渲染时按谓词重算 |
+| 怎么产生 | `Enchant(card, model)` | `Enchant(card, 某个 ExtraIconEnchantmentModel)` | `RegisterExtraIcon` / `RegisterExtraIconDisplayProvider` / `IconState` |
+| 进存档、随卡 clone | ✅ | ✅ | ❌ |
+| `GetEnchantment<T>`/`HasEnchantment<T>` 查得到 | ✅ | ✅ | ❌ |
+| `GetMarkers`/`GetMarker<T>` 查得到 | ❌（它不是 marker） | ✅ | ❌ |
+| 参与战斗钩子 / 伤害 / 格挡 / DynamicVar / 能量管线 | ✅ | ❌ | ❌ |
+| 触发 `OnApplied`/`OnPlay`/`AfterCardEnchanted` 等 lifecycle | ✅ | ❌ | ❌（根本没有实例） |
+| 计入 `HasAnyEnchantment`/`GetEnchantmentCount` | ✅ 默认计入 | ❌ 默认不计（需 `includeExtraIcons: true`） | ❌ |
+| 进 application order / 战斗历史 | ✅ | ❌（历史默认 `Hidden`） | ❌ |
+| 能读写 `Amount`/`Props` 当数据载体 | ✅ | ✅ | ❌（无实例，改谓词读取的状态） |
+| 默认视觉 | 有背景板、可显示数字与卡面额外文字 | 无背景板、不显示数字与卡文、disabled 隐藏、`DisplayPriority=1000` | 同存储型默认（`ExtraIconPresentation.Default`） |
+| 典型用途 | 真正改变卡牌行为 | 持久、要存档、可按类型查回的“标记位/计数器”，但本身不产生效果 | 纯按条件显示的装饰角标 |
+
+一句话决策：
+
+- 会**改变卡牌行为** → 正常 `EnchantmentModel`。
+- **不改行为**，但要“在卡上打一个会存档、能 `GetMarker` 查回、可读写 `Amount`/`Props` 的真实标记” → 存储型 `ExtraIconEnchantmentModel`。
+- **不改行为**，也**不用存档**，只是“满足条件就画个图标” → 显示层 marker（最轻量，首选）。
+
+要点：存储型 marker 和正常附魔**都是真实实例、都进存档、都能按类型查到**；唯一差别是 marker 被标记成非 gameplay，所以**不触发任何战斗逻辑/钩子、不计入附魔数、不进历史，默认只画一个无背景板的小图标**。
+
+## 2. 添加 API 版本检查
+
+在你的程序集里声明兼容版本：
 
 ```csharp
-bool hasGameplayEnchantments = MultiEnchantmentApi.HasAnyEnchantment(card);
-bool hasGameplayOrMarkers = MultiEnchantmentApi.HasAnyEnchantment(card, includeExtraIcons: true);
+using MultiEnchantmentMod.Api;
 
-int gameplayCount = MultiEnchantmentApi.GetEnchantmentCount(card);
-int gameplayOrMarkerCount = MultiEnchantmentApi.GetEnchantmentCount(card, includeExtraIcons: true);
+[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]
 ```
 
-## 两种形态速览
+初始化时先检查版本，再注册图标：
 
-`ExtraIconEnchantmentModel` 有两种用法。大多数 mod 只需要第一种。
+```csharp
+public static void Initialize()
+{
+    if (!MultiEnchantmentApi.RequireApiVersion(MultiEnchantmentApiVersion.Current))
+    {
+        return;
+    }
 
-| | **display-only provider marker** | **存储型 marker 实例** |
-|---|---|---|
-| 怎么出现在卡上 | 你注册的 provider 在 UI 时合成 | 你把 `ExtraIconEnchantmentModel` `Enchant` 到卡上 |
-| 是否存在于卡的附魔列表 | 否 | 是（在 extra slot） |
-| 是否进存档 | 否——由 provider 重新生成 | 是 |
-| 是否需要 predicate 决定显隐 | 是（`appliesTo` / `ShouldDisplay`） | 否——存在直到被移除 |
-| 在牌库/奖励/预览这类无运行时状态的卡上能用吗 | 能 | 只有你主动放上去时 |
-| 典型用途 | 关键词/家族/稀有度徽章、“这张牌很特别”的标记 | 按卡保存的装饰性状态 |
+    BloodMarkedIcons.Install();
+}
+```
 
-拿不准时，用 display-only provider。
+注意：把 `MultiEnchantmentMod.dll` 当作前置依赖引用。不要复制到你自己的输出目录。
 
-## 快速上手：静态图标 Marker
+## 3. 创建静态 Marker
 
-最小模式是：
+先创建一个空 marker 类型：
 
-1. 创建一个继承 `ExtraIconEnchantmentModel` 的 marker 类。
-2. 给它提供 UI 要显示的图标。
-3. 注册一个 predicate，决定哪些卡显示这个图标。
+```csharp
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
+{
+}
+```
+
+再注册它：
 
 ```csharp
 using System;
@@ -77,25 +93,25 @@ using Godot;
 using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api;
 
-// marker 类型只是一个 key，不需要类体。EnchantmentModel.Icon **不可重写**（非 virtual），
-// 所以用下面的 icon 参数来提供图片。
-public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
-{
-}
-
 public static class BloodMarkedIcons
 {
+    private static Texture2D? _icon;
     private static IDisposable? _registration;
 
     public static void Install()
     {
+        _icon ??= GD.Load<Texture2D>("res://images/markers/blood_marked.png");
+
         _registration ??= MultiEnchantmentApi.RegisterExtraIcon<BloodMarkedIcon>(
             appliesTo: card => card.Id.Entry.StartsWith("Vampire", StringComparison.Ordinal),
-            presentationStyle: ExtraIconPresentation.Default with
+            options: new ExtraIconRegistrationOptions
             {
-                IconScale = 1.25f,
-            },
-            icon: GD.Load<CompressedTexture2D>("res://images/enchantments/blood_marked.png"));
+                Icon = _icon,
+                PresentationStyle = ExtraIconPresentation.Default with
+                {
+                    IconScale = 1.2f,
+                },
+            });
     }
 
     public static void Uninstall()
@@ -106,127 +122,69 @@ public static class BloodMarkedIcons
 }
 ```
 
-`RegisterExtraIcon<T>` 是便捷入口：`appliesTo` 加可选的 `presentationStyle`、`shouldDisplay`、`icon`。如果要显示数量 label、与 live 附魔共存、或按卡变化图标，请用 [provider API](#动态-provider-与-extraicondisplaycontext)。
+替换这几处：
 
-## 怎么选
+- `BloodMarkedIcon`：你的 marker 类型。
+- `res://images/markers/blood_marked.png`：你的纹理路径。
+- `appliesTo`：哪些牌显示这个徽章。
 
-| 用… | 何时 |
-|---|---|
-| `RegisterExtraIcon<T>` | 每张卡一个静态图标，由简单 predicate 决定。 |
-| `RegisterExtraIconDisplayProvider` | 一个 provider 可能返回多个图标、图标/样式/数量依赖卡牌，或你需要 `ShowAmount` / `ShowWithLiveEnchantment`。 |
-| 存储型 `ExtraIconEnchantmentModel` 实例 | marker 有按卡保存的状态、应随卡清除/恢复，但不能影响 gameplay 计算。 |
-| 普通 `EnchantmentModel`（+ `PresentationStyle`） | 卡牌文本/数值/费用/打出次数会变、效果要在打出/抽牌/战斗/回合/移除时触发，或其它 mod 应把它当真实附魔。 |
+注意：`BloodMarkedIcon` 可以是空类。这个类型是 marker 的 key。UI 会用它做排序、去重、同类型压制和查询。
 
-## 前置依赖与注册生命周期
+验证：
 
-把 `MultiEnchantmentMod.dll` 当成运行时前置引用，不要复制进你自己的 mod 输出目录。完整 `.csproj` 写法见 [`docs/integration.md`](integration.md)。每个程序集声明一次 API 兼容版本：
+- 编译你的 mod。
+- 打开一张满足 `appliesTo` 的牌。
+- 卡牌图标行里应该出现徽章。
+- 如果没出现，先查 predicate 和图标路径。
 
-```csharp
-using MultiEnchantmentMod.Api;
+## 4. 设置固定选项
 
-[assembly: EnchantmentApiCompatibility(MultiEnchantmentApiVersion.Current)]
-```
-
-注册前先检查 API 版本：
+静态 marker 需要常用开关时，使用 `ExtraIconRegistrationOptions`。
 
 ```csharp
-public static void Initialize()
+options: new ExtraIconRegistrationOptions
 {
-    if (!MultiEnchantmentApi.RequireApiVersion(MultiEnchantmentApiVersion.Current))
+    Icon = _icon,
+    PresentationStyle = ExtraIconPresentation.Default with
     {
-        return;
-    }
-
-    MyExtraIcons.Install();
-}
-```
-
-生命周期规则：
-
-- **允许晚注册。** 与附魔注册不同，display provider 属于纯 UI 注册表，**不会**被 `SealRegistry()` 冻结。懒注册（比如第一次打开牌库时）也没问题，图标会在下一次视觉刷新时出现。
-- **务必 Dispose。** 保存返回的 `IDisposable`，并在 mod 卸载 / 功能关闭时 Dispose，否则 provider 会一直对每张卡运行。例子里的 `??=` 守卫可防止重入式 `Install()` 重复注册。
-- **坏 provider 会被自动停用。** 连续若干次抛异常后，框架会停用该 provider（以 error 级别记录一次），让它不再对每张卡刷新都跑；之后只要有一次成功调用计数就重置，因此偶发失败会被容忍。
-
-## 显示样式
-
-marker 复用 `EnchantmentPresentationStyle`。从 `ExtraIconPresentation.Default` 出发，用 `with` 表达式微调：
-
-```csharp
-presentationStyle: ExtraIconPresentation.Default with
-{
-    ShowBadgeBacking = false,
-    IconScale = 1.35f,
-    IconOffset = new Vector2(0, -3),
-    IconTint = Colors.White,
-    DisabledIconTint = new Color(0.5f, 0.5f, 0.5f, 0.75f),
-    HideWhenDisabled = true,
-    DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 50,
-}
-```
-
-`ExtraIconPresentation.Default` 即 `ShowBadgeBacking = false`、`HideWhenDisabled = true`、`DisplayPriority = 1000`（= `ExtraIconPresentation.DefaultDisplayPriority`）。
-
-| 字段 | 默认（原始样式 / `ExtraIconPresentation.Default`） | 作用 |
-|---|---|---|
-| `ShowBadgeBacking` | `true` / `false` | 是否在图标后画 vanilla 徽章底图。 |
-| `BadgeBackingTexture` | `null` | 覆盖底图纹理（仅在 `ShowBadgeBacking` 时）。 |
-| `IconScale` | `1f` | 只缩放 `%Enchantment/Icon` 节点。`0`、负数、`NaN`、无穷 → `1f`。 |
-| `IconOffset` | `Vector2.Zero` | 图标节点的像素偏移。 |
-| `IconTint` | `null`（白） | 施加到图标的 `SelfModulate`。 |
-| `DisabledIconTint` | `null` | 状态为 Disabled 时的着色。有底图时 vanilla 去饱和 shader 已经把它变暗了，所以除非想要特定禁用色，留 null 即可。 |
-| `HideWhenDisabled` | `false` / `true` | 禁用时整条隐藏，而非变暗。 |
-| `DisplayPriority` | `0` / `1000` | 排序键，**值越高越靠前**。见下。 |
-| `PreserveExtraTextBbCode` | `false` | 只与 gameplay 附魔的卡牌文本有关；marker 设了 `HasExtraCardText = false`，忽略即可。 |
-
-`IconScale` 只缩放渲染出来的图标节点——不改 PNG 源图、徽章间距或数量 label。
-
-### DisplayPriority 与主槽位
-
-视觉条目按 `DisplayPriority` 从高到低渲染，且第一条占据卡牌的**主**（vanilla）徽章槽位。由于 `ExtraIconPresentation.Default` 用 `1000`、gameplay 附魔默认 `0`，**默认 marker 会渲染在普通附魔徽章之前并占据主槽位**。这对需要醒目的 marker 是有意为之。
-
-如果你反而想让 marker 排在卡牌真实附魔徽章**之后**，给它一个低于 gameplay 默认值的优先级：
-
-```csharp
-ExtraIconPresentation.Default with { DisplayPriority = -1 }
-```
-
-相同优先级保持应用 / provider 顺序。
-
-## `ExtraIconDisplay` 字段（provider 路径）
-
-provider 产出 `ExtraIconDisplay` 记录：
-
-- `EnchantmentType`（必填）：作为 marker 的 key（去重 / 抑制 / 视觉 id）。应当是 `ExtraIconEnchantmentModel` 子类；如果传入普通 gameplay 附魔类型，框架会记录一次性警告。
-- `Icon`：要画的显式 `Texture2D`，覆盖其它一切。这是使用任意美术的途径（见[图标解析契约](#图标解析契约)）。
-- `Enchantment`：可选的预构造 model，用来读图标。当它和 `Icon` 都省略时，框架会查 `EnchantmentType` 的 canonical model（经 `ModelDb`）并读它的图标。
-- `PresentationStyle`：单条 display 的样式覆盖，缺省回退到该类型注册的样式。
-- `ShouldDisplay`：每次刷新调用的 predicate（见下方 context）。
-- `ShowAmount` + `Amount`：在图标上画数字。`ExtraIconEnchantmentModel` 硬关闭了自己的 `ShowAmount`，所以这是 display-only marker 显示数字的唯一途径（默认：`false` / `1`）。
-- `ShowWithLiveEnchantment`：默认情况下，当卡上已经有同类型的 live 附魔（或另一个 marker）时，marker 会被抑制（让真实徽章占据槽位）。置为 `true` 则无论如何都渲染——例如要与 live 徽章共存的装饰性叠加图标。
-
-数量示例——一个从卡上读取计数的层数图标：
-
-```csharp
-yield return new ExtraIconDisplay
-{
-    EnchantmentType = typeof(ChargeMarker),
-    Icon = GD.Load<CompressedTexture2D>("res://images/markers/charge.png"),
+        DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 20,
+    },
     ShowAmount = true,
-    Amount = GetChargeCount(card),
-    PresentationStyle = ExtraIconPresentation.Default,
-};
+    Amount = 3,
+    ShowWithLiveEnchantment = false,
+}
 ```
 
-## 动态 provider 与 `ExtraIconDisplayContext`
+字段说明：
 
-一个 provider 可能返回多个图标，或图标实例/样式/数量依赖卡牌时，使用 `RegisterExtraIconDisplayProvider`。
+- `Icon`：显式纹理。自定义图标推荐这样传。
+- `PresentationStyle`：图标大小、偏移、染色、底板、disabled 行为和排序。
+- `ShowAmount`：必须设成 `true`，`Amount` 才会显示。
+- `Amount`：固定数字，所有匹配卡牌一样。
+- `ShowWithLiveEnchantment`：只有确实要和同类型 live 附魔共存时才设 `true`。
+
+如果 `Amount` 要按牌变化，不要走静态路径。用 provider。
+
+## 5. 创建动态 Provider
+
+图标输出依赖卡牌状态时，用 provider。
 
 ```csharp
+using System;
 using System.Collections.Generic;
+using Godot;
+using MegaCrit.Sts2.Core.Models;
 using MultiEnchantmentMod.Api;
 
-public static class DynamicMarkerIcons
+public sealed class BloodChargeIcon : ExtraIconEnchantmentModel
 {
+}
+
+public static class BloodChargeIcons
+{
+    private static readonly Texture2D ChargeIcon =
+        GD.Load<Texture2D>("res://images/markers/blood_charge.png");
+
     private static IDisposable? _registration;
 
     public static void Install()
@@ -234,159 +192,416 @@ public static class DynamicMarkerIcons
         _registration ??= MultiEnchantmentApi.RegisterExtraIconDisplayProvider(GetIcons);
     }
 
+    public static void Uninstall()
+    {
+        _registration?.Dispose();
+        _registration = null;
+    }
+
     private static IEnumerable<ExtraIconDisplay> GetIcons(CardModel card)
     {
-        if (!ShouldShowBloodMarker(card))
+        int charges = BloodState.GetCharges(card);
+        if (charges <= 0)
         {
             yield break;
         }
 
         yield return new ExtraIconDisplay
         {
-            EnchantmentType = typeof(BloodMarkedIcon),
-            Icon = GD.Load<CompressedTexture2D>("res://images/enchantments/blood_marked.png"),
-            PresentationStyle = ExtraIconPresentation.Default with
-            {
-                IconScale = card.IsEnchantmentPreview ? 1.15f : 1.3f,
-            },
-            ShouldDisplay = context =>
-                context.IsPreviewCard ||
-                context.IsCombatCard ||
-                !context.HasLiveEnchantment,
+            EnchantmentType = typeof(BloodChargeIcon),
+            Icon = ChargeIcon,
+            ShowAmount = true,
+            Amount = charges,
+            PresentationStyle = ExtraIconPresentation.Default,
+            ShouldDisplay = context => context.IsCombatCard || context.IsPreviewCard,
         };
     }
 }
 ```
 
+把 `BloodState.GetCharges(card)` 换成你自己的状态读取。
+
+`ExtraIconDisplay` 常用字段：
+
+- `EnchantmentType`：必填。推荐用 `ExtraIconEnchantmentModel` 子类。
+- `Icon`：要画的纹理。
+- `Enchantment`：可选模型来源，用来提供图标、状态、hover tips。
+- `PresentationStyle`：这个显示项的样式。
+- `ShouldDisplay`：最后一层显示判断。
+- `ShowAmount` / `Amount`：徽章上的数字。
+- `ShowWithLiveEnchantment`：允许和同类型 live 附魔共存。
+
 `ExtraIconDisplayContext` 提供：
 
-- `Card`：正在刷新的 UI 卡牌。这是完整的 `CardModel`，predicate 可以直接读它需要的任何字段——`card.Pile`（牌库/手牌/抽牌堆/弃牌堆）、`card.Keywords`、`card.Type` 等。context 不需要镜像每个卡牌字段。
-- `HasLiveEnchantment`：这张卡上是否已经有同类型 live 附魔实例。
-- `IsCombatCard`：这张卡当前是否有 combat state。做“只在战斗中显示”的 marker 用它：`ShouldDisplay = ctx => ctx.IsCombatCard`。牌库 / 百科 / 奖励卡都不是 combat card，这样就能把战斗标记挡在那些界面之外。
-- `IsPreviewCard`：这张卡是否是附魔预览卡。
+- `Card`：正在刷新的 `CardModel`。
+- `HasLiveEnchantment`：这张牌是否已经有同精确类型的 live 附魔。
+- `IsCombatCard`：是否是战斗卡牌。
+- `IsPreviewCard`：是否是附魔预览牌。
 
-注册之后，provider 会对**每张卡**的**每次**视觉刷新都运行，所以 predicate 要保持轻量（见[性能](#性能与最佳实践)）。
+验证：
 
-## 图标解析契约
+- 改变 `GetIcons` 读取的状态。
+- 调用 `MultiEnchantmentApi.RefreshExtraIcons(card)`。
+- 图标应该出现、消失，或更新数字。
 
-**`EnchantmentModel.Icon` 不可重写**——它是非 virtual 的，从一个由 model id 推导的约定路径解析纹理。所以 `public override Texture2D Icon => …` **无法编译**，而一个在约定路径上没有纹理的 marker，其 `Icon` 为 null。框架按以下顺序选图标：
+## 6. 状态变化后刷新 UI
 
-1. `ExtraIconDisplay.Icon`（或 `RegisterExtraIcon` 的 `icon:` 参数）——显式纹理。这是使用任意美术的途径，例如 `GD.Load<CompressedTexture2D>("res://…png")`，或借用别的附魔图标 `ModelDb.Enchantment<SomeEnchantment>().Icon`。
-2. `ExtraIconDisplay.Enchantment` 的 `Icon`。
-3. `EnchantmentType` 的 canonical model 图标，从 `ModelDb` 取（框架**绝不** new 一个 model——`new` 会抛 `DuplicateModelException`）。只有当你在该类型的约定图标路径上放了纹理，这一步才非 null。
+显示层图标是根据 provider 状态重新计算的。没有“修改某个注册”的 API。
 
-如果都得不到非 null 纹理，marker 会被**跳过**（记一次日志）——**没有占位符 / “missing icon” 保底**，这是有意的（否则会在真实卡上画出破图方块）。如果你想定制附魔自身的 `Icon`（而不是提供显示纹理），请在它的图标路径放文件，或 Harmony patch `EnchantmentModel.get_Icon`（进阶）。
-
-## 删除与更新图标
-
-两种形态都支持删除和修改。没有“原地编辑某个注册”的调用——display-only 图标是 predicate 驱动的，你通过改变 provider 返回的内容来改行为。
-
-**display-only provider 图标**
-
-- *删除整个注册：* Dispose `RegisterExtraIcon` / `RegisterExtraIconDisplayProvider` 返回的 `IDisposable`。
-- *按卡显示 / 隐藏 / 改样式：* 从 provider 里返回（或不返回）一个 `ExtraIconDisplay`，或用 `ShouldDisplay` 控制。provider 每次刷新都会重跑，所以**修改图标就是改变它读取的状态**（换图标 / 样式 / 数量）。
-- *让改动立刻生效：* 已经在屏幕上的卡——尤其是百科这种静态卡——不会自己重绘。改完 provider 状态或 Dispose 之后，调用 `RefreshExtraIcons(card)`；或 `RefreshExtraIcons()` 刷新所有已渲染的卡。
+只刷新一张牌：
 
 ```csharp
-// 不再显示该 marker，并更新任何已经在屏幕上的卡
-_registration?.Dispose();
-_registration = null;
-MultiEnchantmentApi.RefreshExtraIcons();          // 或 RefreshExtraIcons(具体的卡)
+MultiEnchantmentApi.RefreshExtraIcons(card);
 ```
 
-**存储型 marker 实例**
-
-- *删除：* `MultiEnchantmentApi.RemoveEnchantment(card, marker)`——marker 会跳过 gameplay 的 `OnRemoved` 否决，所以总能移除。
-- *修改：* 改 marker 的 `Props` / `Amount`，然后 `MultiEnchantmentApi.NotifyPropsChanged(marker)` 刷新派生状态并重绘。存储型 marker 的删除/修改会**自动**刷新卡牌——它们**不需要** `RefreshExtraIcons`。
-
-## Hover 提示：解释你的图标
-
-原版在**卡级**展示附魔悬停文本（悬停卡牌会列出 `Enchantment.HoverTips`）——并没有钉在单个徽章上的 tooltip。marker 用的是同一套机制。`EnchantmentModel` 的重写点是**受保护的** `ExtraHoverTips`，公开的 `HoverTips` 会把它（连同关键词提示）聚合进来。在你的 marker 类型上重写 `ExtraHoverTips`，marker 正在该卡显示时，这些提示就会出现在卡牌悬停里。
+刷新所有已知卡牌 UI：
 
 ```csharp
-using System.Collections.Generic;
-using MegaCrit.Sts2.Core.HoverTips;
+MultiEnchantmentApi.RefreshExtraIcons();
+```
 
-public sealed class BloodMarkedIcon : ExtraIconEnchantmentModel
+注意：存储型 marker 在移除或 `NotifyPropsChanged` 时会自己刷新。provider marker 如果要立刻更新 UI，需要你主动刷新。
+
+## 7. 把 Model 状态映射成图标
+
+常见场景：真实状态属于某张 card、某个 ability、relic 或普通 enchantment。你只是想在卡牌上用 extra icon 把这个状态显示出来。
+
+把 `IconState<TMarker>` 当成 UI 投影。它不是 gameplay 状态的主人。
+
+推荐模式：
+
+1. 创建一个 `IconState<TMarker>`（每个 marker 类型一个实例）。
+2. 真实状态仍然存在真实 model 上。
+3. model 状态变化后，用 `Set`/`Show` 或 `Remove` 同步显示值。
+
+`IconState<TMarker>` 是对 provider 模式的小封装。它保存临时每卡 UI 状态，负责显示 marker，并在每次修改后刷新这张牌。`Register()` 是可选的——第一次修改会自动注册 provider。
+
+它提供两种投影方式：
+
+- **按量门控**（`Set`、`Add`）：只有 amount 为正时才显示，amount ≤ 0 即移除。适合"归零就消失"的计数图标。
+- **显式存在**（`Show`）：显示后一直保留，直到 `Remove`/`Clear`；amount 只是个标签、可以是 `0`；并可用 `IconStateOverride` 为这张卡单独定制图标 / hover / 表现 / 数字标签。适合每卡不同的美术，或需要显示 `0` 的计数器。
+
+`Has(card)` 是存在性判断（`Show` 出来的 amount 0 标记也返回 true）；`Get(card)` 返回数值。
+
+创建 marker 和图标投影：
+
+```csharp
+using System;
+using Godot;
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodChargeIcon : ExtraIconEnchantmentModel
 {
-    public override Texture2D Icon =>
-        GD.Load<Texture2D>("res://images/enchantments/blood_marked.png");
+}
 
-    // 受保护的重写点（不是 HoverTips）。公开的 HoverTips 会包含你在这里返回的内容。
-    // 往数组里填你的提示，例如 HoverTipFactory.FromKeyword(CardKeyword.X)。
-    protected override IEnumerable<IHoverTip> ExtraHoverTips => new IHoverTip[]
+public static class BloodChargeIcons
+{
+    public static readonly IconState<BloodChargeIcon> State = new(
+        icon: GD.Load<Texture2D>("res://images/markers/blood_charge.png"),
+        presentationStyle: ExtraIconPresentation.Default,
+        showAmount: true);
+
+    public static void Install()
     {
-        /* 你的关键词 / 解释性 IHoverTip */
-    };
+        // 可选：第一次 Set/Add/Show 也会自动注册。
+        State.Register();
+    }
+
+    public static void Uninstall()
+    {
+        // Dispose 是终态：会同时取消注册并清空所有投影。
+        State.Dispose();
+    }
 }
 ```
 
-存储型 marker 和 display-only provider marker 都适用。被同类型 live 附魔抑制掉的 marker 不会贡献提示（那个附魔已经展示自己的提示了），所以不会重复。
+然后从真实 model 同步它。
 
-## 存储型（live）marker 实例
+这个例子里，普通附魔 `BloodCharge` 才是 gameplay 状态的主人。它组合在卡牌上；图标只显示 `enchantment.Amount`。
 
-大多数 marker icon 都应该用 display-only provider，尤其是你希望它出现在牌库、奖励、tooltip 或预览卡上时。
-
-如果你确实把 `ExtraIconEnchantmentModel` 实例挂到卡上，框架会强制把它放进 extra slot，而不是 `card.Enchantment` 主槽。它仍然会渲染，并且可以用 active-status predicate 控制变灰/隐藏（`HideWhenDisabled` 能生效，因为视觉 active-status 扫描包含 marker）。
-
-但它仍然不会表现成 gameplay 附魔：
-
-- 不调用 `ModifyCard`；
-- 不触发 `OnApplied` / sibling lifecycle hooks；
-- 不触发 `AfterCardEnchanted`；
-- 不参与伤害、格挡、动态变量等管线；
-- 永远不进入 gameplay 应用/重放顺序（`ApplicationOrder`）；marker 完全按 `DisplayPriority` 排序。
-
-**存储型 marker 会跟随什么**——规则是“跟随同一个卡牌对象，而不是卡牌身份的转变”：
-
-| 操作 | marker 是否跟随 | 原因 |
-|---|---|---|
-| 存档 / 读档 | 是 | 同一张卡，按卡持久化的状态 |
-| 卡牌复制 / 克隆 | 是 | 同一张逻辑卡 |
-| 兼容**转化**复制（`TryCopyCompatibleEnchantments`） | 否 | 卡牌变成了*另一张*卡，只转移 gameplay 附魔 |
-| 牌组版本同步 | 否 | 战斗中加的 marker 不是永久牌组附魔 |
-
-如果你需要 marker 在转化后保留、或持久化进牌组，请把它建模成普通附魔。
-
-## “是否有附魔”的判断
-
-下游卡牌和遗物做 gameplay 判断时，应该使用默认 helper：
+注意：这里用的是本 mod 的 lifecycle wrapper，不是游戏原生 override。wrapper 签名是
+`OnCardDrawn(CardModel card, TEnchantment enchantment)`。
 
 ```csharp
-if (MultiEnchantmentApi.HasAnyEnchantment(card))
+using MegaCrit.Sts2.Core.Models;
+using MultiEnchantmentMod.Api;
+
+public sealed class BloodCharge : EnchantmentModel
 {
-    // 这里只代表 gameplay 附魔，extra icon 不算。
+}
+
+public sealed class BloodChargeDefinition : EnchantmentDefinition<BloodCharge>
+{
+    protected override void OnApplied(CardModel card, BloodCharge enchantment)
+    {
+        BloodChargeIcons.State.Set(card, (int)enchantment.Amount);
+    }
+
+    protected override void OnCardDrawn(CardModel card, BloodCharge enchantment)
+    {
+        enchantment.Amount += 1;
+
+        // BloodCharge 拥有状态。BloodChargeIcon 只负责显示。
+        BloodChargeIcons.State.Set(card, (int)enchantment.Amount);
+        MultiEnchantmentApi.NotifyPropsChanged(enchantment);
+    }
+
+    protected override bool OnRemoved(
+        CardModel card,
+        BloodCharge enchantment,
+        RemovalReason reason)
+    {
+        _ = enchantment;
+        _ = reason;
+        BloodChargeIcons.State.Remove(card);
+        return true;
+    }
 }
 ```
 
-只有 UI、debug 或统计 badge-like 内容时才传 `includeExtraIcons: true`：
+如果你直接 override 游戏原生 hook，请保持游戏里的真实签名：
 
 ```csharp
-int badgeLikeThings = MultiEnchantmentApi.GetEnchantmentCount(card, includeExtraIcons: true);
+using System.Threading.Tasks;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Models;
+
+public override Task AfterCardDrawn(
+    PlayerChoiceContext choiceContext,
+    CardModel card,
+    bool fromHandDraw)
+{
+    if (!ReferenceEquals(card, this))
+    {
+        return Task.CompletedTask;
+    }
+
+    int displayAmount = GetDisplayAmountForThisCard();
+    BloodChargeIcons.State.Set(card, displayAmount);
+    return Task.CompletedTask;
+}
 ```
 
-这样可以避免 marker 徽章意外触发“若这张牌有附魔”“所有手牌都有附魔才能打出”“每有一张有附魔的牌获得额外伤害”等 gameplay 条件。
+### 用 `Show` 实现每卡图标 / tooltip
 
-注意按类型查询的 helper 是个例外：`HasEnchantment<TMarker>(card)` 和 `GetEnchantmentCount(card, typeof(TMarker))` **会**报告 marker 类型，因为专门去问一个 marker 类型显然就是想把 marker 算进来。
+想在共用一个 `IconState` 的前提下，为不同卡牌定制美术或 hover 文本，就用 `Show` 配 `IconStateOverride`。留 `null` 的字段会回退到构造函数里的值。
 
-## 性能与最佳实践
+```csharp
+// 同一 marker 类型，每卡不同图标 + tooltip，且计数器可以显示 "0"。
+BloodChargeIcons.State.Show(cardA, amount: 0, overrides: new IconStateOverride
+{
+    Icon = GD.Load<Texture2D>("res://images/markers/blood_charge_empty.png"),
+    ShowAmount = true,
+});
 
-- 一旦注册了任何 provider，每张卡在每次 `UpdateVisuals` 和每次卡牌悬停时都会跑所有 provider。predicate 要无分配、轻量；不要在里面加载纹理、扫描整副牌组或分配对象。没有任何 provider 注册时，整条路径是廉价的空操作（`HasProviders` 短路），未使用的 mod 零开销。
-- 纹理只解析一次（缓存字段，或 `GD.Load` 一个已导入的资源），不要每次刷新都加载。
-- 优先用一个产出多个 `ExtraIconDisplay` 的 provider，而不是多个独立 provider。
-- 卸载时 Dispose 注册；把熔断当安全网，而不是正常的流程控制。
+BloodChargeIcons.State.Show(cardB, amount: 3, overrides: new IconStateOverride
+{
+    Icon = GD.Load<Texture2D>("res://images/markers/blood_charge_full.png"),
+    Enchantment = someEnchantmentForThisCardsHoverTip, // 决定这张卡的 hover 文本
+});
+```
 
-## 排错
+CRUD 对照：
 
-| 现象 | 可能原因 / 修法 |
+| 操作 | 调用 |
 |---|---|
-| 图标完全不出现 | 多半是没解析到纹理——给 `RegisterExtraIcon` 传 `icon:` 或设 `ExtraIconDisplay.Icon`（`EnchantmentModel.Icon` **不能 override**，它是非 virtual 的）。详见[图标解析契约](#图标解析契约)和那条一次性失败日志；并确认 predicate 返回 true、provider 已注册（且没被停用——见下）。 |
-| 图标出现在牌库/奖励/百科，但你只想要战斗中显示 | 用 `ShouldDisplay = ctx => ctx.IsCombatCard` 限制。 |
-| marker 占了主徽章槽，把真实附魔挤开 | 符合预期：默认 `DisplayPriority` 是 `1000`。用 `DisplayPriority = -1`（低于 gameplay 默认 `0`）让它排在 gameplay 徽章之后。 |
-| 卡上已有同类型 live 附魔时 marker 不显示 | 设计如此——设 `ShowWithLiveEnchantment = true` 让它共存。 |
-| 数量 label 不显示 | `RegisterExtraIcon<T>` 设不了；改用 provider 路径，设 `ShowAmount = true` 和 `Amount`。 |
-| hover tooltip 不出现 | 在 marker 类型上重写 `HoverTips`；只有 marker 实际显示、且没被同类型 live 附魔抑制时才出现。 |
-| 改了 provider 状态（或 Dispose 了）但屏幕上的卡还是旧图标 | 那张卡还没走视觉刷新——调用 `RefreshExtraIcons(card)` 或 `RefreshExtraIcons()`。百科这类静态界面不会自己刷新。 |
-| provider 悄悄不跑了 | 它连续抛异常太多次被自动停用了——查日志里那条 error 并修掉异常。 |
-| 卡牌转化后 marker 消失 | 符合预期；转化复制只携带 gameplay 附魔（见跟随表）。 |
-| 明明显示了 marker，`HasAnyEnchantment` 却返回 false | 设计如此——marker 不计入 gameplay 计数；UI 计数请传 `includeExtraIcons: true`。 |
+| 注册 provider（可选，首次修改会自动注册） | `BloodChargeIcons.State.Register()` |
+| 显示当前 model 状态（按量门控） | `BloodChargeIcons.State.Set(card, displayAmount)` |
+| 每卡定制美术 / 允许显示 "0" | `BloodChargeIcons.State.Show(card, amount, overrides)` |
+| 增加 UI 投影值 | `BloodChargeIcons.State.Add(card, amount)` |
+| 隐藏投影 | `BloodChargeIcons.State.Remove(card)` |
+| 清空所有卡（只刷新被追踪的卡） | `BloodChargeIcons.State.Clear()` |
+| 只刷新被追踪的卡 | `BloodChargeIcons.State.RefreshTracked()` |
+| 列出被追踪的卡 | `BloodChargeIcons.State.GetTrackedCards()` |
+| 取消注册 + 清空（终态） | `BloodChargeIcons.State.Dispose()` |
+| 查看数值 / 存在性 | `BloodChargeIcons.State.Get(card)` / `Has(card)` |
+| 查看最终 UI 行 | `MultiEnchantmentApi.GetShownExtraIconDetails(card)` |
+
+临时 UI 投影推荐用 `IconState<TMarker>`。如果 marker 本身必须作为卡牌状态 save/load，请改用存储型 `ExtraIconEnchantmentModel`。如果 marker 会改变 gameplay，请用普通 `EnchantmentModel`。
+
+验证：
+
+- 抽到这张牌。
+- `BloodCharge.Amount` 变化。
+- `BloodChargeIcons.State.Set(card, amount)` 被调用。
+- 徽章显示附魔上的数量。
+- `GetShownExtraIconDetails(card)` 里能看到 `BloodChargeIcon`。
+
+## 8. 设置样式和排序
+
+从 `ExtraIconPresentation.Default` 开始改。
+
+```csharp
+PresentationStyle = ExtraIconPresentation.Default with
+{
+    ShowBadgeBacking = false,
+    IconScale = 1.25f,
+    IconOffset = new Vector2(0, -3),
+    IconTint = Colors.White,
+    DisabledIconTint = new Color(0.5f, 0.5f, 0.5f, 0.75f),
+    HideWhenDisabled = true,
+    DisplayPriority = ExtraIconPresentation.DefaultDisplayPriority + 10,
+}
+```
+
+默认 marker 样式：
+
+- `ShowBadgeBacking = false`
+- `HideWhenDisabled = true`
+- `DisplayPriority = 1000`
+
+排序规则：
+
+- `DisplayPriority` 越高越靠前。
+- `HideWhenDisabled = true` 时，disabled marker 不显示。
+- 两个显示项使用同一个精确 `EnchantmentType` 时会合并；除非后一个设置 `ShowWithLiveEnchantment = true`。
+
+## 9. 正确提供图标
+
+不要 override `EnchantmentModel.Icon`。它不是 virtual。
+
+使用下面任意一种方式：
+
+| 方式 | 适用场景 |
+|---|---|
+| `Icon = GD.Load<Texture2D>("res://...png")` | 推荐。自定义图标最直接 |
+| `icon: ModelDb.Enchantment<Sharp>().Icon` | 借用已有附魔图标 |
+| `ExtraIconDisplay.Enchantment = someModel` | 需要从模型读取图标、状态、hover tips |
+| 约定图标路径 | marker 已作为 canonical model 注册 |
+
+注意：如果没有解析到纹理，这个 marker 会被跳过，并只记录一次日志。不会显示缺失图标占位符。
+
+## 10. 添加 Hover 提示
+
+卡牌 hover tips 来自 `Enchantment.HoverTips`。provider marker 只有在有模型来源时，才能贡献 hover tips。
+
+用下面任意一种：
+
+- 传 `ExtraIconDisplay.Enchantment`。
+- 让 `EnchantmentType` 解析到定义了 `ExtraHoverTips` 的 canonical model。
+
+不要指望裸 `Icon` 纹理提供 hover 文本。它只能画图标，没有文本来源。
+
+## 11. 只在需要时使用存储型 Marker
+
+只有 marker 需要真实的每卡数据时，才用存储型 `ExtraIconEnchantmentModel`。
+
+它仍然不是 gameplay：
+
+- 不调用 `ModifyCard`
+- 不触发 `OnApplied` 等 lifecycle hook
+- 不触发 `AfterCardEnchanted`
+- 不参与伤害/格挡/dynamic-var 管线
+- 不进入 gameplay 应用顺序
+
+存储型 marker：
+
+- 会被 `GetMarkers(card)` 返回；
+- 会随同一个卡牌对象 save/load；
+- 会随普通卡牌 clone 携带；
+- 不会通过 compatible transform copy 转移；
+- 不会因为在战斗中创建，就变成永久牌组附魔。
+
+如果这个东西应该影响 gameplay，请改成普通 `EnchantmentModel`。
+
+## 12. 查询卡牌存储状态
+
+想查卡牌实际带着哪些附魔实例，用这些 API。
+
+```csharp
+bool hasGameplay = MultiEnchantmentApi.HasAnyEnchantment(card);
+
+bool hasGameplayOrStoredMarkers =
+    MultiEnchantmentApi.HasAnyEnchantment(card, includeExtraIcons: true);
+
+IReadOnlyList<EnchantmentModel> gameplay =
+    MultiEnchantmentApi.GetEnchantments(card);
+
+IReadOnlyList<EnchantmentModel> gameplayAndStoredMarkers =
+    MultiEnchantmentApi.GetEnchantments(card, includeExtraIcons: true);
+
+IReadOnlyList<ExtraIconEnchantmentModel> storedMarkers =
+    MultiEnchantmentApi.GetMarkers(card);
+```
+
+注意：`includeExtraIcons: true` 包含存储型 `ExtraIconEnchantmentModel` 实例。不包含显示层 provider marker。
+
+按类型查存储型 marker：
+
+```csharp
+BloodStoredMarker? marker = MultiEnchantmentApi.GetMarker<BloodStoredMarker>(card);
+bool hasMarker = MultiEnchantmentApi.HasEnchantment<BloodStoredMarker>(card);
+```
+
+## 13. 查询当前可见图标
+
+想查最终图标行，用这些 API。
+
+```csharp
+bool visible = MultiEnchantmentApi.IsExtraIconShown<BloodMarkedIcon>(card);
+
+IReadOnlyList<Type> visibleTypes =
+    MultiEnchantmentApi.GetShownExtraIcons(card);
+
+IReadOnlyList<ShownExtraIcon> visibleIcons =
+    MultiEnchantmentApi.GetShownExtraIconDetails(card);
+
+foreach (ShownExtraIcon icon in visibleIcons)
+{
+    if (icon.ShowAmount)
+    {
+        GD.Print($"{icon.EnchantmentType.Name}: {icon.DisplayAmount}");
+    }
+
+    if (icon.IsStoredMarker)
+    {
+        ExtraIconEnchantmentModel stored = icon.StoredMarker!;
+    }
+}
+```
+
+这些查询已经经过：
+
+- provider 计算；
+- `ShouldDisplay`；
+- 同类型压制；
+- disabled marker 隐藏；
+- 图标解析；
+- `DisplayPriority` 排序。
+
+## 14. 让 Provider 便宜一点
+
+provider 运行很频繁。写小一点。
+
+建议：
+
+- 缓存纹理；
+- 读卡牌状态或本地状态；
+- 用一个 provider 返回多个图标；
+- unload 时 dispose 注册。
+
+避免：
+
+- 在 provider 循环里 `GD.Load`；
+- 每次刷新都扫描整副牌组；
+- 分配很大的临时集合；
+- 依赖 provider 异常保护当正常流程。
+
+## 15. 排错
+
+| 现象 | 检查 |
+|---|---|
+| 图标完全不出现 | `appliesTo`、`ShouldDisplay`、图标路径、同类型压制 |
+| 重新打开界面后才出现 | 调用 `RefreshExtraIcons(card)` |
+| 数字不显示 | 设置 `ShowAmount = true` |
+| 没有 hover 提示 | 提供 `ExtraIconDisplay.Enchantment` 或 canonical model hover tips |
+| `HasAnyEnchantment(card)` 是 false | 显示层 marker 的预期行为；改用可见图标查询 |
+| 两个 marker 合成一个 | 用不同 marker 类型，或设置 `ShowWithLiveEnchantment = true` |
+| provider 不再运行 | 看日志里是否有连续异常 |
+
+成功标准：
+
+- 匹配卡牌显示徽章。
+- 不匹配卡牌不显示徽章。
+- `GetShownExtraIconDetails(card)` 返回的内容和 UI 一致。
+- gameplay 判断仍然忽略显示层 marker。
