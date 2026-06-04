@@ -52,7 +52,7 @@ internal static partial class MultiEnchantmentSupport
     private static readonly ConditionalWeakTable<NCard, CardUiState> CardUiStates = new();
     private static readonly ConditionalWeakTable<Node, EnchantmentVfxSnapshotState> PendingEnchantVfxSnapshots = new();
     private static readonly ConditionalWeakTable<Control, EnchantmentBadgeRestoreState> EnchantmentBadgeRestoreStates = new();
-    private static readonly ConditionalWeakTable<TextureRect, EnchantmentIconRestoreState> EnchantmentIconRestoreStates = new();
+    private static readonly ConditionalWeakTable<Control, EnchantmentIconRestoreState> EnchantmentIconRestoreStates = new();
     private static readonly HashSet<string> InvalidHookListenerLogKeys = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -82,6 +82,13 @@ internal static partial class MultiEnchantmentSupport
         AccessTools.Field(typeof(NCard), "_defaultEnchantmentPosition");
     private static readonly FieldInfo? NCardEnchantmentTabField =
         AccessTools.Field(typeof(NCard), "_enchantmentTab");
+    // Soft-optional: only used to position the right-aligned badge column symmetric to the card's
+    // cost icon. A missing field degrades to a fallback, so these are intentionally NOT in
+    // ValidateReflectionTargets.
+    private static readonly FieldInfo? NCardEnergyIconField =
+        AccessTools.Field(typeof(NCard), "_energyIcon");
+    private static readonly FieldInfo? NCardStarIconField =
+        AccessTools.Field(typeof(NCard), "_starIcon");
     private static readonly PropertyInfo? EnchantedValueProperty =
         typeof(DynamicVar).GetProperty(
             nameof(DynamicVar.EnchantedValue),
@@ -239,6 +246,30 @@ internal static partial class MultiEnchantmentSupport
     {
         return GetEnchantmentsForType(card, enchantmentType)
             .FirstOrDefault(enchantment => enchantment.GetType() == enchantmentType);
+    }
+
+    /// <summary>
+    /// All stored <see cref="ExtraIconEnchantmentModel"/> marker instances currently attached to
+    /// <paramref name="card"/>, in application order. Display-only markers (provider/predicate based)
+    /// are computed at render time and are not card instance state, so they are not returned here.
+    /// </summary>
+    public static IReadOnlyList<ExtraIconEnchantmentModel> GetMarkers(CardModel? card)
+    {
+        if (card == null)
+        {
+            return Array.Empty<ExtraIconEnchantmentModel>();
+        }
+
+        List<ExtraIconEnchantmentModel>? markers = null;
+        foreach (EnchantmentModel enchantment in GetEnchantments(card))
+        {
+            if (enchantment is ExtraIconEnchantmentModel marker)
+            {
+                (markers ??= new List<ExtraIconEnchantmentModel>()).Add(marker);
+            }
+        }
+
+        return markers ?? (IReadOnlyList<ExtraIconEnchantmentModel>)Array.Empty<ExtraIconEnchantmentModel>();
     }
 
     public static bool ShouldGlowGold(CardModel card)

@@ -63,11 +63,14 @@ internal static partial class MultiEnchantmentSupport
         public EnchantmentBadgeRestoreState(Control tab)
         {
             SelfModulate = tab.SelfModulate;
+            Scale = tab.Scale;
+            PivotOffset = tab.PivotOffset;
 
             if (tab is TextureRect textureRect)
             {
                 HasTextureRectTexture = true;
                 TextureRectTexture = textureRect.Texture;
+                FlipH = textureRect.FlipH;
             }
 
             if (tab is NinePatchRect ninePatchRect)
@@ -82,14 +85,20 @@ internal static partial class MultiEnchantmentSupport
         public bool HasNinePatchTexture { get; }
         public Texture2D? NinePatchTexture { get; }
         public Color SelfModulate { get; }
+        public Vector2 Scale { get; }
+        public Vector2 PivotOffset { get; }
+        public bool FlipH { get; }
 
         public void Restore(Control tab)
         {
             tab.SelfModulate = SelfModulate;
+            tab.Scale = Scale;
+            tab.PivotOffset = PivotOffset;
 
             if (HasTextureRectTexture && tab is TextureRect textureRect)
             {
                 textureRect.Texture = TextureRectTexture;
+                textureRect.FlipH = FlipH;
             }
 
             if (HasNinePatchTexture && tab is NinePatchRect ninePatchRect)
@@ -99,15 +108,18 @@ internal static partial class MultiEnchantmentSupport
         }
     }
 
+    // Captures the foreground-presentation transform of a badge child (Icon or Label) so an
+    // IconScale/IconOffset edit can be reverted before re-applying. Keyed by Control (not just
+    // TextureRect) because IconOffset moves the amount Label alongside the Icon.
     private sealed class EnchantmentIconRestoreState
     {
-        public EnchantmentIconRestoreState(TextureRect icon)
+        public EnchantmentIconRestoreState(Control node)
         {
-            Position = icon.Position;
-            Scale = icon.Scale;
-            PivotOffset = icon.PivotOffset;
-            SelfModulate = icon.SelfModulate;
-            UseParentMaterial = icon.UseParentMaterial;
+            Position = node.Position;
+            Scale = node.Scale;
+            PivotOffset = node.PivotOffset;
+            SelfModulate = node.SelfModulate;
+            UseParentMaterial = node.UseParentMaterial;
         }
 
         public Vector2 Position { get; }
@@ -116,13 +128,13 @@ internal static partial class MultiEnchantmentSupport
         public Color SelfModulate { get; }
         public bool UseParentMaterial { get; }
 
-        public void Restore(TextureRect icon)
+        public void Restore(Control node)
         {
-            icon.Position = Position;
-            icon.Scale = Scale;
-            icon.PivotOffset = PivotOffset;
-            icon.SelfModulate = SelfModulate;
-            icon.UseParentMaterial = UseParentMaterial;
+            node.Position = Position;
+            node.Scale = Scale;
+            node.PivotOffset = PivotOffset;
+            node.SelfModulate = SelfModulate;
+            node.UseParentMaterial = UseParentMaterial;
         }
     }
 
@@ -137,7 +149,10 @@ internal static partial class MultiEnchantmentSupport
         bool ShowAmount,
         EnchantmentStatus Status,
         EnchantmentPresentationStyle PresentationStyle,
-        bool IsDisplayOnly = false);
+        bool IsDisplayOnly = false,
+        Type? MarkerType = null,
+        ExtraIconEnchantmentModel? StoredMarker = null,
+        EnchantmentModel? IconSource = null);
 
     private readonly record struct EnchantmentSlotLayout(
         Vector2 Position,
