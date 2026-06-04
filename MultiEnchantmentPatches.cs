@@ -48,8 +48,6 @@ namespace MultiEnchantmentMod;
 [HarmonyPatch]
 internal static class MultiEnchantmentPatches
 {
-    private static readonly MethodInfo? CalculatedVarGetBaseVarMethod =
-        AccessTools.Method(typeof(CalculatedVar), "GetBaseVar");
     private static readonly PropertyInfo? RestSiteOptionOwnerProperty =
         AccessTools.Property(typeof(RestSiteOption), "Owner");
     private static readonly FieldInfo? NCardEnchantVfxCardModelField =
@@ -1242,26 +1240,16 @@ internal static class MultiEnchantmentPatches
             }
         }
 
-        if (runGlobalHooks)
-        {
-            // Hook.ModifyDamage's prefix applies legacy damage enchantments and
-            // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
-            // passing the already-enchanted local value would apply card damage twice.
-            if (TryGetPreviewOwner(card, out Player? owner) &&
-                TryGetPreviewRunState(owner, out IRunState? runState) &&
-                TryGetPreviewCreature(owner, out Creature? ownerCreature))
-            {
-                value = Hook.ModifyDamage(runState, card.CombatState, target, ownerCreature, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
-            }
-            else
-            {
-                value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
-            }
-        }
-        else
-        {
-            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
-        }
+        value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
+            card,
+            __instance.Name,
+            value,
+            __instance.Props,
+            target,
+            TryGetPreviewOwner(card, out Player? owner) ? owner.Creature : null,
+            ModifyDamageHookType.All,
+            previewMode,
+            runGlobalHooks);
 
         __instance.PreviewValue = value;
         return false;
@@ -1298,7 +1286,12 @@ internal static class MultiEnchantmentPatches
                 TryGetPreviewCreature(owner, out Creature? ownerCreature) &&
                 TryGetPreviewCombatState(card, ownerCreature, out ICombatState? combatState))
             {
-                value = Hook.ModifyBlock(combatState, ownerCreature, __instance.BaseValue, __instance.Props, card, null, out IEnumerable<AbstractModel> _);
+                value = ApplyBlockPreviewDynamicVarAndGlobalHooks(
+                    card,
+                    __instance.Name,
+                    value,
+                    __instance.Props,
+                    runGlobalHooks);
             }
             else
             {
@@ -1325,8 +1318,8 @@ internal static class MultiEnchantmentPatches
         bool runGlobalHooks)
     {
         // Base-game source: CalculatedDamageVar.UpdateCardPreview.
-        // The important invariant here is "apply enchantments exactly once": first to the base var
-        // used by Calculate(), then only run non-enchantment global hooks on the calculated result.
+        // Calculate() folds CalculationBase + ExtraDamage * multiplier. Card enchantments modify
+        // that full attack amount, matching AttackCommand -> CreatureCmd.Damage -> Hook.ModifyDamage.
         if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
         {
             return true;
@@ -1334,12 +1327,8 @@ internal static class MultiEnchantmentPatches
 
         try
         {
-            DynamicVar baseVar = GetCalculatedBaseVar(__instance);
-            // Base stage: only legacy EnchantDamage* virtuals on the BASE value (matches what
-            // those virtuals were designed to modify — e.g. Sharp adjusts base damage). The new
-            // ModifyDynamicVar chain runs on the RESULT after Calculate + listeners, mirroring
-            // CalculatedBlockVar so authors see consistent application semantics across both.
-            decimal enchantedBase = MultiEnchantmentSupport.ApplyDamageEnchantments(card, baseVar.BaseValue, __instance.Props, ModifyDamageHookType.All);
+            decimal calculatedBase = __instance.Calculate(target);
+            decimal enchantedBase = ApplyCardDamageEnchantments(card, calculatedBase, __instance.Props, ModifyDamageHookType.All);
             enchantedBase = Math.Max(enchantedBase, 0m);
             if (card.IsEnchantmentPreview)
             {
@@ -1354,7 +1343,7 @@ internal static class MultiEnchantmentPatches
                 MultiEnchantmentSupport.ResetEnchantedValue(__instance);
             }
 
-            decimal value = __instance.Calculate(target);
+            decimal value = enchantedBase;
             if (runGlobalHooks)
             {
                 if (TryGetPreviewOwner(card, out Player? owner) &&
@@ -1400,8 +1389,8 @@ internal static class MultiEnchantmentPatches
         bool runGlobalHooks)
     {
         // Base-game source: CalculatedBlockVar.UpdateCardPreview.
-        // Keep this in sync with the damage variant above: enchant the calculated base once, then
-        // feed the calculated value through the remaining global block modifiers.
+        // Keep this in sync with the damage variant above: card enchantments modify the complete
+        // calculated block amount before global block listeners run.
         if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
         {
             return true;
@@ -1409,8 +1398,8 @@ internal static class MultiEnchantmentPatches
 
         try
         {
-            DynamicVar baseVar = GetCalculatedBaseVar(__instance);
-            decimal enchantedBase = MultiEnchantmentSupport.ApplyBlockEnchantments(card, baseVar.BaseValue, __instance.Props);
+            decimal calculatedBase = __instance.Calculate(target);
+            decimal enchantedBase = MultiEnchantmentSupport.ApplyBlockEnchantments(card, calculatedBase, __instance.Props);
             if (card.IsEnchantmentPreview)
             {
                 __instance.PreviewValue = enchantedBase;
@@ -1424,14 +1413,21 @@ internal static class MultiEnchantmentPatches
                 MultiEnchantmentSupport.ResetEnchantedValue(__instance);
             }
 
-            decimal value = __instance.Calculate(target);
+            decimal value = enchantedBase;
             if (runGlobalHooks)
             {
                 if (TryGetPreviewOwner(card, out Player? owner) &&
                     TryGetPreviewCreature(owner, out Creature? ownerCreature))
                 {
                     ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
-                    value = ModifyBlockInternal(combatState, ownerCreature, value, __instance.Props, card, null, new List<AbstractModel>());
+                    value = ModifyBlockInternal(
+                        combatState,
+                        ownerCreature,
+                        value,
+                        __instance.Props,
+                        card,
+                        null,
+                        new List<AbstractModel>());
                 }
             }
 
@@ -1514,7 +1510,16 @@ internal static class MultiEnchantmentPatches
                 TryGetPreviewCreature(owner, out Creature? ownerCreature))
             {
                 ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
-                value = Hook.ModifyDamage(runState, combatState, target, owner.Osty, __instance.BaseValue, __instance.Props, card, ModifyDamageHookType.All, previewMode, out IEnumerable<AbstractModel> _);
+                value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
+                    card,
+                    "damage",
+                    value,
+                    __instance.Props,
+                    target,
+                    owner.Osty,
+                    ModifyDamageHookType.All,
+                    previewMode,
+                    runGlobalHooks);
             }
             else
             {
@@ -1925,18 +1930,6 @@ internal static class MultiEnchantmentPatches
         __result.Add(new CloneRestSiteOption(player));
     }
 
-    private static DynamicVar GetCalculatedBaseVar(CalculatedVar calculatedVar)
-    {
-        if (CalculatedVarGetBaseVarMethod?.Invoke(calculatedVar, null) is DynamicVar baseVar)
-        {
-            return baseVar;
-        }
-
-        // Fallback when GetBaseVar is unavailable (renamed/removed in newer game versions):
-        // CalculatedVar extends DynamicVar, use it directly as the base value source.
-        return calculatedVar;
-    }
-
     private static bool TryGetPreviewOwner(CardModel card, [NotNullWhen(true)] out Player? owner)
     {
         owner = card.Owner;
@@ -2052,6 +2045,139 @@ internal static class MultiEnchantmentPatches
     {
         decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
         return MultiEnchantmentSupport.ApplyDynamicVarEnchantments(cardSource, "damage", value);
+    }
+
+    private static decimal ApplyDamagePreviewDynamicVarAndGlobalHooks(
+        CardModel card,
+        string varKey,
+        decimal value,
+        ValueProp props,
+        Creature? target,
+        Creature? dealer,
+        ModifyDamageHookType modifyDamageHookType,
+        CardPreviewMode previewMode,
+        bool runGlobalHooks)
+    {
+        value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, varKey, value);
+        if (!runGlobalHooks ||
+            !TryGetPreviewOwner(card, out Player? owner) ||
+            !TryGetPreviewRunState(owner, out IRunState? runState))
+        {
+            return value;
+        }
+
+        ICombatState? combatState = card.CombatState ?? owner.Creature?.CombatState;
+        if (target == null && previewMode == CardPreviewMode.MultiCreatureTargeting)
+        {
+            return ModifyDamagePreviewMultiTarget(
+                runState,
+                combatState,
+                dealer,
+                value,
+                props,
+                card,
+                modifyDamageHookType);
+        }
+
+        return ModifyDamageInternal(
+            runState,
+            combatState,
+            target,
+            dealer,
+            value,
+            props,
+            card,
+            modifyDamageHookType,
+            new List<AbstractModel>());
+    }
+
+    private static decimal ModifyDamagePreviewMultiTarget(
+        IRunState runState,
+        ICombatState? combatState,
+        Creature? dealer,
+        decimal value,
+        ValueProp props,
+        CardModel cardSource,
+        ModifyDamageHookType modifyDamageHookType)
+    {
+        if (!ShouldUseMultiTargetDamagePreview(cardSource))
+        {
+            return ModifyDamageInternal(
+                runState,
+                combatState,
+                null,
+                dealer,
+                value,
+                props,
+                cardSource,
+                modifyDamageHookType,
+                new List<AbstractModel>());
+        }
+
+        bool allEqual = true;
+        decimal? sharedValue = null;
+        foreach (Creature enemy in combatState?.HittableEnemies ?? Array.Empty<Creature>())
+        {
+            decimal targetValue = ModifyDamageInternal(
+                runState,
+                combatState,
+                enemy,
+                dealer,
+                value,
+                props,
+                cardSource,
+                modifyDamageHookType,
+                new List<AbstractModel>());
+            if (!sharedValue.HasValue)
+            {
+                sharedValue = targetValue;
+            }
+            else if ((int)targetValue != (int)sharedValue.Value)
+            {
+                allEqual = false;
+                break;
+            }
+        }
+
+        return sharedValue.HasValue && allEqual ? Math.Max(0m, sharedValue.Value) : Math.Max(0m, value);
+    }
+
+    private static bool ShouldUseMultiTargetDamagePreview(CardModel cardSource)
+    {
+        TargetType targetType = cardSource.TargetType;
+        if ((uint)(targetType - 3) > 1u)
+        {
+            return false;
+        }
+
+        CardPile? pile = cardSource.Pile;
+        return pile != null && (pile.Type == PileType.Hand || pile.Type == PileType.Play);
+    }
+
+    private static decimal ApplyBlockPreviewDynamicVarAndGlobalHooks(
+        CardModel card,
+        string varKey,
+        decimal value,
+        ValueProp props,
+        bool runGlobalHooks)
+    {
+        value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, varKey, value);
+        if (!runGlobalHooks ||
+            !TryGetPreviewOwner(card, out Player? owner) ||
+            !TryGetPreviewCreature(owner, out Creature? ownerCreature))
+        {
+            return value;
+        }
+
+        ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
+        return ModifyBlockInternal(
+            combatState,
+            ownerCreature,
+            value,
+            props,
+            card,
+            null,
+            new List<AbstractModel>());
     }
 
     private static decimal ModifyDamageInternal(
