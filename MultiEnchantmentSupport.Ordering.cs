@@ -435,7 +435,10 @@ internal static partial class MultiEnchantmentSupport
                         GetDisplayAmount(enchantment, slice.Amount),
                         enchantment.ShowAmount,
                         slice.Status,
-                        EnchantmentRegistry.GetPresentationStyle(enchantment.GetType()))));
+                        EnchantmentRegistry.GetPresentationStyle(enchantment.GetType()),
+                        MarkerType: enchantment is ExtraIconEnchantmentModel ? enchantment.GetType() : null,
+                        StoredMarker: enchantment as ExtraIconEnchantmentModel,
+                        IconSource: enchantment)));
                 sliceIndex++;
             }
         }
@@ -454,7 +457,7 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        foreach ((ExtraIconDisplay display, Texture2D icon, EnchantmentStatus status, _) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
+        foreach ((ExtraIconDisplay display, Texture2D icon, EnchantmentStatus status, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
         {
             entries.Add(new OrderedVisualEntry(
                 CreateDisplayOnlyVisualId(display.EnchantmentType),
@@ -464,7 +467,9 @@ internal static partial class MultiEnchantmentSupport
                     display.ShowAmount,
                     status,
                     display.PresentationStyle ?? EnchantmentRegistry.GetPresentationStyle(display.EnchantmentType),
-                    IsDisplayOnly: true)));
+                    IsDisplayOnly: true,
+                    MarkerType: display.EnchantmentType,
+                    IconSource: source)));
         }
     }
 
@@ -570,6 +575,62 @@ internal static partial class MultiEnchantmentSupport
         }
 
         return (IEnumerable<IHoverTip>?)tips ?? Array.Empty<IHoverTip>();
+    }
+
+    // The extra-icon marker types that currently render on a card after provider evaluation,
+    // live-enchantment suppression, HideWhenDisabled filtering, and DisplayPriority ordering.
+    // Includes both stored ExtraIconEnchantmentModel instances and display-only provider markers.
+    internal static IReadOnlyList<Type> GetShownExtraIconTypes(CardModel? card)
+    {
+        if (card == null)
+        {
+            return Array.Empty<Type>();
+        }
+
+        List<Type>? shown = null;
+        foreach (OrderedVisualEntry entry in GetOrderedVisualEntries(card))
+        {
+            if (entry.VisualState.MarkerType is { } markerType)
+            {
+                (shown ??= new List<Type>()).Add(markerType);
+            }
+        }
+
+        return (IReadOnlyList<Type>?)shown ?? Array.Empty<Type>();
+    }
+
+    // Full snapshots for extra-icon markers currently visible on the icon row. This intentionally
+    // builds from GetOrderedVisualEntries rather than provider output so callers see the same final
+    // visibility/order/style/amount resolution as the UI.
+    internal static IReadOnlyList<ShownExtraIcon> GetShownExtraIconDetails(CardModel? card)
+    {
+        if (card == null)
+        {
+            return Array.Empty<ShownExtraIcon>();
+        }
+
+        List<ShownExtraIcon>? shown = null;
+        foreach (OrderedVisualEntry entry in GetOrderedVisualEntries(card))
+        {
+            EnchantmentVisualState visualState = entry.VisualState;
+            if (visualState.MarkerType is not { } markerType)
+            {
+                continue;
+            }
+
+            (shown ??= new List<ShownExtraIcon>()).Add(new ShownExtraIcon(
+                markerType,
+                visualState.Icon,
+                visualState.DisplayAmount,
+                visualState.ShowAmount,
+                visualState.Status,
+                visualState.PresentationStyle,
+                visualState.IsDisplayOnly,
+                visualState.StoredMarker,
+                visualState.IconSource));
+        }
+
+        return (IReadOnlyList<ShownExtraIcon>?)shown ?? Array.Empty<ShownExtraIcon>();
     }
 
     private static Texture2D ResolveVisualSliceIcon(

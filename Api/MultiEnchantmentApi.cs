@@ -190,7 +190,13 @@ public static class MultiEnchantmentApi
         ExtraIconDisplayPredicate? shouldDisplay = null)
         where TEnchantment : ExtraIconEnchantmentModel, new()
     {
-        return RegisterExtraIcon<TEnchantment>(appliesTo, icon: null, presentationStyle, shouldDisplay);
+        return RegisterExtraIcon<TEnchantment>(
+            appliesTo,
+            new ExtraIconRegistrationOptions
+            {
+                PresentationStyle = presentationStyle,
+                ShouldDisplay = shouldDisplay,
+            });
     }
 
     /// <summary>
@@ -207,7 +213,30 @@ public static class MultiEnchantmentApi
         ExtraIconDisplayPredicate? shouldDisplay = null)
         where TEnchantment : ExtraIconEnchantmentModel, new()
     {
+        return RegisterExtraIcon<TEnchantment>(
+            appliesTo,
+            new ExtraIconRegistrationOptions
+            {
+                Icon = icon,
+                PresentationStyle = presentationStyle,
+                ShouldDisplay = shouldDisplay,
+            });
+    }
+
+    /// <summary>
+    /// Convenience overload for static extra icons that need the common provider-only knobs
+    /// (<see cref="ExtraIconRegistrationOptions.ShowAmount"/>,
+    /// <see cref="ExtraIconRegistrationOptions.Amount"/>, or
+    /// <see cref="ExtraIconRegistrationOptions.ShowWithLiveEnchantment"/>) without writing a full
+    /// <see cref="ExtraIconDisplayProvider"/>.
+    /// </summary>
+    public static IDisposable RegisterExtraIcon<TEnchantment>(
+        Func<CardModel, bool> appliesTo,
+        ExtraIconRegistrationOptions? options)
+        where TEnchantment : ExtraIconEnchantmentModel, new()
+    {
         ArgumentNullException.ThrowIfNull(appliesTo);
+        options ??= new ExtraIconRegistrationOptions();
         return RegisterExtraIconDisplayProvider(card =>
             appliesTo(card)
                 ? new[]
@@ -215,9 +244,12 @@ public static class MultiEnchantmentApi
                     new ExtraIconDisplay
                     {
                         EnchantmentType = typeof(TEnchantment),
-                        Icon = icon,
-                        PresentationStyle = presentationStyle,
-                        ShouldDisplay = shouldDisplay,
+                        Icon = options.Icon,
+                        PresentationStyle = options.PresentationStyle,
+                        ShouldDisplay = options.ShouldDisplay,
+                        ShowAmount = options.ShowAmount,
+                        Amount = options.Amount,
+                        ShowWithLiveEnchantment = options.ShowWithLiveEnchantment,
                     },
                 }
                 : Array.Empty<ExtraIconDisplay>());
@@ -318,6 +350,161 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
+    /// Returns the live enchantment instance assignable to <typeparamref name="TEnchantment"/> on
+    /// <paramref name="card"/>, or <c>null</c> when the card has none. This is the read counterpart
+    /// of <see cref="HasEnchantment{TEnchantment}(CardModel?)"/>: whenever that returns <c>true</c>,
+    /// this returns the instance so you can read or mutate its <c>Amount</c>/<c>Props</c>. When several
+    /// instances match, the first in application order is returned — use
+    /// <see cref="GetEnchantments{TEnchantment}(CardModel?)"/> to get them all.
+    /// </summary>
+    public static TEnchantment? GetEnchantment<TEnchantment>(CardModel? card)
+        where TEnchantment : EnchantmentModel =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, typeof(TEnchantment))
+            .OfType<TEnchantment>()
+            .FirstOrDefault();
+
+    /// <summary>
+    /// Returns the live enchantment instance assignable to <paramref name="enchantmentType"/> on
+    /// <paramref name="card"/>, or <c>null</c> when none match. This is the non-generic counterpart
+    /// of <see cref="GetEnchantment{TEnchantment}(CardModel?)"/>.
+    /// </summary>
+    public static EnchantmentModel? GetEnchantment(CardModel? card, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
+        {
+            throw new ArgumentException(
+                $"{enchantmentType.FullName} is not an {nameof(EnchantmentModel)} subclass.",
+                nameof(enchantmentType));
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, enchantmentType)
+            .FirstOrDefault(enchantment => enchantmentType.IsInstanceOfType(enchantment));
+    }
+
+    /// <summary>
+    /// Returns every live enchantment instance assignable to <typeparamref name="TEnchantment"/> on
+    /// <paramref name="card"/>, in application order. Useful when the same enchantment type can stack
+    /// into multiple distinct instances. Returns an empty list when there are none.
+    /// </summary>
+    public static IReadOnlyList<TEnchantment> GetEnchantments<TEnchantment>(CardModel? card)
+        where TEnchantment : EnchantmentModel =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, typeof(TEnchantment))
+            .OfType<TEnchantment>()
+            .ToList();
+
+    /// <summary>
+    /// All gameplay enchantment instances on <paramref name="card"/>, in application order, excluding
+    /// <see cref="ExtraIconEnchantmentModel"/> markers. Returns an empty list when there are none.
+    /// (For markers use <see cref="GetMarkers"/>; for the full mixed list pass
+    /// <c>includeExtraIcons: true</c> to the other overload.)
+    /// </summary>
+    public static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card) =>
+        GetEnchantments(card, includeExtraIcons: false);
+
+    /// <summary>
+    /// All enchantment instances on <paramref name="card"/>, in application order. Pass
+    /// <paramref name="includeExtraIcons"/> = <c>true</c> to include
+    /// <see cref="ExtraIconEnchantmentModel"/> markers in the list.
+    /// </summary>
+    public static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card, bool includeExtraIcons)
+    {
+        IEnumerable<EnchantmentModel> source = includeExtraIcons
+            ? global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card)
+            : global::MultiEnchantmentMod.MultiEnchantmentSupport.GetGameplayEnchantments(card);
+        return source.ToList();
+    }
+
+    /// <summary>
+    /// All stored <see cref="ExtraIconEnchantmentModel"/> markers currently attached to
+    /// <paramref name="card"/>, in application order. Inspect each element's runtime type (and its
+    /// <c>Amount</c>/<c>Props</c>) to learn <em>which</em> markers the card carries. Returns an empty
+    /// list when there are none.
+    /// </summary>
+    /// <remarks>
+    /// This reports markers that exist as real enchantment instances on the card — i.e. an
+    /// <see cref="ExtraIconEnchantmentModel"/> subclass applied through the normal enchant pipeline
+    /// (<see cref="Enchant"/>). Markers shown only via a registered display provider — including both
+    /// <c>RegisterExtraIcon&lt;T&gt;</c> overloads and <see cref="RegisterExtraIconDisplayProvider"/> —
+    /// are recomputed from their <c>appliesTo</c> predicate at render time and are <em>not</em> card
+    /// instance state, so they never appear here. To test a display-provider marker, re-evaluate that
+    /// predicate yourself.
+    /// </remarks>
+    public static IReadOnlyList<ExtraIconEnchantmentModel> GetMarkers(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card);
+
+    /// <summary>
+    /// Returns the stored marker instance of type <typeparamref name="TMarker"/> on
+    /// <paramref name="card"/>, or <c>null</c> when the card has no such marker. Use this when you
+    /// already know the marker type and want its live instance to read <c>Amount</c>/<c>Props</c>.
+    /// </summary>
+    public static TMarker? GetMarker<TMarker>(CardModel? card)
+        where TMarker : ExtraIconEnchantmentModel =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card).OfType<TMarker>().FirstOrDefault();
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="card"/> carries at least one stored
+    /// <see cref="ExtraIconEnchantmentModel"/> marker. Equivalent to <c>GetMarkers(card).Count &gt; 0</c>.
+    /// </summary>
+    public static bool HasAnyMarker(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card).Count > 0;
+
+    /// <summary>
+    /// The extra-icon marker types currently <em>visible</em> on <paramref name="card"/>, in the
+    /// same order as the icon row. Includes stored <see cref="ExtraIconEnchantmentModel"/> instances
+    /// and display-only markers from registered providers after <c>ShouldDisplay</c>,
+    /// live-enchantment suppression, <c>HideWhenDisabled</c>, and display-priority ordering.
+    /// Use <see cref="GetShownExtraIconDetails"/> when you also need amount/style/status details.
+    /// </summary>
+    public static IReadOnlyList<Type> GetShownExtraIcons(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconTypes(card);
+
+    /// <summary>
+    /// Detailed snapshots for extra-icon markers currently <em>visible</em> on
+    /// <paramref name="card"/>, in the same order as the icon row. This is the rich counterpart to
+    /// <see cref="GetShownExtraIcons"/>: it exposes the resolved icon, amount label, status,
+    /// presentation style, and whether each marker came from stored card state or a display provider.
+    /// </summary>
+    public static IReadOnlyList<ShownExtraIcon> GetShownExtraIconDetails(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconDetails(card);
+
+    /// <summary>
+    /// Returns <c>true</c> when the icon row currently shows a marker assignable to
+    /// <paramref name="markerType"/> on <paramref name="card"/>. See <see cref="GetShownExtraIcons"/>.
+    /// </summary>
+    public static bool IsExtraIconShown(CardModel? card, Type markerType)
+    {
+        ArgumentNullException.ThrowIfNull(markerType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(markerType))
+        {
+            throw new ArgumentException(
+                $"{markerType.FullName} is not an {nameof(EnchantmentModel)} subclass.",
+                nameof(markerType));
+        }
+
+        IReadOnlyList<Type> shown = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconTypes(card);
+        for (int i = 0; i < shown.Count; i++)
+        {
+            if (markerType.IsAssignableFrom(shown[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Generic form of <see cref="IsExtraIconShown(CardModel?,Type)"/> for a known marker type.
+    /// </summary>
+    public static bool IsExtraIconShown<TMarker>(CardModel? card)
+        where TMarker : ExtraIconEnchantmentModel =>
+        IsExtraIconShown(card, typeof(TMarker));
+
+    /// <summary>
     /// Returns <c>true</c> when <paramref name="card"/> carries any gameplay enchantment,
     /// excluding <see cref="ExtraIconEnchantmentModel"/> marker icons by default.
     /// </summary>
@@ -345,6 +532,70 @@ public static class MultiEnchantmentApi
     /// </summary>
     public static int GetEnchantmentCount(CardModel? card, bool includeExtraIcons) =>
         global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantmentTotalCount(card, includeExtraIcons);
+
+    /// <summary>
+    /// Number of instances assignable to <typeparamref name="TEnchantment"/> on
+    /// <paramref name="card"/>. Counts instances, not summed <c>Amount</c> — use
+    /// <see cref="GetTotalAmount{TEnchantment}(CardModel?)"/> for that.
+    /// </summary>
+    public static int GetEnchantmentCount<TEnchantment>(CardModel? card)
+        where TEnchantment : EnchantmentModel =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, typeof(TEnchantment))
+            .OfType<TEnchantment>()
+            .Count();
+
+    /// <summary>
+    /// Number of instances assignable to <paramref name="enchantmentType"/> on <paramref name="card"/>.
+    /// Counts instances, not summed <c>Amount</c> — use
+    /// <see cref="GetTotalAmount(CardModel?,Type)"/> for that.
+    /// </summary>
+    public static int GetEnchantmentCount(CardModel? card, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
+        {
+            throw new ArgumentException(
+                $"{enchantmentType.FullName} is not an {nameof(EnchantmentModel)} subclass.",
+                nameof(enchantmentType));
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, enchantmentType)
+            .Count(enchantment => enchantmentType.IsInstanceOfType(enchantment));
+    }
+
+    /// <summary>
+    /// Sum of <c>Amount</c> across every instance assignable to <typeparamref name="TEnchantment"/>
+    /// on <paramref name="card"/>. Answers "how much Sharp does this card have in total" when the
+    /// type stacks into multiple instances.
+    /// </summary>
+    public static int GetTotalAmount<TEnchantment>(CardModel? card)
+        where TEnchantment : EnchantmentModel =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, typeof(TEnchantment))
+            .OfType<TEnchantment>()
+            .Sum(static enchantment => enchantment.Amount);
+
+    /// <summary>
+    /// Sum of <c>Amount</c> across every instance assignable to
+    /// <paramref name="enchantmentType"/> on <paramref name="card"/>.
+    /// </summary>
+    public static int GetTotalAmount(CardModel? card, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        if (!typeof(EnchantmentModel).IsAssignableFrom(enchantmentType))
+        {
+            throw new ArgumentException(
+                $"{enchantmentType.FullName} is not an {nameof(EnchantmentModel)} subclass.",
+                nameof(enchantmentType));
+        }
+
+        return global::MultiEnchantmentMod.MultiEnchantmentSupport
+            .GetEnchantmentsForType(card, enchantmentType)
+            .Where(enchantment => enchantmentType.IsInstanceOfType(enchantment))
+            .Sum(enchantment => enchantment.Amount);
+    }
 
     /// <summary>
     /// Returns the current live enchantment instance most recently applied or merged onto
