@@ -129,7 +129,7 @@ internal static partial class MultiEnchantmentSupport
         List<EnchantmentSlotLayout> slotLayouts = BuildEnchantmentSlotLayouts(
             cardNode,
             primaryTab,
-            visualStates.Count,
+            visualStates,
             defaultPosition);
 
         ApplyEnchantmentSlotLayout(primaryTab, slotLayouts[0], visible: true);
@@ -283,7 +283,7 @@ internal static partial class MultiEnchantmentSupport
 
         CardModel? model = cardNode.Model;
         bool hasTrackedTabs = CardUiStates.TryGetValue(cardNode, out CardUiState? state) && state.ExtraTabs.Count > 0;
-        if (NeedsExtraEnchantmentTabs(model) || hasTrackedTabs)
+        if (NeedsExtraEnchantmentTabs(model) || NeedsPresentationRefresh(model) || hasTrackedTabs)
         {
             RefreshExtraEnchantmentTabs(cardNode);
         }
@@ -806,11 +806,16 @@ internal static partial class MultiEnchantmentSupport
 
     private static void ApplyEnchantmentVisualState(Control tab, EnchantmentVisualState visualState)
     {
+        // Card movement / queue / selection flows can reuse the same NCard after vanilla has
+        // touched the primary enchantment tab again. Always rebuild from the captured template
+        // state before applying our presentation knobs, otherwise IconScale/IconOffset/backing
+        // visibility can be lost or compounded across refreshes.
+        RestoreEnchantmentBadgePresentation(tab);
+
         TextureRect? icon = tab.GetNodeOrNull<TextureRect>("Icon");
         MegaLabel? label = tab.GetNodeOrNull<MegaLabel>("Label");
         if (icon != null)
         {
-            RestoreEnchantmentIconStyle(icon);
             icon.Texture = visualState.Icon;
         }
 
@@ -821,14 +826,13 @@ internal static partial class MultiEnchantmentSupport
         }
 
         ApplyStatusToTab(tab, icon, label, visualState.Status);
-        ApplyEnchantmentPresentationStyle(tab, icon, visualState.Status, visualState.PresentationStyle);
+        ApplyEnchantmentPresentationStyle(tab, icon, label, visualState.Status, visualState.PresentationStyle);
     }
 
     private static Control DuplicateEnchantmentTab(Control source)
     {
-        RestoreEnchantmentBadgePresentation(source);
-
         Control tab = (Control)source.Duplicate();
+        RestoreDuplicatedEnchantmentBadgePresentation(source, tab);
         tab.UniqueNameInOwner = false;
         if (tab.Material != null)
         {
@@ -838,9 +842,44 @@ internal static partial class MultiEnchantmentSupport
         return tab;
     }
 
+    private static void RestoreDuplicatedEnchantmentBadgePresentation(Node source, Node clone)
+    {
+        if (source is Control sourceControl && clone is Control cloneControl)
+        {
+            if (EnchantmentIconRestoreStates.TryGetValue(sourceControl, out EnchantmentIconRestoreState? iconState))
+            {
+                iconState.Restore(cloneControl);
+            }
+
+            if (EnchantmentBadgeRestoreStates.TryGetValue(sourceControl, out EnchantmentBadgeRestoreState? badgeState))
+            {
+                badgeState.Restore(cloneControl);
+            }
+        }
+
+        if (clone is CanvasItem canvasItem && canvasItem.HasMeta(EnchantmentBadgeHiddenMeta))
+        {
+            bool wasVisible = canvasItem.HasMeta(EnchantmentBadgeHiddenVisibleMeta)
+                ? canvasItem.GetMeta(EnchantmentBadgeHiddenVisibleMeta).AsBool()
+                : true;
+            canvasItem.Visible = wasVisible;
+            canvasItem.RemoveMeta(EnchantmentBadgeHiddenVisibleMeta);
+            canvasItem.RemoveMeta(EnchantmentBadgeHiddenMeta);
+        }
+
+        Godot.Collections.Array<Node> sourceChildren = source.GetChildren();
+        Godot.Collections.Array<Node> cloneChildren = clone.GetChildren();
+        int childCount = Math.Min(sourceChildren.Count, cloneChildren.Count);
+        for (int i = 0; i < childCount; i++)
+        {
+            RestoreDuplicatedEnchantmentBadgePresentation(sourceChildren[i], cloneChildren[i]);
+        }
+    }
+
     private static void ApplyEnchantmentPresentationStyle(
         Control tab,
         TextureRect? icon,
+        Control? label,
         EnchantmentStatus status,
         EnchantmentPresentationStyle style)
     {
@@ -855,7 +894,7 @@ internal static partial class MultiEnchantmentSupport
                 icon.UseParentMaterial = false;
                 icon.SelfModulate = ResolveIconTint(status, style, shaderHandlesDimming: false);
             }
-            ApplyEnchantmentIconPresentation(icon, style);
+            ApplyEnchantmentIconPresentation(icon, label, style);
             return;
         }
 
@@ -870,7 +909,85 @@ internal static partial class MultiEnchantmentSupport
             icon.SelfModulate = ResolveIconTint(status, style, shaderHandlesDimming: true);
         }
 
-        ApplyEnchantmentIconPresentation(icon, style);
+        ApplyEnchantmentIconPresentation(icon, label, style);
+
+        // Right-aligned badges mirror only the backing layer (icon + label stay upright), so the
+        // asymmetric badge art points toward the card edge it now hugs. RestoreEnchantmentBadgePresentation
+        // above always un-flips first, so this stays correct when a tab is reused left ↔ right.
+        if (style.RightAligned)
+        {
+            FlipBadgeBacking(tab);
+        }
+    }
+
+    /// <summary>
+    /// Horizontally mirrors the badge backing of <paramref name="tab"/> in place, leaving the
+    /// <c>Icon</c>/<c>Label</c> foreground upright so only the backing art is mirrored. The original
+    /// state is captured into <see cref="EnchantmentBadgeRestoreStates"/> so
+    /// <see cref="RestoreEnchantmentBadgePresentation"/> reverts it.
+    /// </summary>
+    private static void FlipBadgeBacking(Control tab)
+    {
+        // The tab itself may BE the backing pixel carrier rather than a container: the enchant
+        // appear-VFX template is a TextureRect whose direct child is the Icon. FlipH mirrors only
+        // the rendered texture without touching child transforms, so the Icon stays upright and in
+        // place. Container tabs (the on-card %Enchantment Control) carry no texture and fall through
+        // to flipping their backing children.
+        if (tab is TextureRect rootBacking && rootBacking.Texture != null)
+        {
+            FlipBackingNode(rootBacking);
+        }
+
+        FlipBadgeBackingChildren(tab);
+    }
+
+    private static void FlipBadgeBackingChildren(Node node)
+    {
+        foreach (Node child in node.GetChildren())
+        {
+            if (IsBadgeForegroundNode(child))
+            {
+                continue;
+            }
+
+            // A wrapper that holds the Icon/Label foreground must not itself be scale-flipped (scale
+            // propagates to children, which would mirror the icon too). Descend to find the
+            // pure-backing leaves instead. Mirrors the SetBadgeBackingVisible safety logic.
+            if (ContainsBadgeForegroundNode(child))
+            {
+                FlipBadgeBackingChildren(child);
+                continue;
+            }
+
+            if (child is Control control)
+            {
+                FlipBackingNode(control);
+                // The whole pure-backing subtree mirrors with this node; don't recurse and
+                // double-flip nested backing art.
+                continue;
+            }
+
+            FlipBadgeBackingChildren(child);
+        }
+    }
+
+    private static void FlipBackingNode(Control node)
+    {
+        EnchantmentBadgeRestoreStates.GetValue(node, static key => new EnchantmentBadgeRestoreState(key));
+
+        if (node is TextureRect textureRect)
+        {
+            // FlipH mirrors the drawn pixels without altering the node's transform, so any child
+            // (e.g. an Icon parented under a TextureRect badge) stays upright and in place. It also
+            // doesn't depend on the node's laid-out Size, so it is correct on the first frame.
+            textureRect.FlipH = !textureRect.FlipH;
+            return;
+        }
+
+        // NinePatchRect / other Controls have no FlipH: mirror via a centered negative-X scale.
+        // Only reached for pure-backing siblings (no foreground descendants), so nothing else flips.
+        node.PivotOffset = node.Size * 0.5f;
+        node.Scale = new Vector2(-Mathf.Abs(node.Scale.X), node.Scale.Y);
     }
 
     private static Color ResolveIconTint(EnchantmentStatus status, EnchantmentPresentationStyle style, bool shaderHandlesDimming)
@@ -884,13 +1001,8 @@ internal static partial class MultiEnchantmentSupport
         return style.IconTint ?? Colors.White;
     }
 
-    private static void ApplyEnchantmentIconPresentation(TextureRect? icon, EnchantmentPresentationStyle style)
+    private static void ApplyEnchantmentIconPresentation(TextureRect? icon, Control? label, EnchantmentPresentationStyle style)
     {
-        if (icon == null)
-        {
-            return;
-        }
-
         float scale = NormalizeIconScale(style.IconScale);
         Vector2 offset = style.IconOffset;
         if (Mathf.IsEqualApprox(scale, 1f) && offset == Vector2.Zero)
@@ -898,17 +1010,32 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        CaptureEnchantmentIconRestoreState(icon);
-        icon.PivotOffset = icon.Size * 0.5f;
-        icon.Scale *= scale;
-        icon.Position += offset;
-    }
-
-    private static void CaptureEnchantmentIconRestoreState(TextureRect? icon)
-    {
         if (icon != null)
         {
-            EnchantmentIconRestoreStates.GetValue(icon, static key => new EnchantmentIconRestoreState(key));
+            CaptureEnchantmentIconRestoreState(icon);
+            icon.PivotOffset = icon.Size * 0.5f;
+            icon.Scale *= scale;
+            icon.Position += offset;
+        }
+
+        // With NO backing, IconOffset is the only thing positioning the badge content, so the amount
+        // Label must move with the Icon or the number is left behind (the reported bug). WITH a
+        // backing, the backing frame is the anchor and IconOffset historically nudges only the Icon
+        // within it — keep that so existing backed badges that tuned IconOffset aren't disturbed.
+        // IconScale stays icon-only either way: the number's size comes from the label's own
+        // auto-size, and scaling it would desync from the surrounding card text.
+        if (label != null && offset != Vector2.Zero && !style.ShowBadgeBacking)
+        {
+            CaptureEnchantmentIconRestoreState(label);
+            label.Position += offset;
+        }
+    }
+
+    private static void CaptureEnchantmentIconRestoreState(Control? node)
+    {
+        if (node != null)
+        {
+            EnchantmentIconRestoreStates.GetValue(node, static key => new EnchantmentIconRestoreState(key));
         }
     }
 
@@ -919,12 +1046,12 @@ internal static partial class MultiEnchantmentSupport
             : scale;
     }
 
-    private static void RestoreEnchantmentIconStyle(TextureRect icon)
+    private static void RestoreEnchantmentIconStyle(Control node)
     {
-        if (EnchantmentIconRestoreStates.TryGetValue(icon, out EnchantmentIconRestoreState? state))
+        if (EnchantmentIconRestoreStates.TryGetValue(node, out EnchantmentIconRestoreState? state))
         {
-            state.Restore(icon);
-            EnchantmentIconRestoreStates.Remove(icon);
+            state.Restore(node);
+            EnchantmentIconRestoreStates.Remove(node);
         }
     }
 
@@ -933,6 +1060,11 @@ internal static partial class MultiEnchantmentSupport
         if (tab.GetNodeOrNull<TextureRect>("Icon") is { } icon)
         {
             RestoreEnchantmentIconStyle(icon);
+        }
+
+        if (tab.GetNodeOrNull<MegaLabel>("Label") is { } label)
+        {
+            RestoreEnchantmentIconStyle(label);
         }
 
         RestoreBadgeBackingNode(tab);
@@ -1104,9 +1236,10 @@ internal static partial class MultiEnchantmentSupport
     private static List<EnchantmentSlotLayout> BuildEnchantmentSlotLayouts(
         NCard cardNode,
         Control primaryTab,
-        int slotCount,
+        IReadOnlyList<EnchantmentVisualState> visualStates,
         Vector2 defaultPosition)
     {
+        int slotCount = visualStates.Count;
         List<EnchantmentSlotLayout> layouts = new(slotCount);
         if (slotCount <= 0)
         {
@@ -1114,18 +1247,35 @@ internal static partial class MultiEnchantmentSupport
         }
 
         CardModel? model = cardNode.Model;
-        Vector2 expectedPrimaryPosition = model != null && (model.HasStarCostX || model.CurrentStarCost >= 0)
+        // Left column anchor: the vanilla enchantment position (with the no-star-cost 45px lift),
+        // taken from the STABLE default — NOT primaryTab.Position. Reading the tab's live position
+        // would feed our own previous placement back in: when the primary badge is itself
+        // right-aligned, its Position is last frame's right-column X, and mirroring that flips it
+        // back left on the next refresh — the hover "left/right jitter".
+        Vector2 leftAnchor = model != null && (model.HasStarCostX || model.CurrentStarCost >= 0)
             ? defaultPosition
             : defaultPosition + Vector2.Up * 45f;
-        Vector2 primaryPosition = primaryTab.Position == Vector2.Zero && expectedPrimaryPosition != Vector2.Zero
-            ? expectedPrimaryPosition
-            : primaryTab.Position;
         float rowOffset = GetExtraEnchantmentRowOffset(primaryTab);
 
+        // Right column anchor: the energy icon reflected across the card's vertical midline, so the
+        // first right-aligned badge is symmetric to the energy icon (mirrored X, same top Y) and the
+        // column ignores the star-cost lift. Computed from live transforms (not primaryTab.Position),
+        // so it's stable across refreshes. Falls back to left X / default Y if unavailable.
+        float badgeWidth = primaryTab.Size.X * primaryTab.Scale.X;
+        Vector2 rightAnchor = TryResolveRightColumnAnchor(cardNode, primaryTab, badgeWidth, out Vector2 resolvedRight)
+            ? resolvedRight
+            : new Vector2(leftAnchor.X, defaultPosition.Y);
+
+        int leftRow = 0;
+        int rightRow = 0;
         for (int i = 0; i < slotCount; i++)
         {
+            Vector2 position = visualStates[i].PresentationStyle.RightAligned
+                ? rightAnchor + Vector2.Down * (rightRow++ * rowOffset)
+                : leftAnchor + Vector2.Down * (leftRow++ * rowOffset);
+
             layouts.Add(new EnchantmentSlotLayout(
-                primaryPosition + Vector2.Down * (i * rowOffset),
+                position,
                 primaryTab.Scale,
                 primaryTab.Rotation,
                 primaryTab.PivotOffset,
@@ -1134,6 +1284,66 @@ internal static partial class MultiEnchantmentSupport
         }
 
         return layouts;
+    }
+
+    /// <summary>
+    /// Right-column anchor = the card's cost icon reflected across the card's vertical midline,
+    /// expressed in the badge parent's local space (where the enchantment tabs'
+    /// <see cref="Control.Position"/> lives). The badge's right edge aligns to the mirrored cost-icon
+    /// left edge, and its top to the cost-icon top, so the first right-aligned badge is symmetric to
+    /// the cost icon the card actually shows (StarIcon for star-cost cards, else EnergyIcon).
+    /// </summary>
+    /// <remarks>
+    /// Computed from live transforms (not <c>primaryTab.Position</c>) so it stays correct and stable
+    /// across refreshes under the card's hand rotation/scale. The card lays out with centered anchors
+    /// over a zero-size <c>CardContainer</c>, so the midline is at the container origin
+    /// (<c>body.Size*0.5 == origin</c>) — a perfectly valid axis even at local X ≈ 0. Returns
+    /// <c>false</c> only when the body, badge parent, or cost icon are unavailable.
+    /// </remarks>
+    private static bool TryResolveRightColumnAnchor(NCard cardNode, Control primaryTab, float badgeWidth, out Vector2 anchor)
+    {
+        anchor = Vector2.Zero;
+        Control? body = cardNode.Body;
+        if (body == null || !GodotObject.IsInstanceValid(body))
+        {
+            return false;
+        }
+
+        if (primaryTab.GetParent() is not CanvasItem badgeRoot || !GodotObject.IsInstanceValid(badgeRoot))
+        {
+            return false;
+        }
+
+        Control? costIcon = ResolveCostIcon(cardNode);
+        if (costIcon == null || !GodotObject.IsInstanceValid(costIcon))
+        {
+            return false;
+        }
+
+        Transform2D toBadgeLocal = badgeRoot.GetGlobalTransform().AffineInverse();
+        // Card vertical midline: body.Size*0.5 is the container origin under centered-anchor layout.
+        float axisX = (toBadgeLocal * (body.GetGlobalTransform() * (body.Size * 0.5f))).X;
+        // Cost icon top-left corner in badge-parent local space.
+        Vector2 costLocal = toBadgeLocal * costIcon.GetGlobalTransform().Origin;
+        // Mirror across the midline: badge right edge ↔ mirrored cost-icon left edge; top aligned.
+        anchor = new Vector2(2f * axisX - costLocal.X - badgeWidth, costLocal.Y);
+        return true;
+    }
+
+    /// <summary>
+    /// The cost icon the card actually displays: StarIcon for star-cost cards, otherwise EnergyIcon.
+    /// Chosen by the same model check vanilla uses to position the enchantment tab
+    /// (<c>HasStarCostX || CurrentStarCost &gt;= 0</c>), so it doesn't depend on the icons' Visible
+    /// flags having been updated yet this frame. Falls back to whichever icon is available.
+    /// </summary>
+    private static Control? ResolveCostIcon(NCard cardNode)
+    {
+        Control? energyIcon = NCardEnergyIconField?.GetValue(cardNode) as Control;
+        Control? starIcon = NCardStarIconField?.GetValue(cardNode) as Control;
+        CardModel? model = cardNode.Model;
+        bool usesStar = model != null && (model.HasStarCostX || model.CurrentStarCost >= 0);
+        Control? preferred = usesStar ? starIcon : energyIcon;
+        return preferred ?? energyIcon ?? starIcon;
     }
 
     private static void ApplyEnchantmentSlotLayout(Control tab, EnchantmentSlotLayout layout, bool visible)
@@ -1165,7 +1375,7 @@ internal static partial class MultiEnchantmentSupport
         List<EnchantmentSlotLayout> slotLayouts = BuildEnchantmentSlotLayouts(
             cardNode,
             primaryTab,
-            visualStates.Count,
+            visualStates,
             defaultPosition);
 
         ApplyEnchantmentSlotLayout(primaryTab, slotLayouts[0], visible: true);
@@ -1348,6 +1558,31 @@ internal static partial class MultiEnchantmentSupport
         return primary != null && MultiEnchantmentStackSupport.GetVisualStackCount(primary) > 1;
     }
 
+    private static bool NeedsPresentationRefresh(CardModel? model)
+    {
+        if (model == null)
+        {
+            return false;
+        }
+
+        foreach (EnchantmentVisualState visualState in GetOrderedVisualStates(model))
+        {
+            Type? styleType = visualState.MarkerType ?? visualState.IconSource?.GetType();
+            if (styleType == null)
+            {
+                continue;
+            }
+
+            EnchantmentPresentationStyle defaultStyle = EnchantmentRegistry.GetDefaultPresentationStyle(styleType);
+            if (visualState.PresentationStyle != defaultStyle)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static int ComputeVisualStateFingerprint(
         CardModel model,
         IReadOnlyList<EnchantmentVisualState> visualStates,
@@ -1358,6 +1593,9 @@ internal static partial class MultiEnchantmentSupport
         hash.Add(model.HasStarCostX);
         hash.Add(model.CurrentStarCost >= 0);
         hash.Add(defaultPosition);
+        // primaryTab.Position / Size below already cover the right-aligned column's inputs: the
+        // mirror reflects leftAnchor.X (= primaryTab.Position.X) about the card midline using
+        // primaryTab.Size.X as the badge width, and the midline is a fixed scene constant.
         hash.Add(primaryTab.Position);
         hash.Add(primaryTab.Size);
         hash.Add(primaryTab.Scale);
@@ -1391,6 +1629,7 @@ internal static partial class MultiEnchantmentSupport
         hash.Add(visualState.PresentationStyle.BadgeBackingTexture?.ResourcePath);
         hash.Add(visualState.PresentationStyle.HideWhenDisabled);
         hash.Add(visualState.PresentationStyle.DisplayPriority);
+        hash.Add(visualState.PresentationStyle.RightAligned);
         hash.Add(visualState.IsDisplayOnly);
     }
 

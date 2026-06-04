@@ -80,7 +80,7 @@ internal static partial class MultiEnchantmentSupport
         List<EnchantmentSlotLayout> slotLayouts = BuildEnchantmentSlotLayouts(
             cardNode,
             primaryTab,
-            visualStates.Count,
+            visualStates,
             defaultPosition);
         if (slotLayouts.Count != visualStates.Count)
         {
