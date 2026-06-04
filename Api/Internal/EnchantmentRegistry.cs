@@ -633,12 +633,20 @@ internal static class EnchantmentRegistry
 
     private static bool OverridesValueModifierVirtual(Type enchantmentType)
     {
-        foreach (string methodName in ValueModifierMethodNames)
+        // Enumerate rather than call GetMethod(name, flags): a third-party enchantment may
+        // declare overloads of one of these names (e.g. an added parameter), which makes
+        // GetMethod throw AmbiguousMatchException. That exception used to escape all the way
+        // up to BeforeCombatStartPostfixAsync and abort combat start (first-turn draw failure).
+        MethodInfo[] methods = enchantmentType.GetMethods(
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        foreach (MethodInfo method in methods)
         {
-            MethodInfo? method = enchantmentType.GetMethod(
-                methodName,
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (method?.DeclaringType != null &&
+            if (Array.IndexOf(ValueModifierMethodNames, method.Name) < 0)
+            {
+                continue;
+            }
+
+            if (method.DeclaringType != null &&
                 method.DeclaringType != typeof(EnchantmentModel) &&
                 IsNonVanillaEnchantmentType(method.DeclaringType))
             {
