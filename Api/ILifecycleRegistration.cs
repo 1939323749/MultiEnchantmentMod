@@ -25,6 +25,9 @@ public interface ILifecycleRegistration
     IEnchantmentRegistration OnTurnStart(Action<CardModel, EnchantmentModel> handler);
     IEnchantmentRegistration OnTurnEnd(Action<CardModel, EnchantmentModel> handler);
 
+    IEnchantmentRegistration OnCardUpgraded(Action<CardModel, EnchantmentModel> handler);
+    IEnchantmentRegistration OnCardDowngraded(Action<CardModel, EnchantmentModel> handler);
+
     IEnchantmentRegistration OnCardPlayed(Action<CardModel, EnchantmentModel> handler);
     IEnchantmentRegistration OnCardDrawn(Action<CardModel, EnchantmentModel> handler);
     IEnchantmentRegistration OnCardExhausted(Action<CardModel, EnchantmentModel> handler);

@@ -189,6 +189,24 @@ public static class EnchantmentRegistrationExtensions
         return registration.OnRestored((card, enchantment) => action(card, (TEnchantment)enchantment));
     }
 
+    public static IEnchantmentRegistration OnCardUpgraded<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCardUpgraded((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
+    public static IEnchantmentRegistration OnCardDowngraded<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCardDowngraded((card, enchantment) => action(card, (TEnchantment)enchantment));
+    }
+
     public static IEnchantmentRegistration OnCardPlayed<TEnchantment>(
         this IEnchantmentRegistration registration,
         Action<CardModel, TEnchantment> action)
@@ -406,6 +424,16 @@ public static class EnchantmentRegistrationExtensions
     {
         ArgumentNullException.ThrowIfNull(contribution);
         return registration.ModifyCardPlayCount(
+            (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
+    }
+
+    public static IEnchantmentRegistration ModifyHandDraw<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<EnchantmentStackSnapshot, TEnchantment, decimal, decimal> contribution)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        return registration.ModifyHandDraw(
             (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
     }
 

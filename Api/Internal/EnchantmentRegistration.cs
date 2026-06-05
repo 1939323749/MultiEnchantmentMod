@@ -197,6 +197,24 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration OnCardUpgraded(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardUpgraded, nameof(OnCardUpgraded));
+        _entry.OnCardUpgraded = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardDowngraded(Action<CardModel, EnchantmentModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardDowngraded, nameof(OnCardDowngraded));
+        _entry.OnCardDowngraded = handler;
+        return this;
+    }
+
     public IEnchantmentRegistration OnCardPlayed(Action<CardModel, EnchantmentModel> handler)
     {
         EnsureNotCommitted();
@@ -440,6 +458,14 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(contribution);
         _entry.CardPlayCountContributions.Add(contribution);
+        return this;
+    }
+
+    public IEnchantmentRegistration ModifyHandDraw(HandDrawContribution contribution)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(contribution);
+        _entry.HandDrawContributions.Add(contribution);
         return this;
     }
 

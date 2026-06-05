@@ -24,4 +24,10 @@ public interface IDynamicVarRegistration
 
     /// <summary>Declares a card play-count contribution.</summary>
     IEnchantmentRegistration ModifyCardPlayCount(CardPlayCountContribution contribution);
+
+    /// <summary>
+    /// Declares a hand-draw contribution. Unlike energy cost (per-card), hand draw is player-level:
+    /// contributions from all enchantments across all player combat piles are gathered once per turn.
+    /// </summary>
+    IEnchantmentRegistration ModifyHandDraw(HandDrawContribution contribution);
 }

@@ -24,3 +24,10 @@ public delegate decimal EnergyCostContribution(EnchantmentStackSnapshot snapshot
 /// <c>CardModel.GetEnchantedReplayCount</c>.
 /// </summary>
 public delegate int CardPlayCountContribution(EnchantmentStackSnapshot snapshot, int currentPlayCount);
+
+/// <summary>
+/// Fold function for hand-draw contributions. Receives the current stack snapshot and the running
+/// hand-draw count (player-level, called once per turn start across all player combat cards),
+/// and returns the next running count.
+/// </summary>
+public delegate decimal HandDrawContribution(EnchantmentStackSnapshot snapshot, decimal currentHandDraw);

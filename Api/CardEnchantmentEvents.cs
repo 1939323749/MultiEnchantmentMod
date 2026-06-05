@@ -33,3 +33,29 @@ public sealed record AfterCardEnchantedContext(
     int CascadeDepth = 0);
 
 public delegate Task AfterCardEnchantedHandler(AfterCardEnchantedContext context);
+
+/// <summary>
+/// Context passed before an enchantment is applied to a card. Handlers may cancel the application
+/// or modify the amount. Only fired on async paths (<see cref="MultiEnchantmentApi.EnchantAsync"/>
+/// / <see cref="MultiEnchantmentApi.CopyEnchantmentAsync"/>), matching the
+/// <see cref="AfterCardEnchantedHandler"/> contract.
+/// </summary>
+public sealed record BeforeCardEnchantedContext(
+    PlayerChoiceContext? ChoiceContext,
+    CardModel Card,
+    EnchantmentModel Enchantment,
+    int RequestedAmount,
+    EnchantmentScope? ScopeOverride,
+    int CascadeDepth = 0)
+{
+    /// <summary>Set to <c>true</c> to cancel the enchantment application.</summary>
+    public bool Cancelled { get; set; }
+
+    /// <summary>
+    /// Set to a different value to override the applied amount. Initialized to
+    /// <see cref="RequestedAmount"/>. Values less than or equal to zero cancel the application.
+    /// </summary>
+    public int ModifiedAmount { get; set; } = RequestedAmount;
+}
+
+public delegate Task BeforeCardEnchantedHandler(BeforeCardEnchantedContext context);

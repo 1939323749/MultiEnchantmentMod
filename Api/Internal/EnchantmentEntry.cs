@@ -30,6 +30,7 @@ internal sealed class EnchantmentEntry
     public List<DynamicVarContribution> DynamicVarContributions { get; } = new();
     public List<EnergyCostContribution> EnergyCostContributions { get; } = new();
     public List<CardPlayCountContribution> CardPlayCountContributions { get; } = new();
+    public List<HandDrawContribution> HandDrawContributions { get; } = new();
     public PresentationTextFormatter? FormatExtraText { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<int>?>? GetVisualSliceAmounts { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?>? GetVisualSlices { get; set; }
@@ -58,6 +59,12 @@ internal sealed class EnchantmentEntry
     public Action<CardModel, EnchantmentModel>? OnTurnStart { get; set; }
     public Action<CardModel, EnchantmentModel>? OnTurnEnd { get; set; }
     public Action<CardModel, EnchantmentModel>? OnRestored { get; set; }
+
+    // Phase 2b — card upgrade/downgrade lifecycle hooks. Dispatched after the upgrade or
+    // downgrade has taken effect, so handlers see the new card state. Uses the same IsActive
+    // gating as the Phase 3a card-event hooks below.
+    public Action<CardModel, EnchantmentModel>? OnCardUpgraded { get; set; }
+    public Action<CardModel, EnchantmentModel>? OnCardDowngraded { get; set; }
 
     // Phase 3a — vanilla card-event hook bridges. Each callback is dispatched only for
     // enchantments that pass MultiEnchantmentScopeSupport.IsActive at the moment the event fires,
@@ -244,6 +251,21 @@ internal sealed class EnchantmentEntry
         return result;
     }
 
+    public decimal ModifyHandDraw(EnchantmentStackSnapshot snapshot, decimal currentHandDraw)
+    {
+        decimal result = currentHandDraw;
+        foreach (HandDrawContribution contribution in HandDrawContributions)
+        {
+            result = SafeInvoker.Run(
+                EnchantmentType,
+                nameof(HandDrawContributions),
+                () => contribution(snapshot, result),
+                fallback: result);
+        }
+
+        return result;
+    }
+
     public Task RunOnPlayStacked(StackedOnPlayContext context) =>
         OnPlayStacked == null
             ? Task.CompletedTask
@@ -385,6 +407,12 @@ internal sealed class EnchantmentEntry
     public void RunOnRestored(CardModel card, EnchantmentModel enchantment) =>
         RunLifecycle(nameof(OnRestored), OnRestored, card, enchantment);
 
+    public void RunOnCardUpgraded(CardModel card, EnchantmentModel enchantment) =>
+        RunLifecycle(nameof(OnCardUpgraded), OnCardUpgraded, card, enchantment);
+
+    public void RunOnCardDowngraded(CardModel card, EnchantmentModel enchantment) =>
+        RunLifecycle(nameof(OnCardDowngraded), OnCardDowngraded, card, enchantment);
+
     public void RunOnCardPlayed(CardModel card, EnchantmentModel enchantment) =>
         RunLifecycle(nameof(OnCardPlayed), OnCardPlayed, card, enchantment);
 
@@ -518,7 +546,7 @@ internal sealed class EnchantmentEntry
         EnchantmentModel enchantment)
     {
         if (handler == null) return;
-        SafeInvoker.Run(EnchantmentType, hookName, () => handler(card, enchantment));
+        SafeInvoker.Run(EnchantmentType, hookName, () => handler(card, enchantment), card.Id.ToString());
     }
 
     private async Task RunAsync<TContext>(string hookName, Func<TContext, Task>? handler, TContext context)

@@ -223,6 +223,28 @@ internal static partial class MultiEnchantmentSupport
         return result;
     }
 
+    public static decimal ApplyHandDrawContributions(ICombatState? combatState, Player? player, decimal baseHandDraw)
+    {
+        if (combatState == null || player?.PlayerCombatState == null)
+        {
+            return baseHandDraw;
+        }
+
+        decimal result = baseHandDraw;
+        foreach (CardModel card in player.PlayerCombatState.AllCards)
+        {
+            foreach (EnchantmentStackSnapshot snapshot in GetOrderedActiveStackSnapshots(card))
+            {
+                foreach (EnchantmentEntry entry in EnchantmentRegistry.GetEntries(snapshot.EnchantmentType))
+                {
+                    result = entry.ModifyHandDraw(snapshot, result);
+                }
+            }
+        }
+
+        return result;
+    }
+
     public static Task DispatchOnPlayStacked(PlayerChoiceContext choiceContext, CardPlay? cardPlay)
     {
         return DispatchStackedHook(

@@ -29,7 +29,11 @@ namespace MultiEnchantmentMod.Api;
 /// </remarks>
 public static class MultiEnchantmentApi
 {
+    private static readonly List<BeforeCardEnchantedHandler> BeforeCardEnchantedHandlers = new();
     private static readonly List<AfterCardEnchantedHandler> AfterCardEnchantedHandlers = new();
+
+    [ThreadStatic]
+    private static int _beforeCardEnchantedDepth;
 
     // Cascade-depth guard for AfterCardEnchanted dispatch. Incremented around handler invocation so
     // that an enchant triggered from inside a handler reports CascadeDepth > 0. Single-threaded by
@@ -165,6 +169,18 @@ public static class MultiEnchantmentApi
     /// <b>not</b>, because the handler is awaited and may issue game commands. Enchant through the
     /// async overloads when this notification must fire.
     /// </remarks>
+    /// <summary>
+    /// Registers a handler called <b>before</b> an enchantment is applied. Handlers may inspect the
+    /// context, cancel the application, or modify the amount. Fired on async paths only (matching
+    /// <see cref="AfterCardEnchanted"/>). Dispose the returned handle to unsubscribe.
+    /// </summary>
+    public static IDisposable BeforeCardEnchanted(BeforeCardEnchantedHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        BeforeCardEnchantedHandlers.Add(handler);
+        return new BeforeCardEnchantedSubscription(handler);
+    }
+
     public static IDisposable AfterCardEnchanted(AfterCardEnchantedHandler handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
@@ -729,6 +745,40 @@ public static class MultiEnchantmentApi
         return applied;
     }
 
+    internal static async Task<BeforeCardEnchantedContext> DispatchBeforeCardEnchanted(BeforeCardEnchantedContext context)
+    {
+        BeforeCardEnchantedContext scoped = context with { CascadeDepth = _beforeCardEnchantedDepth };
+        _beforeCardEnchantedDepth++;
+        try
+        {
+            foreach (BeforeCardEnchantedHandler handler in BeforeCardEnchantedHandlers.ToList())
+            {
+                try
+                {
+                    await handler(scoped);
+                }
+                catch (Exception ex)
+                {
+                    string targetName = handler.Target?.GetType().FullName ?? "<static>";
+                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Error(
+                        $"[MultiEnchantment] BeforeCardEnchanted handler {targetName} threw: {ex}");
+                }
+
+                if (scoped.Cancelled || scoped.ModifiedAmount <= 0)
+                {
+                    scoped.Cancelled = true;
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            _beforeCardEnchantedDepth--;
+        }
+
+        return scoped;
+    }
+
     internal static async Task DispatchAfterCardEnchanted(AfterCardEnchantedContext context)
     {
         // Stamp the current nesting depth so cascade-style handlers can bail out instead of
@@ -757,6 +807,43 @@ public static class MultiEnchantmentApi
         }
     }
 
+    private static readonly HashSet<string> SupportedFeatures = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "BeforeCardEnchanted",
+        "AfterCardEnchanted",
+        "OnCardUpgraded",
+        "OnCardDowngraded",
+        "ModifyHandDraw",
+        "ModifyEnergyCostInCombat",
+        "ModifyCardPlayCount",
+        "ModifyDynamicVar",
+        "ExtraIcon",
+        "IconState",
+        "EventBus",
+        "BatchQuery",
+        "RightAligned",
+        "CopyEnchantment",
+        "MoveEnchantment",
+        "ScopeOverride",
+        "RemoveWhen",
+        "MaxActivations",
+        "StackOverflowPolicy",
+    };
+
+    /// <summary>
+    /// Returns <c>true</c> when the running MultiEnchantmentMod version supports the named feature.
+    /// Use this instead of <see cref="RequireApiVersion"/> when you only need one specific capability
+    /// rather than a full version gate. Feature names are case-insensitive.
+    /// </summary>
+    /// <example><code>
+    /// if (MultiEnchantmentApi.SupportsFeature("BeforeCardEnchanted"))
+    /// {
+    ///     MultiEnchantmentApi.BeforeCardEnchanted(MyHandler);
+    /// }
+    /// </code></example>
+    public static bool SupportsFeature(string feature) =>
+        SupportedFeatures.Contains(feature);
+
     /// <summary>
     /// Returns <c>true</c> when the runtime's API version is at least <paramref name="minimum"/>.
     /// Third-party mods should call this from their initializer to fail-fast on mismatched
@@ -774,6 +861,29 @@ public static class MultiEnchantmentApi
             $"[StackApi] Caller requires MultiEnchantmentMod API v{minimum} but runtime is v{CurrentVersion}. " +
             "The dependent mod's enchantment registrations will not run; update MultiEnchantmentMod.");
         return false;
+    }
+
+    private sealed class BeforeCardEnchantedSubscription : IDisposable
+    {
+        private BeforeCardEnchantedHandler? _handler;
+
+        public BeforeCardEnchantedSubscription(BeforeCardEnchantedHandler handler)
+        {
+            _handler = handler;
+        }
+
+        public void Dispose()
+        {
+            if (_handler is not { } handler)
+            {
+                return;
+            }
+
+            _handler = null;
+            while (BeforeCardEnchantedHandlers.Remove(handler))
+            {
+            }
+        }
     }
 
     private sealed class AfterCardEnchantedSubscription : IDisposable
@@ -894,6 +1004,153 @@ public static class MultiEnchantmentApi
         }
         return all.ToList();
     }
+
+    // --- Batch query / mutation API ----------------------------------------------------------
+
+    /// <summary>
+    /// Returns every card in <paramref name="cards"/> that carries at least one enchantment
+    /// assignable to <typeparamref name="TEnchantment"/>.
+    /// </summary>
+    public static IReadOnlyList<CardModel> GetCardsWithEnchantment<TEnchantment>(IEnumerable<CardModel> cards)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        return cards.Where(HasEnchantment<TEnchantment>).ToList();
+    }
+
+    /// <summary>
+    /// Returns every card in <paramref name="cards"/> that carries at least one enchantment
+    /// assignable to <paramref name="enchantmentType"/>.
+    /// </summary>
+    public static IReadOnlyList<CardModel> GetCardsWithEnchantment(IEnumerable<CardModel> cards, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        return cards.Where(card => HasEnchantment(card, enchantmentType)).ToList();
+    }
+
+    /// <summary>
+    /// Returns every card in <paramref name="cards"/> that carries at least one gameplay
+    /// enchantment, paired with the list of enchantments on that card.
+    /// </summary>
+    public static IReadOnlyList<(CardModel Card, IReadOnlyList<EnchantmentModel> Enchantments)> GetAllEnchantedCards(
+        IEnumerable<CardModel> cards)
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        List<(CardModel, IReadOnlyList<EnchantmentModel>)> result = new();
+        foreach (CardModel card in cards)
+        {
+            IReadOnlyList<EnchantmentModel> enchantments = GetEnchantments(card);
+            if (enchantments.Count > 0)
+            {
+                result.Add((card, enchantments));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Sum of <c>Amount</c> across every instance assignable to <typeparamref name="TEnchantment"/>
+    /// on every card in <paramref name="cards"/>.
+    /// </summary>
+    public static int GetTotalAmountAcrossCards<TEnchantment>(IEnumerable<CardModel> cards)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        int total = 0;
+        foreach (CardModel card in cards)
+        {
+            total += GetTotalAmount<TEnchantment>(card);
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Sum of <c>Amount</c> across every instance assignable to <paramref name="enchantmentType"/>
+    /// on every card in <paramref name="cards"/>.
+    /// </summary>
+    public static int GetTotalAmountAcrossCards(IEnumerable<CardModel> cards, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        int total = 0;
+        foreach (CardModel card in cards)
+        {
+            total += GetTotalAmount(card, enchantmentType);
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Removes all instances assignable to <typeparamref name="TEnchantment"/> from every card in
+    /// <paramref name="cards"/>. Returns the number of cards that had at least one instance removed.
+    /// </summary>
+    public static int RemoveEnchantmentFromAll<TEnchantment>(IEnumerable<CardModel> cards)
+        where TEnchantment : EnchantmentModel =>
+        RemoveEnchantmentFromAll(cards, typeof(TEnchantment));
+
+    /// <summary>
+    /// Removes all instances assignable to <paramref name="enchantmentType"/> from every card in
+    /// <paramref name="cards"/>. Returns the number of cards that had at least one instance removed.
+    /// </summary>
+    public static int RemoveEnchantmentFromAll(IEnumerable<CardModel> cards, Type enchantmentType)
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        ArgumentNullException.ThrowIfNull(enchantmentType);
+        int affected = 0;
+        foreach (CardModel card in cards)
+        {
+            bool removedAny = false;
+            foreach (EnchantmentModel enchantment in GetEnchantments(card, includeExtraIcons: true)
+                         .Where(e => enchantmentType.IsInstanceOfType(e))
+                         .ToList())
+            {
+                removedAny |= RemoveEnchantment(card, enchantment);
+            }
+            if (removedAny)
+            {
+                affected++;
+            }
+        }
+        return affected;
+    }
+
+    // --- Cross-enchantment event bus ---------------------------------------------------------
+
+    /// <summary>
+    /// Subscribes a synchronous handler to events of type <typeparamref name="TEvent"/>. The handler
+    /// is invoked by <see cref="Publish{TEvent}"/>. Dispose the returned handle to unsubscribe.
+    /// </summary>
+    public static IDisposable Subscribe<TEvent>(Action<TEvent> handler) =>
+        EnchantmentEventBus.Subscribe(handler);
+
+    /// <summary>
+    /// Subscribes an asynchronous handler to events of type <typeparamref name="TEvent"/>. The handler
+    /// is invoked only by <see cref="PublishAsync{TEvent}"/>; <see cref="Publish{TEvent}"/> skips async
+    /// handlers. Dispose the returned handle to unsubscribe.
+    /// </summary>
+    public static IDisposable Subscribe<TEvent>(Func<Task> handler) where TEvent : class =>
+        EnchantmentEventBus.Subscribe<TEvent>(_ => handler());
+
+    /// <summary>
+    /// Subscribes an asynchronous handler to events of type <typeparamref name="TEvent"/>. The handler
+    /// is invoked only by <see cref="PublishAsync{TEvent}"/>. Dispose the returned handle to unsubscribe.
+    /// </summary>
+    public static IDisposable Subscribe<TEvent>(Func<TEvent, Task> handler) =>
+        EnchantmentEventBus.Subscribe(handler);
+
+    /// <summary>
+    /// Publishes an event to all synchronous subscribers. Async subscribers are skipped; use
+    /// <see cref="PublishAsync{TEvent}"/> to invoke both sync and async handlers.
+    /// </summary>
+    public static void Publish<TEvent>(TEvent evt) =>
+        EnchantmentEventBus.Publish(evt);
+
+    /// <summary>
+    /// Publishes an event to all subscribers (sync and async), awaiting async handlers in order.
+    /// </summary>
+    public static Task PublishAsync<TEvent>(TEvent evt) =>
+        EnchantmentEventBus.PublishAsync(evt);
 
     // --- Advanced read-only snapshot API -----------------------------------------------------
 

@@ -130,10 +130,21 @@ internal static partial class MultiEnchantmentSupport
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
         }
 
+        bool isGameplay = IsGameplayEnchantment(enchantment);
+        if (dispatchAfterCardEnchanted && isGameplay)
+        {
+            BeforeCardEnchantedContext beforeCtx = await MultiEnchantmentApi.DispatchBeforeCardEnchanted(
+                new BeforeCardEnchantedContext(choiceContext, card, enchantment, appliedAmount, scopeOverride));
+            if (beforeCtx.Cancelled)
+            {
+                return null;
+            }
+            appliedAmount = beforeCtx.ModifiedAmount;
+        }
+
         SeedMissingApplicationOrder(card);
 
         EnchantmentStackBehavior behavior = MultiEnchantmentStackSupport.GetBehavior(enchantment.GetType());
-        bool isGameplay = IsGameplayEnchantment(enchantment);
         EnchantmentModel? existing = GetEnchantment(card, enchantment.GetType());
         if (existing != null && behavior == EnchantmentStackBehavior.MergeAmount)
         {
@@ -158,6 +169,7 @@ internal static partial class MultiEnchantmentSupport
             if (isGameplay)
             {
                 RecordEnchantmentHistory(card, enchantment);
+                MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, existing, addedAmount));
             }
             if (dispatchAfterCardEnchanted && isGameplay)
             {
@@ -196,6 +208,7 @@ internal static partial class MultiEnchantmentSupport
         if (isGameplay)
         {
             RecordEnchantmentHistory(card, enchantment);
+            MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, applied, appliedStackCount));
         }
 
         if (dispatchAfterCardEnchanted && isGameplay)
@@ -258,6 +271,7 @@ internal static partial class MultiEnchantmentSupport
             if (isGameplay)
             {
                 RecordEnchantmentHistory(card, enchantment);
+                MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, existing, addedAmount));
             }
             return existing;
         }
@@ -287,6 +301,7 @@ internal static partial class MultiEnchantmentSupport
         if (isGameplay)
         {
             RecordEnchantmentHistory(card, enchantment);
+            MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, applied, appliedStackCount));
         }
         return applied;
     }
@@ -1029,6 +1044,11 @@ internal static partial class MultiEnchantmentSupport
             {
                 TriggerEnchantmentChanged(card);
             }
+        }
+
+        if (isGameplay)
+        {
+            MultiEnchantmentApi.Publish(new Api.EnchantmentRemovedEvent(card, enchantment, reason));
         }
 
         return true;

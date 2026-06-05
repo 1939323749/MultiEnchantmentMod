@@ -482,6 +482,12 @@ internal static class MultiEnchantmentScopeSupport
         RefreshAfterUserCallbacks(card);
     }
 
+    internal static void DispatchOnCardUpgradedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static e => e.OnCardUpgraded != null, static (e, c, m) => e.RunOnCardUpgraded(c, m));
+
+    internal static void DispatchOnCardDowngradedForCard(CardModel? card) =>
+        DispatchCardLifecycle(card, static e => e.OnCardDowngraded != null, static (e, c, m) => e.RunOnCardDowngraded(c, m));
+
     internal static void DispatchOnCardPlayedForCard(CardModel? card) =>
         DispatchCardLifecycle(card, static e => e.OnCardPlayed != null, static (e, c, m) => e.RunOnCardPlayed(c, m));
 

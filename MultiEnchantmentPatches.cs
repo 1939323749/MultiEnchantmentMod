@@ -771,6 +771,7 @@ internal static class MultiEnchantmentPatches
             try
             {
                 MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(card);
+                MultiEnchantmentScopeSupport.DispatchOnCardUpgradedForCard(card);
             }
             catch (Exception ex)
             {
@@ -793,6 +794,7 @@ internal static class MultiEnchantmentPatches
         try
         {
             MultiEnchantmentSupport.ReapplyMultiEnchantmentsAfterDowngrade(__instance);
+            MultiEnchantmentScopeSupport.DispatchOnCardDowngradedForCard(__instance);
         }
         catch (Exception ex)
         {
@@ -813,20 +815,24 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void FromSerializablePostfix(SerializableCard save, ref CardModel __result)
     {
-        MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
-        if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
+        try
         {
-            __result.FinalizeUpgradeInternal();
-            MultiEnchantmentStackSupport.RefreshDerivedState(__result);
-        }
+            MultiEnchantmentSupport.DeserializeAdditionalEnchantments(save, __result);
+            if (MultiEnchantmentSupport.NormalizeCardEnchantmentStacks(__result))
+            {
+                __result.FinalizeUpgradeInternal();
+                MultiEnchantmentStackSupport.RefreshDerivedState(__result);
+            }
 
-        // Now that the card has been fully reconstructed (primary enchantment attached via
-        // vanilla, extras re-attached by DeserializeAdditionalEnchantments, Props restored by
-        // EnchantmentFromSerializablePostfix's RestoreSerializedProps), fire OnRestored on
-        // every enchantment so authors can rebuild runtime caches that don't survive the
-        // serialization boundary. OnApplied is intentionally NOT fired here — that's reserved
-        // for "freshly attached, never before" semantics.
-        MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(__result);
+            MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(__result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Failed to restore multi-enchantment state for card {__result.Id}. " +
+                $"The card will load with vanilla enchantment state only. A third-party enchantment mod " +
+                $"may have been removed or updated. Error: {ex}");
+        }
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable))]
@@ -2307,6 +2313,7 @@ internal static class MultiEnchantmentPatches
         await Hook.BeforeHandDraw(state, player, playerChoiceContext);
         decimal handDraw = Hook.ModifyHandDraw(state, player, 5m, out IEnumerable<AbstractModel> modifiers);
         await Hook.AfterModifyingHandDraw(state, modifiers);
+        handDraw = MultiEnchantmentSupport.ApplyHandDrawContributions(state, player, handDraw);
 
         if (state.RoundNumber == 1)
         {
