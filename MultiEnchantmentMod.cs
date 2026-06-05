@@ -36,6 +36,7 @@ public partial class MultiEnchantmentMod : Node
         Api.MultiEnchantmentApi.ScanAssembly(Assembly.GetExecutingAssembly());
 
         new Harmony(ModId).PatchAll(Assembly.GetExecutingAssembly());
+        LogHarmonyPatchConflicts();
         PatchThievingHopperPriorities();
 
         // Final discovery sweep before the game proper starts: pick up every loaded assembly
@@ -49,6 +50,59 @@ public partial class MultiEnchantmentMod : Node
         // Boot-time integrity check for the small set of vanilla methods this mod copies
         // verbatim. Logs current IL hashes (and any drift vs. frozen baseline). Idempotent.
         Api.Internal.VanillaCopyGuard.RunOnce();
+    }
+
+    private static void LogHarmonyPatchConflicts()
+    {
+        try
+        {
+            int conflictCount = 0;
+            foreach (MethodBase method in Harmony.GetAllPatchedMethods())
+            {
+                Patches patchInfo = Harmony.GetPatchInfo(method);
+                if (patchInfo == null)
+                {
+                    continue;
+                }
+
+                bool wePatched = false;
+                List<string> otherOwners = new();
+
+                foreach (Patch patch in patchInfo.Prefixes)
+                {
+                    if (patch.owner == ModId) wePatched = true;
+                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                }
+                foreach (Patch patch in patchInfo.Postfixes)
+                {
+                    if (patch.owner == ModId) wePatched = true;
+                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                }
+                foreach (Patch patch in patchInfo.Transpilers)
+                {
+                    if (patch.owner == ModId) wePatched = true;
+                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                }
+
+                if (wePatched && otherOwners.Count > 0)
+                {
+                    string methodName = $"{method.DeclaringType?.Name}.{method.Name}";
+                    Logger.Info(
+                        $"[MultiEnchantment] Shared patch target: {methodName} is also patched by [{string.Join(", ", otherOwners)}]");
+                    conflictCount++;
+                }
+            }
+
+            if (conflictCount > 0)
+            {
+                Logger.Info($"[MultiEnchantment] Detected {conflictCount} shared Harmony patch target(s) with other mods. " +
+                    "This is informational — conflicts may or may not cause issues.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[MultiEnchantment] Failed to scan for Harmony patch conflicts: {ex.Message}");
+        }
     }
 
     private static void PatchThievingHopperPriorities()

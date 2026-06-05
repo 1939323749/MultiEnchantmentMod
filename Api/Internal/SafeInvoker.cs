@@ -58,23 +58,49 @@ internal static class SafeInvoker
         FailureCounts.Clear();
     }
 
-    internal static void LogFailure(Type enchantmentType, string hookName, Exception ex)
+    internal static void Run(Type enchantmentType, string hookName, Action body, string? cardContext)
+    {
+        try
+        {
+            body();
+        }
+        catch (Exception ex)
+        {
+            LogFailure(enchantmentType, hookName, ex, cardContext);
+        }
+    }
+
+    internal static T Run<T>(Type enchantmentType, string hookName, Func<T> body, T fallback, string? cardContext)
+    {
+        try
+        {
+            return body();
+        }
+        catch (Exception ex)
+        {
+            LogFailure(enchantmentType, hookName, ex, cardContext);
+            return fallback;
+        }
+    }
+
+    internal static void LogFailure(Type enchantmentType, string hookName, Exception ex, string? cardContext = null)
     {
         (Type Type, string Hook) key = (enchantmentType, hookName);
         int count = FailureCounts.AddOrUpdate(key, 1, static (_, prior) => prior + 1);
 
         string typeName = enchantmentType.FullName ?? enchantmentType.Name;
         string assemblyName = enchantmentType.Assembly.GetName().Name ?? "<unknown>";
+        string context = cardContext != null ? $" on card {cardContext}" : "";
 
         if (count <= DetailedFailuresPerKey)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName}: {ex}");
+                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName}{context}: {ex}");
         }
         else if (count <= SilencedAfterFailures)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName} again (#{count}): {ex}");
+                $"[MultiEnchantment] {typeName} (assembly={assemblyName}) threw in {hookName}{context} again (#{count}): {ex}");
         }
         else if (count == SilencedAfterFailures + 1)
         {
