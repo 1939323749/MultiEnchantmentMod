@@ -133,7 +133,7 @@ jobs:
       - name: Upload to NexusMods
         env:
           UNEX_APIKEY: ${{ secrets.NEXUS_API_KEY }}
-          UNEX_COOKIES: ${{ secrets.NEXUS_COOKIES }}
+          UNEX_SESSION_COOKIE: ${{ secrets.NEXUS_COOKIES }}
           UNEX_GAME: ${{ env.NEXUS_GAME_DOMAIN }}
           UNEX_MODID: ${{ secrets.NEXUS_MOD_ID }}
         run: |
