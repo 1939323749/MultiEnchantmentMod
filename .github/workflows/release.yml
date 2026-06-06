@@ -17,7 +17,7 @@ permissions:
 env:
   MOD_NAME: MultiEnchantmentMod
   DOTNET_VERSION: '9.0.x'
-  NEXUS_GAME_DOMAIN: slaytheSpire2
+  NEXUS_GAME_DOMAIN: slaythespire2
 
 jobs:
   build:
