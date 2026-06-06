@@ -27,8 +27,6 @@
         <IsOSX Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsOSX>
     </PropertyGroup>
 
-    <!-- // NOTE: Megadot is version 4.5.1, and the game won't load your .pck if the Godot version used is newer. -->
-
     <!-- Windows -->
     <PropertyGroup Condition="'$(IsWindows)' == 'true'">
         <AutoSteamPath>$(registry:HKEY_CURRENT_USER\Software\Valve\Steam@SteamPath)\steamapps</AutoSteamPath>
@@ -119,24 +117,7 @@
                 Condition="'$(GodotPath)' != '' and !Exists('$(GodotPath)')"/>
     </Target>
 
-    <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
-        <PropertyGroup>
-            <_ModOutputDir>$(ModsPath)$(MSBuildProjectName)/</_ModOutputDir>
-            <_PublishedPck>$(_ModOutputDir)$(MSBuildProjectName).pck</_PublishedPck>
-        </PropertyGroup>
-        <MakeDir Directories="$(_ModOutputDir)" Condition="!Exists('$(_ModOutputDir)')"/>
-        <Message Text="Exporting Godot .pck to mods folder" Importance="high"/>
-        <Exec Command="&quot;$(GodotPath)&quot; --headless --export-pack &quot;BasicExport&quot; &quot;$(_PublishedPck)&quot;"
-              EnvironmentVariables="IsInnerGodotExport=true;MSBUILDDISABLENODEREUSE=1"/>
-        <Error Text="Godot export did not create expected pack '$(_PublishedPck)'."
-               Condition="!Exists('$(_PublishedPck)')"/>
-    </Target>
-
-    <Target Name="GodotPublishSkipped" AfterTargets="Publish" Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')">
-        <Message Text="Skipping Godot .pck export because GodotPath is not configured." Importance="high"/>
-    </Target>
-
-    <!-- Publish deploys only the mod manifest, pck, and dll into the game's mods folder. -->
+    <!-- Publish deploys only the mod manifest and dll into the game's mods folder. -->
     <Target Name="CopyPublishArtifactsToMods" AfterTargets="Publish" Condition="'$(ModsPath)' != '' and '$(IsInnerGodotExport)' != 'true'">
         <PropertyGroup>
             <_ModOutputDir>$(ModsPath)$(MSBuildProjectName)/</_ModOutputDir>
@@ -144,7 +125,7 @@
         <MakeDir Directories="$(_ModOutputDir)" Condition="!Exists('$(_ModOutputDir)')"/>
         <Copy SourceFiles="MultiEnchantmentMod.json" DestinationFiles="$(_ModOutputDir)$(MSBuildProjectName).json" SkipUnchangedFiles="true"/>
         <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).dll" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true"/>
-        <Message Text="Copied $(MSBuildProjectName).json/.pck/.dll to $(_ModOutputDir)" Importance="high"/>
+        <Message Text="Copied $(MSBuildProjectName).json/.dll to $(_ModOutputDir)" Importance="high"/>
     </Target>
 
     <!-- Generate TelemetrySecrets.g.cs into obj/ from MSBuild properties -->
