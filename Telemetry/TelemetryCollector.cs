@@ -1372,7 +1372,7 @@ internal static class TelemetryCollector
                     string? id = power.Id.ToString();
                     string? title = ReadSafeFormattedOrRawText(power, "Title");
                     string? description = Truncate(
-                        ReadPlainTextMember(power, "Description", "SmartDescription", "RemoteDescription"),
+                        ReadPowerDescription(power),
                         300);
 
                     if (string.IsNullOrEmpty(id)) id = type.Name;
@@ -1938,6 +1938,18 @@ internal static class TelemetryCollector
         return null;
     }
 
+    private static string? ReadPowerDescription(PowerModel power)
+    {
+        return ReadSafeFormattedOrRawText(
+                   power,
+                   "Description",
+                   "SmartDescription",
+                   "RemoteDescription",
+                   "EventDescription") ??
+               ReadPlainHoverTipDescription(power, "HoverTip") ??
+               ReadPlainHoverTipDescription(power, "HoverTips");
+    }
+
     private static string? ExtractPlainText(object? value)
     {
         if (value == null)
@@ -2042,8 +2054,22 @@ internal static class TelemetryCollector
     private static string? ReadPlainHoverTipDescription(object? target, string memberName)
     {
         object? hoverTip = GetPropertyOrFieldValue(target, memberName);
-        string? description = ExtractPlainText(GetPropertyOrFieldValue(hoverTip, "Description"));
-        return string.IsNullOrEmpty(description) ? null : description;
+        if (hoverTip is IEnumerable enumerable and not string)
+        {
+            foreach (object? item in enumerable)
+            {
+                string? itemDescription = ReadSafeFormattedOrRawText(item, "Description");
+                if (!string.IsNullOrWhiteSpace(itemDescription))
+                {
+                    return itemDescription;
+                }
+            }
+
+            return null;
+        }
+
+        string? description = ReadSafeFormattedOrRawText(hoverTip, "Description");
+        return string.IsNullOrWhiteSpace(description) ? null : description;
     }
 
     private static List<object> StableSortForHash(IEnumerable<object> values) =>

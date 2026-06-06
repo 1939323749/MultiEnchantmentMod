@@ -87,7 +87,7 @@ internal static class TelemetryReporter
         List<object>? refCards, List<object>? refRelics, List<object>? refPowers)
     {
         // Keep startup reference uploads off the realtime queue. Reference rows
-        // are insert-only from the public client; existing keys are ignored.
+        // are merged so third-party catalog data can refresh existing keys.
         return new StartupUploadResult
         {
             SessionUploaded = sessionData == null ||
@@ -97,11 +97,11 @@ internal static class TelemetryReporter
             ModCatalogUploaded = modCatalogData == null ||
                                   await SendAsync("telemetry_mod_catalog", modCatalogData),
             RefCardsUploaded = refCards is not { Count: > 0 } ||
-                               await SendRowsAsync("ref_cards", refCards, "card_id,locale"),
+                               await SendRowsAsync("ref_cards", refCards, "card_id,locale", mergeDuplicates: true),
             RefRelicsUploaded = refRelics is not { Count: > 0 } ||
-                                await SendRowsAsync("ref_relics", refRelics, "relic_id,locale"),
+                                await SendRowsAsync("ref_relics", refRelics, "relic_id,locale", mergeDuplicates: true),
             RefPowersUploaded = refPowers is not { Count: > 0 } ||
-                                await SendRowsAsync("ref_powers", refPowers, "power_id,locale"),
+                                await SendRowsAsync("ref_powers", refPowers, "power_id,locale", mergeDuplicates: true),
         };
     }
 
@@ -180,7 +180,8 @@ internal static class TelemetryReporter
     private static async Task<bool> SendRowsAsync(
         string table,
         IEnumerable<object> rows,
-        string? onConflict = null)
+        string? onConflict = null,
+        bool mergeDuplicates = false)
     {
         List<object> rowList = rows.ToList();
         if (rowList.Count == 0)
@@ -189,7 +190,7 @@ internal static class TelemetryReporter
         }
 
         if (!string.IsNullOrWhiteSpace(onConflict) &&
-            await SendAsync(table, rowList, onConflict, duplicateIsSuccess: false))
+            await SendAsync(table, rowList, onConflict, mergeDuplicates, duplicateIsSuccess: false))
         {
             return true;
         }
