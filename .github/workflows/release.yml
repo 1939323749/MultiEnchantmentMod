@@ -55,13 +55,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          dotnet publish -c Release \
-            -p:Sts2DataDir=${{ github.workspace }}/.ci/gamedlls \
-            -p:GodotPath= \
-            -p:ModsPath= \
-            -p:SupabaseUrl="${SUPABASE_URL}" \
-            -p:SupabaseAnonKey="${SUPABASE_ANON_KEY}" \
-            --no-restore || dotnet publish -c Release \
+          dotnet publish MultiEnchantmentMod.csproj -c Release \
             -p:Sts2DataDir=${{ github.workspace }}/.ci/gamedlls \
             -p:GodotPath= \
             -p:ModsPath= \

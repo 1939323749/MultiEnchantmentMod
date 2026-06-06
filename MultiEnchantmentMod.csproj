@@ -116,7 +116,7 @@
                 Condition="'$(Sts2DataDir)' == '' or !Exists('$(Sts2DataDir)')"/>
         <Error
                 Text=" Godot not found at path '$(GodotPath)'"
-                Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')"/>
+                Condition="'$(GodotPath)' != '' and !Exists('$(GodotPath)')"/>
     </Target>
 
     <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)') and '$(IsInnerGodotExport)' != 'true'">
