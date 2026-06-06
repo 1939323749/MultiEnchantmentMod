@@ -27,7 +27,7 @@ internal static class TelemetryReporter
     };
 
     internal static void SendSession(object data) =>
-        EnqueueSend(() => SendAsync("telemetry_sessions", data, onConflict: "id", mergeDuplicates: false));
+        EnqueueSend(() => SendAsync("telemetry_sessions", data));
     internal static void SendCombat(object data) => EnqueueSend(() => SendAsync("telemetry_combats", data));
     internal static void SendRun(object data) => EnqueueSend(() => SendAsync("telemetry_runs", data));
     internal static void SendCrash(object data) => EnqueueSend(() => SendAsync("telemetry_crashes", data));
@@ -63,9 +63,12 @@ internal static class TelemetryReporter
         object environmentData, object sessionData, object modCatalogData,
         List<object>? refCards, List<object>? refRelics, List<object>? refPowers)
     {
+        // Create the session first so later combat/run/reward rows can satisfy their FK.
+        // Anonymous upserts require SELECT permission/policies in PostgREST, so sessions
+        // use plain INSERT because each startup already has a fresh session id.
+        await SendAsync("telemetry_sessions", sessionData);
         await SendAsync("telemetry_environments", environmentData, onConflict: "environment_hash");
         await SendAsync("telemetry_mod_catalog", modCatalogData, onConflict: "catalog_hash");
-        await SendAsync("telemetry_sessions", sessionData, onConflict: "id", mergeDuplicates: false);
 
         // Reference tables are discovered by the anonymous client. Insert new keys only;
         // trusted maintenance jobs can update canonical metadata without client pollution.
@@ -110,13 +113,35 @@ internal static class TelemetryReporter
             if (statusCode >= 400)
             {
                 string body = await response.Content.ReadAsStringAsync();
+                if (statusCode == 409 &&
+                    body.Contains("\"23505\"", StringComparison.OrdinalIgnoreCase))
+                {
+                    DiagLog($"SendAsync {table}: duplicate ignored");
+                    return;
+                }
+
                 DiagLog($"SendAsync {table} ERROR: {body[..Math.Min(body.Length, 500)]}");
+                if (ShouldRetryWithoutConflict(statusCode, body, onConflict))
+                {
+                    await SendAsync(table, data);
+                }
             }
         }
         catch (Exception ex)
         {
             DiagLog($"SendAsync {table} EXCEPTION: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    private static bool ShouldRetryWithoutConflict(int statusCode, string body, string? onConflict)
+    {
+        if (string.IsNullOrWhiteSpace(onConflict))
+        {
+            return false;
+        }
+
+        return statusCode is 401 or 403 &&
+               body.Contains("permission denied", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void EnqueueSend(Func<Task> work)
