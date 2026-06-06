@@ -26,6 +26,7 @@ internal static class EnchantmentEventBus
     internal static void Publish<TEvent>(TEvent evt)
     {
         ArgumentNullException.ThrowIfNull(evt);
+        Telemetry.TelemetryCollector.NoteEventBusPublish();
         if (!Handlers.TryGetValue(typeof(TEvent), out List<Delegate>? list))
         {
             return;
@@ -51,6 +52,7 @@ internal static class EnchantmentEventBus
     internal static async Task PublishAsync<TEvent>(TEvent evt)
     {
         ArgumentNullException.ThrowIfNull(evt);
+        Telemetry.TelemetryCollector.NoteEventBusPublish();
         if (!Handlers.TryGetValue(typeof(TEvent), out List<Delegate>? list))
         {
             return;

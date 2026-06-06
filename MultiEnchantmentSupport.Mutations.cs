@@ -170,6 +170,7 @@ internal static partial class MultiEnchantmentSupport
             {
                 RecordEnchantmentHistory(card, enchantment);
                 MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, existing, addedAmount));
+                Telemetry.TelemetryCollector.NoteEnchantApplied(card, existing, addedAmount);
             }
             if (dispatchAfterCardEnchanted && isGameplay)
             {
@@ -209,6 +210,7 @@ internal static partial class MultiEnchantmentSupport
         {
             RecordEnchantmentHistory(card, enchantment);
             MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, applied, appliedStackCount));
+            Telemetry.TelemetryCollector.NoteEnchantApplied(card, applied, appliedStackCount);
         }
 
         if (dispatchAfterCardEnchanted && isGameplay)
@@ -272,6 +274,7 @@ internal static partial class MultiEnchantmentSupport
             {
                 RecordEnchantmentHistory(card, enchantment);
                 MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, existing, addedAmount));
+                Telemetry.TelemetryCollector.NoteEnchantApplied(card, existing, addedAmount);
             }
             return existing;
         }
@@ -302,6 +305,7 @@ internal static partial class MultiEnchantmentSupport
         {
             RecordEnchantmentHistory(card, enchantment);
             MultiEnchantmentApi.Publish(new Api.EnchantmentAppliedEvent(card, applied, appliedStackCount));
+            Telemetry.TelemetryCollector.NoteEnchantApplied(card, applied, appliedStackCount);
         }
         return applied;
     }
@@ -1049,6 +1053,7 @@ internal static partial class MultiEnchantmentSupport
         if (isGameplay)
         {
             MultiEnchantmentApi.Publish(new Api.EnchantmentRemovedEvent(card, enchantment, reason));
+            Telemetry.TelemetryCollector.NoteEnchantRemoved();
         }
 
         return true;

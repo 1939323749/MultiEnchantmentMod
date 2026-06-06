@@ -50,6 +50,14 @@ internal static class SafeInvoker
     }
 
     /// <summary>
+    /// Returns a point-in-time copy of failure counts for telemetry reporting.
+    /// </summary>
+    internal static Dictionary<(Type Type, string Hook), int> GetFailureSnapshot()
+    {
+        return new Dictionary<(Type, string), int>(FailureCounts);
+    }
+
+    /// <summary>
     /// Clears the per-(type, hook) failure counter. Called by combat lifecycle so a flaky
     /// callback that fired 50 times last combat can produce a fresh detailed log next combat.
     /// </summary>

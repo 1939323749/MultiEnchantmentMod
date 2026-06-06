@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
@@ -34,6 +35,8 @@ using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Rewards;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves;
@@ -144,7 +147,24 @@ internal static class MultiEnchantmentPatches
             $"Card={card.Id} Enchantment={enchantment.Id} Amount={amount}");
         try
         {
-            __result = MultiEnchantmentSupport.ApplyEnchantment(enchantment, card, amount);
+            // CardCmd.Enchant is the vanilla API. It often re-fires the same enchantment from
+            // multiple hooks, so non-stacking duplicate applications should be a no-op. Stackable
+            // types (MergeAmount / DuplicateInstance / ExistenceStack) must still flow through
+            // ApplyEnchantment so legitimate amounts, instances, and overflow policy are honored.
+            EnchantmentModel? existing = MultiEnchantmentSupport.GetEnchantment(card, enchantment.GetType());
+            if (existing != null && !MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType()))
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] CardCmd.Enchant skipped — {enchantment.Id} already on card {card.Id} (vanilla re-apply). " +
+                    $"Returning existing instance.");
+                __result = existing;
+                return false;
+            }
+
+            using (Telemetry.TelemetryCollector.PushApplicationSource(GetCardCmdApplicationSource(card)))
+            {
+                __result = MultiEnchantmentSupport.ApplyEnchantment(enchantment, card, amount);
+            }
             return false;
         }
         catch (Exception ex)
@@ -153,6 +173,20 @@ internal static class MultiEnchantmentPatches
                 $"[MultiEnchantment] CardCmd.Enchant failed for Card={card.Id} Enchantment={enchantment.Id}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
+        }
+    }
+
+    private static string GetCardCmdApplicationSource(CardModel card)
+    {
+        try
+        {
+            return card.Owner.RunState.CurrentRoom?.RoomType == RoomType.Event
+                ? "event_room"
+                : "card_cmd";
+        }
+        catch
+        {
+            return "card_cmd";
         }
     }
 
@@ -180,12 +214,12 @@ internal static class MultiEnchantmentPatches
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeCombatStart))]
     [HarmonyPostfix]
-    private static void BeforeCombatStartPostfix(ref Task __result, ICombatState? combatState)
+    private static void BeforeCombatStartPostfix(ref Task __result, IRunState runState, ICombatState? combatState)
     {
-        __result = BeforeCombatStartPostfixAsync(__result, combatState);
+        __result = BeforeCombatStartPostfixAsync(__result, runState, combatState);
     }
 
-    private static async Task BeforeCombatStartPostfixAsync(Task original, ICombatState? combatState)
+    private static async Task BeforeCombatStartPostfixAsync(Task original, IRunState runState, ICombatState? combatState)
     {
         // First-time gate: by the time any combat starts, every ModInitializer has run and the
         // enchantment registry must be considered closed. Late registrations after this point
@@ -200,6 +234,13 @@ internal static class MultiEnchantmentPatches
         }
 
         MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
+        Telemetry.TelemetryCollector.SendSessionDataOnce();
+        Telemetry.TelemetryCollector.NoteCombatStarting(runState);
+        // NOTE: ResetForCombat is intentionally NOT called here. It is called at the end of
+        // combat (after SendCombatData) so that enchantments applied between combats — such as
+        // those from relic pickups (e.g. VampireCrawlerMod's gem relics calling
+        // MultiEnchantmentApi.Enchant in AfterObtained) — are captured in the next combat's data
+        // instead of being silently discarded.
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCombatEnd))]
@@ -213,6 +254,399 @@ internal static class MultiEnchantmentPatches
     {
         await original;
         MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
+
+        // In STS2 0.106.x this hook is called from CombatManager.EndCombatInternal,
+        // which is the victory path. Hook.AfterCombatVictory runs later, so a flag set
+        // there is one combat late.
+        Telemetry.TelemetryCollector.SendCombatData(
+            combatWon: true,
+            runState: runState,
+            combatState: combatState);
+        Telemetry.TelemetryCollector.ResetForCombat();
+    }
+
+    [HarmonyPatch]
+    private static class CombatLossTelemetryPatch
+    {
+        private static readonly FieldInfo? PendingLossField =
+            AccessTools.Field(typeof(CombatManager), "_pendingLoss");
+
+        [HarmonyTargetMethod]
+        private static MethodBase? TargetMethod() =>
+            AccessTools.Method(typeof(CombatManager), "ProcessPendingLoss", Type.EmptyTypes);
+
+        [HarmonyPrefix]
+        private static void Prefix(CombatManager __instance, out ICombatState? __state)
+        {
+            __state = null;
+            try
+            {
+                object? pendingLoss = PendingLossField?.GetValue(__instance);
+                __state = AccessTools.Property(pendingLoss?.GetType(), "State")
+                    ?.GetValue(pendingLoss) as ICombatState;
+            }
+            catch { /* telemetry must never crash the game */ }
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(ICombatState? __state)
+        {
+            if (__state == null)
+            {
+                return;
+            }
+
+            try
+            {
+                MultiEnchantmentScopeSupport.OnCombatEnded(__state.RunState, __state);
+                Telemetry.TelemetryCollector.SendCombatData(
+                    combatWon: false,
+                    runState: __state.RunState,
+                    combatState: __state);
+                Telemetry.TelemetryCollector.ResetForCombat();
+            }
+            catch { /* telemetry must never crash the game */ }
+        }
+    }
+
+    [HarmonyPatch]
+    private static class RunManagerOnEndedTelemetryPatch
+    {
+        [HarmonyTargetMethod]
+        private static MethodBase? TargetMethod() =>
+            AccessTools.Method(typeof(RunManager), "OnEnded", new[] { typeof(bool) });
+
+        [HarmonyPostfix]
+        private static void Postfix(object __instance, bool isVictory)
+        {
+            try
+            {
+                IRunState? runState = AccessTools
+                    .Method(__instance.GetType(), "DebugOnlyGetState")
+                    ?.Invoke(__instance, null) as IRunState;
+
+                bool isAbandoned = false;
+                try
+                {
+                    object? value = AccessTools
+                        .Property(__instance.GetType(), "IsAbandoned")
+                        ?.GetValue(__instance);
+                    if (value is bool b)
+                    {
+                        isAbandoned = b;
+                    }
+                }
+                catch { /* best-effort */ }
+
+                Telemetry.TelemetryCollector.SendRunData(runState, isVictory, isAbandoned);
+            }
+            catch { /* telemetry must never crash the game */ }
+        }
+    }
+
+    private static class CardRewardTelemetry
+    {
+        private static readonly ConditionalWeakTable<CardReward, State> States = new();
+
+        internal static void BeginSelection(CardReward reward, out State state)
+        {
+            state = States.GetOrCreateValue(reward);
+            CaptureStartState(reward, state);
+        }
+
+        internal static void BeginSkipped(CardReward reward)
+        {
+            State state = States.GetOrCreateValue(reward);
+            if (state.InitialOffered.Count == 0 && state.HistoryStartIndex == 0)
+            {
+                CaptureStartState(reward, state);
+            }
+        }
+
+        private static void CaptureStartState(CardReward reward, State state)
+        {
+            state.InitialOffered = TryGetCardRewardIds(reward);
+            state.HistoryStartIndex = TryGetCardChoiceCount(reward);
+        }
+
+        internal static void MarkRerolled(CardReward reward, List<string>? offeredBeforeReroll)
+        {
+            State state = States.GetOrCreateValue(reward);
+            state.Rerolled = true;
+            if (state.InitialOffered.Count == 0 && offeredBeforeReroll is { Count: > 0 })
+            {
+                state.InitialOffered = offeredBeforeReroll;
+            }
+        }
+
+        internal static void ReportSelection(CardReward reward, State state, bool success)
+        {
+            if (state.Reported)
+            {
+                return;
+            }
+
+            state.Reported = true;
+
+            List<CardChoiceSnapshot> choices = TryGetCardChoicesSince(reward, state.HistoryStartIndex);
+            List<string> picked = choices
+                .Where(static choice => choice.WasPicked)
+                .Select(static choice => choice.CardId)
+                .Where(static id => !string.IsNullOrWhiteSpace(id))
+                .ToList();
+
+            List<string> offered = choices
+                .Select(static choice => choice.CardId)
+                .Where(static id => !string.IsNullOrWhiteSpace(id))
+                .ToList();
+            if (offered.Count == 0)
+            {
+                offered = state.InitialOffered;
+            }
+
+            bool skipped = !success;
+            bool alternativeUsed = success && picked.Count == 0 && offered.Count > 0;
+
+            Telemetry.TelemetryCollector.NoteCardRewardSelection(
+                TryGetRunState(reward),
+                reward.Player,
+                reward,
+                offered,
+                picked,
+                skipped,
+                rerolled: state.Rerolled,
+                alternativeUsed: alternativeUsed);
+        }
+
+        internal static void ReportSkipped(CardReward reward)
+        {
+            State state = States.GetOrCreateValue(reward);
+            if (state.Reported)
+            {
+                return;
+            }
+
+            state.Reported = true;
+
+            List<string> offered = TryGetCardChoicesSince(reward, state.HistoryStartIndex)
+                .Select(static choice => choice.CardId)
+                .Where(static id => !string.IsNullOrWhiteSpace(id))
+                .ToList();
+            if (offered.Count == 0)
+            {
+                offered = state.InitialOffered.Count > 0
+                    ? state.InitialOffered
+                    : TryGetCardRewardIds(reward);
+            }
+
+            Telemetry.TelemetryCollector.NoteCardRewardSelection(
+                TryGetRunState(reward),
+                reward.Player,
+                reward,
+                offered,
+                Array.Empty<string>(),
+                skipped: true,
+                rerolled: state.Rerolled);
+        }
+
+        internal static List<string> TryGetCardRewardIds(CardReward cardReward)
+        {
+            try
+            {
+                return cardReward.Cards?
+                    .Where(static card => card != null)
+                    .Select(static card => card.Id.ToString())
+                    .Where(static id => !string.IsNullOrWhiteSpace(id))
+                    .ToList() ?? new List<string>();
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        private static int TryGetCardChoiceCount(CardReward reward)
+        {
+            try { return GetCardChoices(reward)?.Count ?? 0; }
+            catch { return 0; }
+        }
+
+        private static List<CardChoiceSnapshot> TryGetCardChoicesSince(CardReward reward, int startIndex)
+        {
+            var result = new List<CardChoiceSnapshot>();
+            IReadOnlyList<CardChoiceHistoryEntry>? choices = GetCardChoices(reward);
+            if (choices == null || startIndex >= choices.Count)
+            {
+                return result;
+            }
+
+            for (int i = Math.Max(0, startIndex); i < choices.Count; i++)
+            {
+                CardChoiceHistoryEntry choice = choices[i];
+                string? cardId = null;
+                try
+                {
+                    cardId = TryReadCardId(choice.Card);
+                }
+                catch { }
+                if (string.IsNullOrWhiteSpace(cardId))
+                {
+                    continue;
+                }
+
+                bool wasPicked = false;
+                try { wasPicked = TryReadWasPicked(choice); } catch { }
+                result.Add(new CardChoiceSnapshot(cardId, wasPicked));
+            }
+
+            return result;
+        }
+
+        private static string? TryReadCardId(object? card)
+        {
+            if (card == null)
+            {
+                return null;
+            }
+
+            if (card is CardModel cardModel)
+            {
+                return cardModel.Id.ToString();
+            }
+
+            object? id = AccessTools.Property(card.GetType(), "Id")?.GetValue(card)
+                ?? AccessTools.Property(card.GetType(), "CardId")?.GetValue(card)
+                ?? AccessTools.Field(card.GetType(), "Id")?.GetValue(card)
+                ?? AccessTools.Field(card.GetType(), "CardId")?.GetValue(card)
+                ?? AccessTools.Field(card.GetType(), "id")?.GetValue(card)
+                ?? AccessTools.Field(card.GetType(), "cardId")?.GetValue(card);
+            return id?.ToString();
+        }
+
+        private static bool TryReadWasPicked(CardChoiceHistoryEntry choice)
+        {
+            object? value = TryReadBoolMember(choice, "WasPicked", "wasPicked", "Picked", "IsPicked", "Selected", "IsSelected", "Chosen", "IsChosen");
+            return value is bool picked && picked;
+        }
+
+        private static object? TryReadBoolMember(object target, params string[] names)
+        {
+            Type type = target.GetType();
+            foreach (string name in names)
+            {
+                object? value = AccessTools.Property(type, name)?.GetValue(target)
+                    ?? AccessTools.Field(type, name)?.GetValue(target)
+                    ?? AccessTools.Field(type, $"<{name}>k__BackingField")?.GetValue(target);
+                if (value is bool)
+                {
+                    return value;
+                }
+            }
+
+            return null;
+        }
+
+        private static IReadOnlyList<CardChoiceHistoryEntry>? GetCardChoices(CardReward reward)
+        {
+            try
+            {
+                return reward.Player
+                    .RunState
+                    .CurrentMapPointHistoryEntry
+                    ?.GetEntry(reward.Player.NetId)
+                    .CardChoices;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static IRunState? TryGetRunState(Reward reward)
+        {
+            try { return reward.Player?.RunState; }
+            catch { return null; }
+        }
+
+        internal sealed class State
+        {
+            public List<string> InitialOffered { get; set; } = new();
+            public int HistoryStartIndex { get; set; }
+            public bool Rerolled { get; set; }
+            public bool Reported { get; set; }
+        }
+
+        private readonly record struct CardChoiceSnapshot(string CardId, bool WasPicked);
+    }
+
+    [HarmonyPatch]
+    private static class CardRewardOnSelectTelemetryPatch
+    {
+        [HarmonyTargetMethod]
+        private static MethodBase? TargetMethod() =>
+            AccessTools.Method(typeof(CardReward), "OnSelect", Type.EmptyTypes);
+
+        [HarmonyPrefix]
+        private static void Prefix(CardReward __instance, out CardRewardTelemetry.State __state)
+        {
+            CardRewardTelemetry.BeginSelection(__instance, out __state);
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(CardReward __instance, CardRewardTelemetry.State __state, ref Task<bool> __result)
+        {
+            __result = PostfixAsync(__result, __instance, __state);
+        }
+
+        private static async Task<bool> PostfixAsync(Task<bool> original, CardReward reward, CardRewardTelemetry.State state)
+        {
+            bool success = await original;
+
+            try
+            {
+                CardRewardTelemetry.ReportSelection(reward, state, success);
+            }
+            catch { /* telemetry must never crash the game */ }
+
+            return success;
+        }
+    }
+
+    [HarmonyPatch(typeof(CardReward), nameof(CardReward.OnSkipped))]
+    private static class CardRewardOnSkippedTelemetryPatch
+    {
+        [HarmonyPrefix]
+        private static void Prefix(CardReward __instance)
+        {
+            try
+            {
+                CardRewardTelemetry.BeginSkipped(__instance);
+            }
+            catch { /* telemetry must never crash the game */ }
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(CardReward __instance)
+        {
+            try
+            {
+                CardRewardTelemetry.ReportSkipped(__instance);
+            }
+            catch { /* telemetry must never crash the game */ }
+        }
+    }
+
+    [HarmonyPatch(typeof(CardReward), nameof(CardReward.Reroll))]
+    [HarmonyPrefix]
+    private static void CardRewardRerollTelemetryPrefix(CardReward __instance)
+    {
+        try
+        {
+            CardRewardTelemetry.MarkRerolled(
+                __instance,
+                CardRewardTelemetry.TryGetCardRewardIds(__instance));
+        }
+        catch { /* telemetry must never crash the game */ }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardEnteredCombat))]
@@ -298,6 +732,12 @@ internal static class MultiEnchantmentPatches
 
         // Phase 4: broadcast OnAnyCardPlayed to every enchantment in combat that opted in.
         MultiEnchantmentScopeSupport.DispatchOnAnyCardPlayedBroadcast(cardPlay?.Card, combatState);
+
+        // Telemetry: track enchanted card plays.
+        if (cardPlay?.Card != null)
+        {
+            Telemetry.TelemetryCollector.NoteEnchantedCardPlayed(cardPlay.Card);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]

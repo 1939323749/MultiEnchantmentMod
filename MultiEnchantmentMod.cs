@@ -50,6 +50,14 @@ public partial class MultiEnchantmentMod : Node
         // Boot-time integrity check for the small set of vanilla methods this mod copies
         // verbatim. Logs current IL hashes (and any drift vs. frozen baseline). Idempotent.
         Api.Internal.VanillaCopyGuard.RunOnce();
+
+        // Telemetry: read config from MultiEnchantmentMod.json and install crash reporter.
+        // Session data is sent later at first BeforeCombatStart (after all mods have registered).
+        Telemetry.TelemetryConfig.Initialize();
+        if (Telemetry.TelemetryConfig.IsEnabled)
+        {
+            Telemetry.CrashReporter.Install(Telemetry.TelemetryCollector.SessionId);
+        }
     }
 
     private static void LogHarmonyPatchConflicts()
@@ -65,30 +73,37 @@ public partial class MultiEnchantmentMod : Node
                     continue;
                 }
 
-                bool wePatched = false;
-                List<string> otherOwners = new();
+                // Collect our patches and other patches separately with full detail.
+                List<string> ourPatchDetails = new();
+                List<string> otherPatchDetails = new();
+                HashSet<string> otherOwners = new();
 
                 foreach (Patch patch in patchInfo.Prefixes)
                 {
-                    if (patch.owner == ModId) wePatched = true;
-                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                    string detail = FormatPatchDetail("Prefix", patch);
+                    if (patch.owner == ModId) ourPatchDetails.Add(detail);
+                    else { otherPatchDetails.Add(detail); otherOwners.Add(patch.owner); }
                 }
                 foreach (Patch patch in patchInfo.Postfixes)
                 {
-                    if (patch.owner == ModId) wePatched = true;
-                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                    string detail = FormatPatchDetail("Postfix", patch);
+                    if (patch.owner == ModId) ourPatchDetails.Add(detail);
+                    else { otherPatchDetails.Add(detail); otherOwners.Add(patch.owner); }
                 }
                 foreach (Patch patch in patchInfo.Transpilers)
                 {
-                    if (patch.owner == ModId) wePatched = true;
-                    else if (!otherOwners.Contains(patch.owner)) otherOwners.Add(patch.owner);
+                    string detail = FormatPatchDetail("Transpiler", patch);
+                    if (patch.owner == ModId) ourPatchDetails.Add(detail);
+                    else { otherPatchDetails.Add(detail); otherOwners.Add(patch.owner); }
                 }
 
-                if (wePatched && otherOwners.Count > 0)
+                if (ourPatchDetails.Count > 0 && otherOwners.Count > 0)
                 {
-                    string methodName = $"{method.DeclaringType?.Name}.{method.Name}";
+                    string methodName = $"{method.DeclaringType?.FullName}.{method.Name}";
                     Logger.Info(
-                        $"[MultiEnchantment] Shared patch target: {methodName} is also patched by [{string.Join(", ", otherOwners)}]");
+                        $"[MultiEnchantment] Shared patch target: {methodName}\n" +
+                        $"  Ours: {string.Join("; ", ourPatchDetails)}\n" +
+                        $"  Others: {string.Join("; ", otherPatchDetails)}");
                     conflictCount++;
                 }
             }
@@ -103,6 +118,13 @@ public partial class MultiEnchantmentMod : Node
         {
             Logger.Warn($"[MultiEnchantment] Failed to scan for Harmony patch conflicts: {ex.Message}");
         }
+    }
+
+    private static string FormatPatchDetail(string patchType, Patch patch)
+    {
+        string methodName = patch.PatchMethod?.Name ?? "unknown";
+        string owner = patch.owner ?? "unknown";
+        return $"{patchType}({owner}, pri={patch.priority}, {methodName})";
     }
 
     private static void PatchThievingHopperPriorities()

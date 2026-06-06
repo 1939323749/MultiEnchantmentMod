@@ -115,12 +115,15 @@ public static class MultiEnchantmentApi
             return null;
         }
 
-        return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverride(
-            choiceContext: null,
-            enchantment,
-            card,
-            amount,
-            scopeOverride);
+        using (global::MultiEnchantmentMod.Telemetry.TelemetryCollector.PushApplicationSource("api"))
+        {
+            return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverride(
+                choiceContext: null,
+                enchantment,
+                card,
+                amount,
+                scopeOverride);
+        }
     }
 
     /// <summary>
@@ -148,12 +151,25 @@ public static class MultiEnchantmentApi
             return Task.FromResult<EnchantmentModel?>(null);
         }
 
-        return global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverrideAsync(
-            choiceContext,
-            enchantment,
-            card,
-            amount,
-            scopeOverride);
+        return EnchantAsyncWithSource(choiceContext, card, enchantment, amount, scopeOverride);
+    }
+
+    private static async Task<EnchantmentModel?> EnchantAsyncWithSource(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        decimal amount,
+        EnchantmentScope? scopeOverride)
+    {
+        using (global::MultiEnchantmentMod.Telemetry.TelemetryCollector.PushApplicationSource("api_async"))
+        {
+            return await global::MultiEnchantmentMod.MultiEnchantmentSupport.ApplyEnchantmentWithScopeOverrideAsync(
+                choiceContext,
+                enchantment,
+                card,
+                amount,
+                scopeOverride);
+        }
     }
 
     /// <summary>

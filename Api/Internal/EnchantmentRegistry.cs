@@ -280,6 +280,14 @@ internal static class EnchantmentRegistry
         }
     }
 
+    internal static HashSet<Type> GetAllRegisteredTypes()
+    {
+        lock (Sync)
+        {
+            return new HashSet<Type>(EntriesByType.Keys);
+        }
+    }
+
     /// <summary>
     /// Fast existence check used by the <see cref="MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar"/>
     /// postfix patch to short-circuit out when no enchantment in the registry contributes to the

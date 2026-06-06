@@ -120,6 +120,8 @@ internal static partial class MultiEnchantmentSupport
             {
                 MultiEnchantmentMod.Logger.Error(
                     $"Failed to restore extra enchantment {serializable.Id} on card {card.Id}: {ex}");
+                Telemetry.TelemetryCollector.NoteDeserializationFailure(
+                    serializable.Id?.ToString() ?? "unknown", card.Id.ToString(), ex);
             }
         }
 

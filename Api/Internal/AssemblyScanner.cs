@@ -21,6 +21,13 @@ namespace MultiEnchantmentMod.Api.Internal;
 /// </remarks>
 internal static class AssemblyScanner
 {
+    internal sealed record ApiCompatibilitySnapshot(
+        string Assembly,
+        int? DeclaredMin,
+        int? DeclaredMax,
+        int RuntimeApi,
+        string Status);
+
     private static readonly object Sync = new();
     private static readonly HashSet<Assembly> ScannedAssemblies = new();
     private static bool _sealed;
@@ -508,6 +515,36 @@ internal static class AssemblyScanner
         }
 
         return true;
+    }
+
+    internal static ApiCompatibilitySnapshot GetApiCompatibilitySnapshot(Assembly assembly)
+    {
+        EnchantmentApiCompatibilityAttribute? attribute =
+            (EnchantmentApiCompatibilityAttribute?)Attribute.GetCustomAttribute(
+                assembly, typeof(EnchantmentApiCompatibilityAttribute));
+
+        if (attribute == null)
+        {
+            return new ApiCompatibilitySnapshot(
+                assembly.GetName().Name ?? "unknown",
+                null,
+                null,
+                MultiEnchantmentApiVersion.Current,
+                "no_attribute");
+        }
+
+        string status = attribute.MinVersion > MultiEnchantmentApiVersion.Current
+            ? "rejected_min"
+            : attribute.MaxVersion > 0 && attribute.MaxVersion < MultiEnchantmentApiVersion.Current
+                ? "warned_max"
+                : "ok";
+
+        return new ApiCompatibilitySnapshot(
+            assembly.GetName().Name ?? "unknown",
+            attribute.MinVersion,
+            attribute.MaxVersion,
+            MultiEnchantmentApiVersion.Current,
+            status);
     }
 
     private static bool CouldReferenceModAssembly(Assembly assembly)

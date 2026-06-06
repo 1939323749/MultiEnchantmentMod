@@ -156,6 +156,17 @@ internal static class BuiltInRegistrations
         // Each registration below mirrors a case in the deleted v1
         // GetBuiltInKeywordSourceAmount switch.
 
+        // Inky: per-card enchantment on Shivs, adds damage. Not stackable.
+        MultiEnchantmentApi.Register<Inky>()
+            .Stack(StackBehavior.DisallowDuplicate, StatusAggregation.SharedAcrossStack)
+            .Commit();
+
+        // Corrupted: debuff enchantment from enemies, multiplies damage. Not stackable.
+        // Added in game v0.107.0.
+        MultiEnchantmentApi.Register<Corrupted>()
+            .Stack(StackBehavior.DisallowDuplicate, StatusAggregation.SharedAcrossStack)
+            .Commit();
+
         MultiEnchantmentApi.Register<Goopy>()
             .Stack(StackBehavior.DuplicateInstance, StatusAggregation.PerInstanceOwned)
             .TrackKeyword(CardKeyword.Exhaust, snapshot => snapshot.ActiveInstanceCount)
