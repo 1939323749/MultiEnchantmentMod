@@ -21,11 +21,11 @@ env:
   # NEXUS_COOKIE_NXMTOKEN: your NexusMods session token
   # NEXUS_COOKIE_SIWEAUTH: your NexusMods SIWEAuth cookie
   NEXUS_GAME_DOMAIN: slaytheSpire2
-  NEXUS_MOD_ID: '0'  # TODO: replace with your actual NexusMods mod ID
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: supabase
     steps:
       - uses: actions/checkout@v4
 
@@ -123,6 +123,7 @@ jobs:
   upload-nexus:
     needs: build
     runs-on: ubuntu-latest
+    environment: supabase
     if: github.ref_type == 'tag'  # Only upload to NexusMods on tagged releases
     steps:
       - name: Download artifact
@@ -135,9 +136,10 @@ jobs:
 
       - name: Upload to NexusMods
         env:
+          UNEX_APIKEY: ${{ secrets.NEXUS_API_KEY }}
           UNEX_COOKIES: ${{ secrets.NEXUS_COOKIES }}
           UNEX_GAME: ${{ env.NEXUS_GAME_DOMAIN }}
-          UNEX_MODID: ${{ env.NEXUS_MOD_ID }}
+          UNEX_MODID: ${{ secrets.NEXUS_MOD_ID }}
         run: |
           VERSION=${GITHUB_REF_NAME}
           unex upload "${{ env.ZIP_NAME }}" \

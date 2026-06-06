@@ -41,6 +41,7 @@ The `.pck` file requires MegaDot (Godot fork) to export. CI does not install Meg
 | Secret | Description |
 |--------|-------------|
 | `NEXUS_COOKIES` | Your NexusMods auth cookies for unex. See below. |
+| `NEXUS_MOD_ID` | Your mod's numeric ID on NexusMods (from the mod page URL). |
 
 **Getting cookies for unex:**
 1. Log in to NexusMods in your browser
@@ -49,7 +50,7 @@ The `.pck` file requires MegaDot (Godot fork) to export. CI does not install Meg
 4. Store as the `NEXUS_COOKIES` secret in the format unex expects
 
 **Update `NEXUS_MOD_ID`:**
-Edit `.github/workflows/release.yml` and set `NEXUS_MOD_ID` to your mod's numeric ID on NexusMods.
+Add a `NEXUS_MOD_ID` secret in GitHub repo Settings → Secrets, set to your mod's numeric ID on NexusMods.
 
 ## Usage
 
