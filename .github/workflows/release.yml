@@ -1,0 +1,149 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      nightly:
+        description: 'Build as nightly (pre-release)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  MOD_NAME: MultiEnchantmentMod
+  DOTNET_VERSION: '9.0.x'
+  # NexusMods settings — set these in repository secrets
+  # NEXUS_COOKIE_NXMTOKEN: your NexusMods session token
+  # NEXUS_COOKIE_SIWEAUTH: your NexusMods SIWEAuth cookie
+  NEXUS_GAME_DOMAIN: slaytheSpire2
+  NEXUS_MOD_ID: '0'  # TODO: replace with your actual NexusMods mod ID
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # The game DLL is needed for compilation but not shipped.
+      # CI uses a cached copy uploaded as a repository secret or artifact.
+      - name: Restore game DLL from cache
+        uses: actions/cache@v4
+        id: cache-gamedll
+        with:
+          path: .ci/gamedlls
+          key: sts2-dlls-${{ hashFiles('.ci/dll-version.txt') }}
+
+      - name: Verify game DLLs exist
+        if: steps.cache-gamedll.outputs.cache-hit != 'true'
+        run: |
+          echo "::error::Game DLLs not found in cache. Run the seed-cache workflow first or manually upload."
+          echo "See .github/README.md for instructions on seeding the game DLL cache."
+          exit 1
+
+      - name: Build
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          dotnet publish -c Release \
+            -p:Sts2DataDir=${{ github.workspace }}/.ci/gamedlls \
+            -p:GodotPath= \
+            -p:ModsPath= \
+            -p:SupabaseUrl="${SUPABASE_URL}" \
+            -p:SupabaseAnonKey="${SUPABASE_ANON_KEY}" \
+            --no-restore || dotnet publish -c Release \
+            -p:Sts2DataDir=${{ github.workspace }}/.ci/gamedlls \
+            -p:GodotPath= \
+            -p:ModsPath= \
+            -p:SupabaseUrl="${SUPABASE_URL}" \
+            -p:SupabaseAnonKey="${SUPABASE_ANON_KEY}"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            echo "version=nightly-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package mod
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PKG_DIR="${{ env.MOD_NAME }}"
+          mkdir -p "$PKG_DIR"
+
+          # DLL from publish output
+          find . -path '*/bin/Release/*/publish/*.dll' -name '${{ env.MOD_NAME }}.dll' \
+            -exec cp {} "$PKG_DIR/" \;
+
+          # Mod manifest
+          cp ${{ env.MOD_NAME }}.json "$PKG_DIR/"
+
+          # PCK: use pre-built from repo if available, otherwise skip
+          if [ -f ".ci/${{ env.MOD_NAME }}.pck" ]; then
+            cp ".ci/${{ env.MOD_NAME }}.pck" "$PKG_DIR/"
+          else
+            echo "::warning::No pre-built .pck found in .ci/ — release zip will not include localization resources."
+          fi
+
+          zip -r "${{ env.MOD_NAME }}-${VERSION}.zip" "$PKG_DIR/"
+          echo "ZIP_PATH=${{ env.MOD_NAME }}-${VERSION}.zip" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=${{ env.MOD_NAME }}-${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-package
+          path: ${{ env.ZIP_PATH }}
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag' || inputs.nightly == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          files: ${{ env.ZIP_PATH }}
+          generate_release_notes: true
+
+  upload-nexus:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'  # Only upload to NexusMods on tagged releases
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-package
+
+      - name: Install unex
+        run: pip install unex
+
+      - name: Upload to NexusMods
+        env:
+          UNEX_COOKIES: ${{ secrets.NEXUS_COOKIES }}
+          UNEX_GAME: ${{ env.NEXUS_GAME_DOMAIN }}
+          UNEX_MODID: ${{ env.NEXUS_MOD_ID }}
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          unex upload "${{ env.ZIP_NAME }}" \
+            --game "$UNEX_GAME" \
+            --mod-id "$UNEX_MODID" \
+            --file-name "${{ env.MOD_NAME }} ${VERSION}" \
+            --version "${VERSION}" \
+            --category main \
+            --description "Automated release ${VERSION}"

@@ -21,3 +21,15 @@ riderModule.iml
 
 # Analyzer NuGet output
 MultiEnchantmentMod.Analyzers/nupkg/
+
+# CI game DLLs (cached, not committed)
+.ci/gamedlls/
+
+# DLL backups
+dll_backup_*/
+
+# ILSpy temp
+.ilspy_tmp_*/
+
+# Telemetry secrets (use .env.props.template as reference)
+.env.props
