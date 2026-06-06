@@ -151,5 +151,6 @@ jobs:
           display_name: ${{ env.MOD_NAME }} ${{ github.ref_name }}
           description: ${{ steps.nexus.outputs.description }}
           file_category: main
-          archive_existing_file: true
+          # Keep the previous upload visible under Old Files instead of hiding it in File Archive.
+          archive_existing_file: false
           allow_mod_manager_download: true
