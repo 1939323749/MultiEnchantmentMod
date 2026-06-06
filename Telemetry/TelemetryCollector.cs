@@ -1300,7 +1300,6 @@ internal static class TelemetryCollector
                     string? id = GetPropertyOrFieldValue(relic, "Id")?.ToString();
                     string? title = ReadSafeFormattedOrRawText(relic, "Title");
                     string? description = Truncate(
-                        ReadPlainHoverTipDescription(relic, "HoverTip") ??
                         ReadPlainTextMember(relic, "DynamicDescription", "Description", "EventDescription"),
                         300);
                     string? rarity = GetPropertyOrFieldValue(relic, "Rarity")?.ToString();
@@ -1981,27 +1980,13 @@ internal static class TelemetryCollector
         return null;
     }
 
-    private static string? ReadPlainTextFieldMember(object? target, params string[] memberNames)
-    {
-        foreach (string memberName in memberNames)
-        {
-            string? text = ExtractPlainText(GetFieldValue(target, memberName));
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
-        }
-
-        return null;
-    }
-
     private static string? ReadPowerDescription(PowerModel power)
     {
-        return ReadPlainTextFieldMember(
+        return ReadPlainTextMember(
             power,
-            "Description",
             "SmartDescription",
             "RemoteDescription",
+            "Description",
             "EventDescription");
     }
 
@@ -2015,6 +2000,12 @@ internal static class TelemetryCollector
         if (value is string s)
         {
             return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        string? rawText = TryInvokeStringMethod(value, "GetRawText");
+        if (!string.IsNullOrWhiteSpace(rawText))
+        {
+            return rawText;
         }
 
         foreach (string memberName in new[]
@@ -2036,6 +2027,26 @@ internal static class TelemetryCollector
         }
 
         return null;
+    }
+
+    private static string? TryInvokeStringMethod(object? value, string methodName)
+    {
+        if (value == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            string? text = value.GetType()
+                .GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, Type.EmptyTypes)
+                ?.Invoke(value, null)?.ToString();
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? TryFormatTextWithoutThrowing(object? value)
@@ -2104,49 +2115,6 @@ internal static class TelemetryCollector
         if (value is bool b) return b;
         if (value != null && bool.TryParse(value.ToString(), out bool parsed)) return parsed;
         return null;
-    }
-
-    private static object? GetFieldValue(object? target, string name)
-    {
-        if (target == null) return null;
-
-        for (Type? type = target.GetType(); type != null; type = type.BaseType)
-        {
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-            try
-            {
-                FieldInfo? field = type.GetField(name, flags)
-                    ?? type.GetField($"<{name}>k__BackingField", flags);
-                if (field != null)
-                {
-                    return field.GetValue(target);
-                }
-            }
-            catch { /* best-effort reflection */ }
-        }
-
-        return null;
-    }
-
-    private static string? ReadPlainHoverTipDescription(object? target, string memberName)
-    {
-        object? hoverTip = GetFieldValue(target, memberName);
-        if (hoverTip is IEnumerable enumerable and not string)
-        {
-            foreach (object? item in enumerable)
-            {
-                string? itemDescription = ReadPlainTextFieldMember(item, "Description");
-                if (!string.IsNullOrWhiteSpace(itemDescription))
-                {
-                    return itemDescription;
-                }
-            }
-
-            return null;
-        }
-
-        string? description = ReadPlainTextFieldMember(hoverTip, "Description");
-        return string.IsNullOrWhiteSpace(description) ? null : description;
     }
 
     private static List<object> StableSortForHash(IEnumerable<object> values) =>
