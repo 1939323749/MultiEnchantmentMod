@@ -1,4 +1,12 @@
 ﻿<Project Sdk="Godot.NET.Sdk/4.5.1" InitialTargets="CheckDependencyPaths">
+
+    <!-- Telemetry secrets: local .env.props (gitignored) or CI -p: overrides -->
+    <Import Project=".env.props" Condition="Exists('.env.props')" />
+    <PropertyGroup>
+        <SupabaseUrl Condition="'$(SupabaseUrl)' == ''">REPLACE_ME</SupabaseUrl>
+        <SupabaseAnonKey Condition="'$(SupabaseAnonKey)' == ''">REPLACE_ME</SupabaseAnonKey>
+    </PropertyGroup>
+
     <PropertyGroup>
         <TargetFramework>net9.0</TargetFramework>
         <ImplicitUsings>true</ImplicitUsings>
@@ -137,5 +145,25 @@
         <Copy SourceFiles="MultiEnchantmentMod.json" DestinationFiles="$(_ModOutputDir)$(MSBuildProjectName).json" SkipUnchangedFiles="true"/>
         <Copy SourceFiles="$(PublishDir)$(MSBuildProjectName).dll" DestinationFolder="$(_ModOutputDir)" SkipUnchangedFiles="true"/>
         <Message Text="Copied $(MSBuildProjectName).json/.pck/.dll to $(_ModOutputDir)" Importance="high"/>
+    </Target>
+
+    <!-- Generate TelemetrySecrets.g.cs into obj/ from MSBuild properties -->
+    <Target Name="GenerateTelemetrySecrets" BeforeTargets="CoreCompile">
+        <ItemGroup>
+            <_SecretLines Include="// &lt;auto-generated/&gt;" />
+            <_SecretLines Include="namespace MultiEnchantmentMod.Telemetry%3B" />
+            <_SecretLines Include="internal static partial class TelemetryConfig" />
+            <_SecretLines Include="{" />
+            <_SecretLines Include="    internal const string SupabaseUrl = &quot;$(SupabaseUrl)&quot;%3B" />
+            <_SecretLines Include="    internal const string AnonKey = &quot;$(SupabaseAnonKey)&quot;%3B" />
+            <_SecretLines Include="}" />
+        </ItemGroup>
+        <WriteLinesToFile File="$(IntermediateOutputPath)TelemetrySecrets.g.cs"
+                          Lines="@(_SecretLines)"
+                          Overwrite="true"
+                          WriteOnlyWhenDifferent="true" />
+        <ItemGroup>
+            <Compile Include="$(IntermediateOutputPath)TelemetrySecrets.g.cs" />
+        </ItemGroup>
     </Target>
 </Project>
