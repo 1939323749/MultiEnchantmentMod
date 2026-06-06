@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -18,8 +19,10 @@ internal static class TelemetryReporter
     {
         AppDomain.CurrentDomain.ProcessExit += static (_, _) => Flush(TimeSpan.FromSeconds(2));
     }
-    private static readonly object QueueLock = new();
-    private static Task _sendQueue = Task.CompletedTask;
+    private static readonly object RealtimeQueueLock = new();
+    private static readonly object BackgroundQueueLock = new();
+    private static Task _realtimeQueue = Task.CompletedTask;
+    private static Task _backgroundQueue = Task.CompletedTask;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -27,28 +30,48 @@ internal static class TelemetryReporter
     };
 
     internal static void SendSession(object data) =>
-        EnqueueSend(() => SendAsync("telemetry_sessions", data));
-    internal static void SendCombat(object data) => EnqueueSend(() => SendAsync("telemetry_combats", data));
-    internal static void SendRun(object data) => EnqueueSend(() => SendAsync("telemetry_runs", data));
-    internal static void SendCrash(object data) => EnqueueSend(() => SendAsync("telemetry_crashes", data));
-    internal static void SendCardReward(object data) => EnqueueSend(() => SendAsync("telemetry_card_rewards", data));
+        EnqueueRealtime(async () => { _ = await SendAsync("telemetry_sessions", data); });
+    internal static void SendCombat(object data) =>
+        EnqueueRealtime(async () => { _ = await SendAsync("telemetry_combats", data); });
+    internal static void SendRun(object data) =>
+        EnqueueRealtime(async () => { _ = await SendAsync("telemetry_runs", data); });
+    internal static void SendCrash(object data) =>
+        EnqueueRealtime(async () => { _ = await SendAsync("telemetry_crashes", data); });
+    internal static void SendCardReward(object data) =>
+        EnqueueRealtime(async () => { _ = await SendAsync("telemetry_card_rewards", data); });
 
     internal static void SendStartupData(
-        object environmentData, object sessionData, object modCatalogData,
+        object? environmentData, object? sessionData, object? modCatalogData,
         List<object>? refCards, List<object>? refRelics, List<object>? refPowers) =>
-        EnqueueSend(() => SendStartupDataAsync(
+        EnqueueBackground(() => SendStartupDataAsync(
             environmentData, sessionData, modCatalogData, refCards, refRelics, refPowers));
 
-    internal static void EnqueueBackgroundWork(Func<Task> work) => EnqueueSend(work);
+    internal static void EnqueueBackgroundWork(Func<Task> work) => EnqueueBackground(work);
 
     internal static bool Flush(TimeSpan timeout)
     {
-        Task pending;
-        lock (QueueLock)
+        Task realtime;
+        Task background;
+        lock (RealtimeQueueLock)
         {
-            pending = _sendQueue;
+            realtime = _realtimeQueue;
+        }
+        lock (BackgroundQueueLock)
+        {
+            background = _backgroundQueue;
         }
 
+        var sw = Stopwatch.StartNew();
+        bool realtimeDone = WaitForQueue(realtime, timeout);
+        TimeSpan remaining = timeout - sw.Elapsed;
+        bool backgroundDone = remaining > TimeSpan.Zero
+            ? WaitForQueue(background, remaining)
+            : background.IsCompleted;
+        return realtimeDone && backgroundDone;
+    }
+
+    private static bool WaitForQueue(Task pending, TimeSpan timeout)
+    {
         try
         {
             return pending.Wait(timeout);
@@ -59,30 +82,47 @@ internal static class TelemetryReporter
         }
     }
 
-    internal static async Task SendStartupDataAsync(
-        object environmentData, object sessionData, object modCatalogData,
+    internal static async Task<StartupUploadResult> SendStartupDataAsync(
+        object? environmentData, object? sessionData, object? modCatalogData,
         List<object>? refCards, List<object>? refRelics, List<object>? refPowers)
     {
-        // Create the session first so later combat/run/reward rows can satisfy their FK.
-        // Anonymous upserts require SELECT permission/policies in PostgREST, so sessions
-        // use plain INSERT because each startup already has a fresh session id.
-        await SendAsync("telemetry_sessions", sessionData);
-        await SendAsync("telemetry_environments", environmentData, onConflict: "environment_hash");
-        await SendAsync("telemetry_mod_catalog", modCatalogData, onConflict: "catalog_hash");
-
-        // Reference tables are discovered by the anonymous client. Insert new keys only;
-        // trusted maintenance jobs can update canonical metadata without client pollution.
-        if (refCards is { Count: > 0 })
-            await SendAsync("ref_cards", refCards, onConflict: "card_id,locale", mergeDuplicates: false);
-        if (refRelics is { Count: > 0 })
-            await SendAsync("ref_relics", refRelics, onConflict: "relic_id,locale", mergeDuplicates: false);
-        if (refPowers is { Count: > 0 })
-            await SendAsync("ref_powers", refPowers, onConflict: "power_id,locale", mergeDuplicates: false);
+        // Keep startup reference uploads off the realtime queue. Reference rows
+        // are insert-only from the public client; existing keys are ignored.
+        return new StartupUploadResult
+        {
+            SessionUploaded = sessionData == null ||
+                              await SendAsync("telemetry_sessions", sessionData),
+            EnvironmentUploaded = environmentData == null ||
+                                   await SendAsync("telemetry_environments", environmentData),
+            ModCatalogUploaded = modCatalogData == null ||
+                                  await SendAsync("telemetry_mod_catalog", modCatalogData),
+            RefCardsUploaded = refCards is not { Count: > 0 } ||
+                               await SendRowsAsync("ref_cards", refCards, "card_id,locale"),
+            RefRelicsUploaded = refRelics is not { Count: > 0 } ||
+                                await SendRowsAsync("ref_relics", refRelics, "relic_id,locale"),
+            RefPowersUploaded = refPowers is not { Count: > 0 } ||
+                                await SendRowsAsync("ref_powers", refPowers, "power_id,locale"),
+        };
     }
 
-    private static async Task SendAsync(string table, object data, string? onConflict = null, bool mergeDuplicates = false)
+    internal sealed class StartupUploadResult
     {
-        if (!TelemetryConfig.IsEnabled) return;
+        internal bool SessionUploaded { get; init; }
+        internal bool EnvironmentUploaded { get; init; }
+        internal bool ModCatalogUploaded { get; init; }
+        internal bool RefCardsUploaded { get; init; }
+        internal bool RefRelicsUploaded { get; init; }
+        internal bool RefPowersUploaded { get; init; }
+    }
+
+    private static async Task<bool> SendAsync(
+        string table,
+        object data,
+        string? onConflict = null,
+        bool mergeDuplicates = false,
+        bool duplicateIsSuccess = true)
+    {
+        if (!TelemetryConfig.IsEnabled) return false;
 
         try
         {
@@ -110,46 +150,76 @@ internal static class TelemetryReporter
             int statusCode = (int)response.StatusCode;
             DiagLog($"SendAsync {table}: status={statusCode}");
 
+            if (statusCode < 400)
+            {
+                return true;
+            }
+
             if (statusCode >= 400)
             {
                 string body = await response.Content.ReadAsStringAsync();
-                if (statusCode == 409 &&
+                if (duplicateIsSuccess &&
+                    statusCode == 409 &&
                     body.Contains("\"23505\"", StringComparison.OrdinalIgnoreCase))
                 {
                     DiagLog($"SendAsync {table}: duplicate ignored");
-                    return;
+                    return true;
                 }
 
                 DiagLog($"SendAsync {table} ERROR: {body[..Math.Min(body.Length, 500)]}");
-                if (ShouldRetryWithoutConflict(statusCode, body, onConflict))
-                {
-                    await SendAsync(table, data);
-                }
             }
         }
         catch (Exception ex)
         {
             DiagLog($"SendAsync {table} EXCEPTION: {ex.GetType().Name}: {ex.Message}");
         }
+
+        return false;
     }
 
-    private static bool ShouldRetryWithoutConflict(int statusCode, string body, string? onConflict)
+    private static async Task<bool> SendRowsAsync(
+        string table,
+        IEnumerable<object> rows,
+        string? onConflict = null)
     {
-        if (string.IsNullOrWhiteSpace(onConflict))
+        List<object> rowList = rows.ToList();
+        if (rowList.Count == 0)
         {
-            return false;
+            return true;
         }
 
-        return statusCode is 401 or 403 &&
-               body.Contains("permission denied", StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(onConflict) &&
+            await SendAsync(table, rowList, onConflict, duplicateIsSuccess: false))
+        {
+            return true;
+        }
+
+        if (await SendAsync(table, rowList, duplicateIsSuccess: false))
+        {
+            return true;
+        }
+
+        bool allUploaded = true;
+        foreach (object row in rowList)
+        {
+            allUploaded &= await SendAsync(table, row);
+        }
+
+        return allUploaded;
     }
 
-    private static void EnqueueSend(Func<Task> work)
+    private static void EnqueueRealtime(Func<Task> work) =>
+        EnqueueSend(work, RealtimeQueueLock, ref _realtimeQueue);
+
+    private static void EnqueueBackground(Func<Task> work) =>
+        EnqueueSend(work, BackgroundQueueLock, ref _backgroundQueue);
+
+    private static void EnqueueSend(Func<Task> work, object queueLock, ref Task queue)
     {
         Task queued;
-        lock (QueueLock)
+        lock (queueLock)
         {
-            _sendQueue = _sendQueue
+            queue = queue
                 .ContinueWith(
                     static async (previous, state) =>
                     {
@@ -162,7 +232,7 @@ internal static class TelemetryReporter
                     TaskContinuationOptions.None,
                     TaskScheduler.Default)
                 .Unwrap();
-            queued = _sendQueue;
+            queued = queue;
         }
 
         queued.ContinueWith(static t => { _ = t.Exception; },

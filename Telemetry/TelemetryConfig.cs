@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using MegaCrit.Sts2.Core.Debug;
 
@@ -57,7 +58,7 @@ internal static partial class TelemetryConfig
             return;
         }
 
-        string json = File.ReadAllText(manifestPath);
+        string json = File.ReadAllText(manifestPath, Encoding.UTF8);
         using JsonDocument doc = JsonDocument.Parse(json);
         JsonElement root = doc.RootElement;
 
@@ -160,7 +161,7 @@ internal static partial class TelemetryConfig
             {
                 if (!File.Exists(path)) continue;
 
-                using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path));
+                using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
                 JsonElement root = doc.RootElement;
                 string? rawVersion = null;
                 if (root.TryGetProperty("version", out JsonElement versionEl))
@@ -267,7 +268,7 @@ internal static partial class TelemetryConfig
             string path = Path.Combine(dir, "telemetry_installation_id.txt");
             if (File.Exists(path))
             {
-                string existing = File.ReadAllText(path).Trim();
+                string existing = File.ReadAllText(path, Encoding.UTF8).Trim();
                 if (Guid.TryParse(existing, out Guid parsed))
                 {
                     InstallationId = parsed.ToString("D");
@@ -276,7 +277,7 @@ internal static partial class TelemetryConfig
             }
 
             InstallationId = Guid.NewGuid().ToString("D");
-            File.WriteAllText(path, InstallationId);
+            File.WriteAllText(path, InstallationId, Encoding.UTF8);
         }
         catch
         {

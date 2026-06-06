@@ -60,10 +60,10 @@ internal static class CrashReporter
         try
         {
             string trace = ex.StackTrace ?? "";
-            bool isOurFault = IsOurCodeInvolved(ex, trace);
+            bool isOurFault = IsOurCodeAtFault(ex, trace);
 
             // Only report crashes that involve our code or registered third-party enchantment mods.
-            if (!isOurFault && !IsRegisteredThirdPartyCodeInvolved(trace))
+            if (!isOurFault && !IsOurCodeInvolved(ex, trace) && !IsRegisteredThirdPartyCodeInvolved(trace))
             {
                 return;
             }
@@ -141,6 +141,41 @@ internal static class CrashReporter
             trace.Contains($" at {ns}.", StringComparison.Ordinal) ||
             trace.Contains($" in {ns}.", StringComparison.Ordinal));
     }
+
+    private static bool IsOurCodeAtFault(Exception ex, string trace)
+    {
+        Type exceptionType = ex.GetType();
+        if (IsRelevantType(exceptionType))
+        {
+            return true;
+        }
+
+        foreach (string frame in GetStackFrames(trace).Take(8))
+        {
+            if (IsExternalDescriptionFormattingFrame(frame))
+            {
+                return false;
+            }
+
+            if (RelevantNamespaces.Any(ns => frame.Contains($" at {ns}.", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> GetStackFrames(string trace) =>
+        trace.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(static line => line.Trim());
+
+    private static bool IsExternalDescriptionFormattingFrame(string frame) =>
+        frame.Contains("SmartFormat", StringComparison.Ordinal) ||
+        frame.Contains("LocManager.SmartFormat", StringComparison.Ordinal) ||
+        frame.Contains("CardModel.GetDescriptionForPile", StringComparison.Ordinal) ||
+        frame.Contains("CardModel.GetDescriptionForUpgradePreview", StringComparison.Ordinal) ||
+        frame.Contains("PowerModel.GetDumbHoverTip", StringComparison.Ordinal);
 
     private static bool IsRegisteredThirdPartyCodeInvolved(string trace)
     {

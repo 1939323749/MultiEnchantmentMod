@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Godot;
@@ -913,7 +914,7 @@ internal static class MultiEnchantmentSaveSidecar
     {
         try
         {
-            result = JsonSerializer.Deserialize<SidecarDocument>(File.ReadAllText(path), JsonOptions)
+            result = JsonSerializer.Deserialize<SidecarDocument>(File.ReadAllText(path, Encoding.UTF8), JsonOptions)
                 ?? new SidecarDocument();
             return true;
         }
@@ -942,7 +943,7 @@ internal static class MultiEnchantmentSaveSidecar
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllText(path, JsonSerializer.Serialize(document, JsonOptions));
+            File.WriteAllText(path, JsonSerializer.Serialize(document, JsonOptions), Encoding.UTF8);
             dirty = false;
         }
         catch (Exception ex)

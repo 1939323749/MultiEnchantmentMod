@@ -37,6 +37,7 @@ internal static class TelemetryCollector
     private static int _runIndex;
     private static int _runCombatCount;
     private static bool _runEndedSent;
+    private static TelemetryHashCache? _runtimeHashCache;
 
     private static readonly JsonSerializerOptions HashJsonOptions = new()
     {
@@ -150,26 +151,123 @@ internal static class TelemetryCollector
                 environment_hash = environmentHash,
             };
 
-            // Reference tables: cards, relics, powers — one row per entity (upsert).
+            TelemetryHashCache cache = ReadHashCache();
+            bool uploadEnvironment = !string.Equals(cache.EnvironmentHash, environmentHash, StringComparison.Ordinal);
+            bool uploadCatalog = !string.Equals(cache.CatalogHash, catalogHash, StringComparison.Ordinal);
+            string locale = SafeGetLocale();
+
             List<object>? refCards = null, refRelics = null, refPowers = null;
-            try { refCards = CollectCardCatalog(); }
+            string? refCardsHash = null, refRelicsHash = null, refPowersHash = null;
+            try
+            {
+                refCards = CollectCardCatalog();
+                refCardsHash = ComputeReferenceCatalogHash("cards", TelemetryConfig.GameVersion, locale, refCards);
+            }
             catch (Exception ex) { DiagLog($"CollectCardCatalog FAILED: {ex}"); }
-            try { refRelics = CollectRelicCatalog(); }
+            try
+            {
+                refRelics = CollectRelicCatalog();
+                refRelicsHash = ComputeReferenceCatalogHash("relics", TelemetryConfig.GameVersion, locale, refRelics);
+            }
             catch (Exception ex) { DiagLog($"CollectRelicCatalog FAILED: {ex}"); }
-            try { refPowers = CollectPowerCatalog(); }
+            try
+            {
+                refPowers = CollectPowerCatalog();
+                refPowersHash = ComputeReferenceCatalogHash("powers", TelemetryConfig.GameVersion, locale, refPowers);
+            }
             catch (Exception ex) { DiagLog($"CollectPowerCatalog FAILED: {ex}"); }
             DiagLog($"Ref counts: cards={refCards?.Count}, relics={refRelics?.Count}, powers={refPowers?.Count}");
 
-            // Send order: environment (dedup) → catalog → session → ref tables.
-            _sessionSent = true;
-            return TelemetryReporter.SendStartupDataAsync(
-                environmentData, sessionData, catalogData, refCards, refRelics, refPowers);
+            bool uploadRefCards = refCardsHash != null &&
+                !string.Equals(cache.ReferenceCardsHash, refCardsHash, StringComparison.Ordinal);
+            bool uploadRefRelics = refRelicsHash != null &&
+                !string.Equals(cache.ReferenceRelicsHash, refRelicsHash, StringComparison.Ordinal);
+            bool uploadRefPowers = refPowersHash != null &&
+                !string.Equals(cache.ReferencePowersHash, refPowersHash, StringComparison.Ordinal);
+
+            return SendStartupDataAndUpdateCacheAsync(
+                uploadEnvironment ? environmentData : null,
+                sessionData,
+                uploadCatalog ? catalogData : null,
+                uploadRefCards ? refCards : null,
+                uploadRefRelics ? refRelics : null,
+                uploadRefPowers ? refPowers : null,
+                cache,
+                environmentHash,
+                catalogHash,
+                refCardsHash,
+                refRelicsHash,
+                refPowersHash);
         }
         catch (Exception ex)
         {
             _sessionSendStarted = false;
             DiagLog($"SendSessionDataOnce FAILED before queueing startup data: {ex}");
             return Task.CompletedTask;
+        }
+    }
+
+    private static async Task SendStartupDataAndUpdateCacheAsync(
+        object? environmentData,
+        object sessionData,
+        object? catalogData,
+        List<object>? refCards,
+        List<object>? refRelics,
+        List<object>? refPowers,
+        TelemetryHashCache cache,
+        string environmentHash,
+        string catalogHash,
+        string? refCardsHash,
+        string? refRelicsHash,
+        string? refPowersHash)
+    {
+        TelemetryReporter.StartupUploadResult result =
+            await TelemetryReporter.SendStartupDataAsync(
+                environmentData, sessionData, catalogData, refCards, refRelics, refPowers);
+
+        if (result.SessionUploaded)
+        {
+            _sessionSent = true;
+        }
+        else
+        {
+            _sessionSendStarted = false;
+        }
+
+        bool changed = false;
+        if (environmentData == null || result.EnvironmentUploaded)
+        {
+            cache.EnvironmentHash = environmentHash;
+            changed = true;
+        }
+
+        if (catalogData == null || result.ModCatalogUploaded)
+        {
+            cache.CatalogHash = catalogHash;
+            changed = true;
+        }
+
+        if (refCardsHash != null && (refCards == null || result.RefCardsUploaded))
+        {
+            cache.ReferenceCardsHash = refCardsHash;
+            changed = true;
+        }
+
+        if (refRelicsHash != null && (refRelics == null || result.RefRelicsUploaded))
+        {
+            cache.ReferenceRelicsHash = refRelicsHash;
+            changed = true;
+        }
+
+        if (refPowersHash != null && (refPowers == null || result.RefPowersUploaded))
+        {
+            cache.ReferencePowersHash = refPowersHash;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            WriteHashCache(cache);
         }
     }
 
@@ -591,6 +689,16 @@ internal static class TelemetryCollector
         });
     }
 
+    private static TelemetryHashCache ReadHashCache()
+    {
+        return _runtimeHashCache ??= new TelemetryHashCache();
+    }
+
+    private static void WriteHashCache(TelemetryHashCache cache)
+    {
+        _runtimeHashCache = cache;
+    }
+
     // ── Data collection helpers ──────────────────────────────────────────
 
     private static List<object> CollectLoadedMods()
@@ -919,9 +1027,9 @@ internal static class TelemetryCollector
                 string? extraCardText = null;
                 if (canonical != null)
                 {
-                    try { title = canonical.Title?.GetFormattedText(); } catch { }
-                    try { description = canonical.Description?.GetFormattedText(); } catch { }
-                    try { extraCardText = canonical.DynamicExtraCardText?.GetFormattedText(); } catch { }
+                    title = ReadSafeFormattedOrRawText(canonical, "Title");
+                    description = ReadPlainTextMember(canonical, "Description");
+                    extraCardText = ReadPlainTextMember(canonical, "DynamicExtraCardText");
                 }
 
                 string stackBehavior;
@@ -1067,10 +1175,8 @@ internal static class TelemetryCollector
                     if (card == null) { failCount++; continue; }
 
                     ContentSourceInfo source = GetContentSourceInfo(type);
-                    string? title = null;
-                    string? description = null;
-                    try { title = card.Title; } catch { }
-                    try { description = Truncate(card.Description?.GetFormattedText(), 300); } catch { }
+                    string? title = ReadPlainTextMember(card, "Title");
+                    string? description = Truncate(ReadPlainTextMember(card, "Description"), 300);
                     int energyCost = ReadCatalogEnergyCost(card, type);
 
                     result.Add(new
@@ -1161,26 +1267,11 @@ internal static class TelemetryCollector
                     if (relic == null) continue;
 
                     string? id = GetPropertyOrFieldValue(relic, "Id")?.ToString();
-                    // Title/Description are LocString objects — must call GetFormattedText()
-                    string? title = null;
-                    try
-                    {
-                        object? titleObj = GetPropertyOrFieldValue(relic, "Title");
-                        title = titleObj?.GetType().GetMethod("GetFormattedText", Type.EmptyTypes)
-                            ?.Invoke(titleObj, null)?.ToString();
-                        if (string.IsNullOrEmpty(title))
-                            title = titleObj?.ToString();
-                    }
-                    catch { }
-                    string? description = null;
-                    try
-                    {
-                        description = Truncate(
-                            ReadHoverTipDescription(relic, "HoverTip") ??
-                            ReadFormattedText(relic, "DynamicDescription", "Description", "EventDescription"),
-                            300);
-                    }
-                    catch { }
+                    string? title = ReadSafeFormattedOrRawText(relic, "Title");
+                    string? description = Truncate(
+                        ReadPlainHoverTipDescription(relic, "HoverTip") ??
+                        ReadPlainTextMember(relic, "DynamicDescription", "Description", "EventDescription"),
+                        300);
                     string? rarity = GetPropertyOrFieldValue(relic, "Rarity")?.ToString();
 
                     if (string.IsNullOrEmpty(id)) continue;
@@ -1279,10 +1370,9 @@ internal static class TelemetryCollector
                     if (power == null) { failCount++; continue; }
 
                     string? id = power.Id.ToString();
-                    string? title = ReadFormattedText(power, "Title");
+                    string? title = ReadSafeFormattedOrRawText(power, "Title");
                     string? description = Truncate(
-                        ReadHoverTipDescription(power, "DumbHoverTip") ??
-                        ReadFormattedText(power, "Description", "SmartDescription", "RemoteDescription"),
+                        ReadPlainTextMember(power, "Description", "SmartDescription", "RemoteDescription"),
                         300);
 
                     if (string.IsNullOrEmpty(id)) id = type.Name;
@@ -1415,7 +1505,7 @@ internal static class TelemetryCollector
         {
             if (!File.Exists(path)) return null;
 
-            string text = File.ReadAllText(path);
+            string text = File.ReadAllText(path, Encoding.UTF8);
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(text);
@@ -1510,8 +1600,7 @@ internal static class TelemetryCollector
 
     private static string SafeGetEnchantTitle(EnchantmentModel enchantment)
     {
-        try { return enchantment.Title?.GetFormattedText() ?? enchantment.GetType().Name; }
-        catch { return enchantment.GetType().Name; }
+        return ReadSafeFormattedOrRawText(enchantment, "Title") ?? enchantment.GetType().Name;
     }
 
     private static bool TryGetRelevantModAssembly(
@@ -1814,6 +1903,94 @@ internal static class TelemetryCollector
         return null;
     }
 
+    private static string? ReadSafeFormattedOrRawText(object? target, params string[] memberNames)
+    {
+        foreach (string memberName in memberNames)
+        {
+            object? value = GetPropertyOrFieldValue(target, memberName);
+            string? plain = ExtractPlainText(value);
+            if (!string.IsNullOrWhiteSpace(plain))
+            {
+                return plain;
+            }
+
+            string? formatted = TryFormatTextWithoutThrowing(value);
+            if (!string.IsNullOrWhiteSpace(formatted))
+            {
+                return formatted;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadPlainTextMember(object? target, params string[] memberNames)
+    {
+        foreach (string memberName in memberNames)
+        {
+            string? text = ExtractPlainText(GetPropertyOrFieldValue(target, memberName));
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractPlainText(object? value)
+    {
+        if (value == null)
+        {
+            return null;
+        }
+
+        if (value is string s)
+        {
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        foreach (string memberName in new[]
+                 {
+                     "RawText",
+                     "Raw",
+                     "Text",
+                     "Value",
+                     "Key",
+                     "LocalizationKey",
+                     "LocKey",
+                 })
+        {
+            object? memberValue = GetPropertyOrFieldValue(value, memberName);
+            if (memberValue is string memberText && !string.IsNullOrWhiteSpace(memberText))
+            {
+                return memberText;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryFormatTextWithoutThrowing(object? value)
+    {
+        if (value == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            string? formatted = value.GetType()
+                .GetMethod("GetFormattedText", Type.EmptyTypes)
+                ?.Invoke(value, null)?.ToString();
+            return string.IsNullOrWhiteSpace(formatted) ? null : formatted;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static int ReadCatalogEnergyCost(CardModel card, Type type)
     {
         try
@@ -1862,10 +2039,10 @@ internal static class TelemetryCollector
         return null;
     }
 
-    private static string? ReadHoverTipDescription(object? target, string memberName)
+    private static string? ReadPlainHoverTipDescription(object? target, string memberName)
     {
         object? hoverTip = GetPropertyOrFieldValue(target, memberName);
-        string? description = GetPropertyOrFieldValue(hoverTip, "Description")?.ToString();
+        string? description = ExtractPlainText(GetPropertyOrFieldValue(hoverTip, "Description"));
         return string.IsNullOrEmpty(description) ? null : description;
     }
 
@@ -1873,6 +2050,46 @@ internal static class TelemetryCollector
         values
             .OrderBy(static value => JsonSerializer.Serialize(value, HashJsonOptions), StringComparer.Ordinal)
             .ToList();
+
+    private static string ComputeReferenceCatalogHash(
+        string catalogName,
+        string gameVersion,
+        string locale,
+        IEnumerable<object>? rows)
+    {
+        List<IReadOnlyDictionary<string, object?>> stableRows = (rows ?? Enumerable.Empty<object>())
+            .Select(static row => RemoveVolatileReferenceFields(row))
+            .OrderBy(static row => JsonSerializer.Serialize(row, HashJsonOptions), StringComparer.Ordinal)
+            .ToList();
+
+        return ComputeStableHash(new
+        {
+            catalog = catalogName,
+            game_version = gameVersion,
+            locale,
+            rows = stableRows,
+        });
+    }
+
+    private static IReadOnlyDictionary<string, object?> RemoveVolatileReferenceFields(object row)
+    {
+        var values = new SortedDictionary<string, object?>(StringComparer.Ordinal);
+        foreach (PropertyInfo property in row.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (property.GetIndexParameters().Length != 0) continue;
+
+            string name = JsonNamingPolicy.SnakeCaseLower.ConvertName(property.Name);
+            if (string.Equals(name, "updated_at", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            try { values[name] = property.GetValue(row); }
+            catch { /* best-effort hash input */ }
+        }
+
+        return values;
+    }
 
     private static string ComputeStableHash(object value)
     {
@@ -1939,5 +2156,14 @@ internal static class TelemetryCollector
         public string Assembly { get; init; } = "";
         public string AssemblyVersion { get; init; } = "";
         public bool IsThirdParty { get; init; }
+    }
+
+    private sealed class TelemetryHashCache
+    {
+        public string? EnvironmentHash { get; set; }
+        public string? CatalogHash { get; set; }
+        public string? ReferenceCardsHash { get; set; }
+        public string? ReferenceRelicsHash { get; set; }
+        public string? ReferencePowersHash { get; set; }
     }
 }
