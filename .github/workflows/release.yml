@@ -17,7 +17,6 @@ permissions:
 env:
   MOD_NAME: MultiEnchantmentMod
   DOTNET_VERSION: '9.0.x'
-  NEXUS_GAME_DOMAIN: slaythespire2
 
 jobs:
   build:
@@ -122,26 +121,24 @@ jobs:
         with:
           name: mod-package
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '9.0.x'
-
-      - name: Install unex
-        run: dotnet tool install -g BUTR.NexusUploader
+      - name: Determine Nexus upload metadata
+        id: nexus
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP_FILE="${{ env.MOD_NAME }}-${GITHUB_REF_NAME}.zip"
+          ls -lh "$ZIP_FILE"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "zip_file=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Upload to NexusMods
-        continue-on-error: true
-        env:
-          UNEX_APIKEY: ${{ secrets.NEXUS_API_KEY }}
-          UNEX_SESSION_COOKIE: ${{ secrets.NEXUS_COOKIES }}
-          UNEX_GAME: ${{ env.NEXUS_GAME_DOMAIN }}
-          UNEX_MODID: ${{ secrets.NEXUS_MOD_ID }}
-          UNEX_FILEDESCRIPTION: "Automated release"
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          ZIP_FILE="${{ env.MOD_NAME }}-${VERSION}.zip"
-          ls -lh "$ZIP_FILE"
-          unex upload "$UNEX_MODID" "$ZIP_FILE" \
-            -v "${VERSION}" \
-            -f "${{ env.MOD_NAME }} ${VERSION}"
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.7
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_group_id: ${{ secrets.NEXUS_FILE_GROUP_ID }}
+          filename: ${{ steps.nexus.outputs.zip_file }}
+          version: ${{ steps.nexus.outputs.version }}
+          display_name: ${{ env.MOD_NAME }} ${{ github.ref_name }}
+          description: "Automated release from GitHub Actions"
+          file_category: main
+          archive_existing_file: true
+          allow_mod_manager_download: true
