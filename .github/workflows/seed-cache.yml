@@ -2,6 +2,9 @@ name: Seed Game DLL Cache
 
 # Run manually to upload game DLLs into the Actions cache.
 # After running, the main release workflow can build without the game installed.
+#
+# Usage: commit DLLs to .ci/gamedlls/, push, trigger this workflow,
+#        then remove DLLs from git (they stay in the cache).
 
 on:
   workflow_dispatch:
@@ -11,34 +14,20 @@ permissions:
 
 jobs:
   seed:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Locate Steam game DLLs
-        id: find
-        shell: pwsh
+      - name: Verify DLLs exist in repo
         run: |
-          $steamPaths = @(
-            "$env:ProgramFiles (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64",
-            "D:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64"
-          )
-          foreach ($p in $steamPaths) {
-            if (Test-Path "$p\sts2.dll") {
-              Write-Host "Found game DLLs at: $p"
-              echo "GAME_DLL_DIR=$p" >> $env:GITHUB_OUTPUT
-              exit 0
-            }
-          }
-          Write-Error "Game DLLs not found. Install the game on this runner or adjust paths."
-          exit 1
-
-      - name: Copy DLLs to cache directory
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path .ci/gamedlls
-          Copy-Item "${{ steps.find.outputs.GAME_DLL_DIR }}\sts2.dll" .ci/gamedlls/
-          Copy-Item "${{ steps.find.outputs.GAME_DLL_DIR }}\0Harmony.dll" .ci/gamedlls/
+          for dll in sts2.dll 0Harmony.dll; do
+            if [ ! -f ".ci/gamedlls/$dll" ]; then
+              echo "::error::$dll not found in .ci/gamedlls/. Commit it first."
+              exit 1
+            fi
+          done
+          echo "Found DLLs:"
+          ls -lh .ci/gamedlls/
 
       - name: Save to cache
         uses: actions/cache/save@v4
