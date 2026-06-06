@@ -284,6 +284,7 @@ internal static class MultiEnchantmentPatches
                 object? pendingLoss = PendingLossField?.GetValue(__instance);
                 __state = AccessTools.Property(pendingLoss?.GetType(), "State")
                     ?.GetValue(pendingLoss) as ICombatState;
+                Telemetry.TelemetryCollector.NoteCombatLossProcessing(__state?.RunState);
             }
             catch { /* telemetry must never crash the game */ }
         }

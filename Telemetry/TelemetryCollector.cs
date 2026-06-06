@@ -36,7 +36,10 @@ internal static class TelemetryCollector
     private static string? _runCharacterName;
     private static int _runIndex;
     private static int _runCombatCount;
+    private static bool _runStartedInCurrentSession;
     private static bool _runEndedSent;
+    private static bool _pendingLossCombatForRunSummary;
+    private static string? _pendingLossRunIdentityKey;
     private static TelemetryHashCache? _runtimeHashCache;
 
     private static readonly JsonSerializerOptions HashJsonOptions = new()
@@ -360,17 +363,12 @@ internal static class TelemetryCollector
             }
             catch { /* context is best-effort */ }
 
-            // Game state snapshot — only collected when there's enchantment activity
-            // to keep zero-enchant combats lightweight.
             List<string>? deckCardIds = null;
             List<string>? relicIds = null;
             string? roomName = null;
-            if (_totalApplications > 0 || _enchantedCardPlays > 0)
-            {
-                try { deckCardIds = CollectDeckCardIds(combatState); } catch { }
-                try { relicIds = CollectRelicIds(combatState); } catch { }
-                try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
-            }
+            try { deckCardIds = CollectDeckCardIds(combatState); } catch { }
+            try { relicIds = CollectRelicIds(combatState); } catch { }
+            try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
 
             TelemetryReporter.SendCombat(new
             {
@@ -430,6 +428,12 @@ internal static class TelemetryCollector
             {
                 _runCombatCount++;
             }
+
+            if (!combatWon)
+            {
+                _pendingLossCombatForRunSummary = false;
+                _pendingLossRunIdentityKey = null;
+            }
         }
         catch { /* telemetry must never crash the game */ }
     }
@@ -448,6 +452,21 @@ internal static class TelemetryCollector
                 ? "victory"
                 : isAbandoned ? "abandoned" : "death";
             SendRunSummary(summaryRunState, outcome);
+        }
+        catch { /* telemetry must never crash the game */ }
+    }
+
+    internal static void NoteCombatLossProcessing(IRunState? runState)
+    {
+        if (!TelemetryConfig.IsEnabled || runState == null) return;
+
+        try
+        {
+            EnsureRun(runState);
+            if (_runId == null) return;
+
+            _pendingLossCombatForRunSummary = true;
+            _pendingLossRunIdentityKey = _runIdentityKey;
         }
         catch { /* telemetry must never crash the game */ }
     }
@@ -485,7 +504,10 @@ internal static class TelemetryCollector
         _runCharacterName = TryGetCharacterNameFromRunState(runState);
         _runIndex++;
         _runCombatCount = 0;
+        _runStartedInCurrentSession = IsEarlyRunFloor(runState);
         _runEndedSent = false;
+        _pendingLossCombatForRunSummary = false;
+        _pendingLossRunIdentityKey = null;
     }
 
     private static void SendRunSummary(IRunState? runState, string outcome)
@@ -496,6 +518,15 @@ internal static class TelemetryCollector
         int? ascension = null;
         try { finalFloor = runState?.TotalFloor; } catch { }
         try { ascension = runState?.AscensionLevel; } catch { }
+
+        int? combatCount = _runStartedInCurrentSession ? _runCombatCount : null;
+        if (_runStartedInCurrentSession &&
+            string.Equals(outcome, "death", StringComparison.OrdinalIgnoreCase) &&
+            _pendingLossCombatForRunSummary &&
+            string.Equals(_pendingLossRunIdentityKey, _runIdentityKey, StringComparison.Ordinal))
+        {
+            combatCount = (combatCount ?? 0) + 1;
+        }
 
         TelemetryReporter.SendRun(new
         {
@@ -510,7 +541,7 @@ internal static class TelemetryCollector
             final_floor = finalFloor,
             character = GetCharacterName(runState),
             ascension,
-            combat_count = _runCombatCount,
+            combat_count = combatCount,
             game_version = TelemetryConfig.GameVersion,
             mod_version = TelemetryConfig.ModVersion,
             api_version = MultiEnchantmentApiVersion.Current,
@@ -1639,6 +1670,18 @@ internal static class TelemetryCollector
         return value?.ToString();
     }
 
+    private static bool IsEarlyRunFloor(IRunState runState)
+    {
+        try
+        {
+            return runState.TotalFloor <= 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static string BuildRunIdentityKey(IRunState runState)
     {
         string seed = GetRunSeed(runState) ?? "unknown-seed";
@@ -1938,16 +1981,28 @@ internal static class TelemetryCollector
         return null;
     }
 
+    private static string? ReadPlainTextFieldMember(object? target, params string[] memberNames)
+    {
+        foreach (string memberName in memberNames)
+        {
+            string? text = ExtractPlainText(GetFieldValue(target, memberName));
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
     private static string? ReadPowerDescription(PowerModel power)
     {
-        return ReadSafeFormattedOrRawText(
-                   power,
-                   "Description",
-                   "SmartDescription",
-                   "RemoteDescription",
-                   "EventDescription") ??
-               ReadPlainHoverTipDescription(power, "HoverTip") ??
-               ReadPlainHoverTipDescription(power, "HoverTips");
+        return ReadPlainTextFieldMember(
+            power,
+            "Description",
+            "SmartDescription",
+            "RemoteDescription",
+            "EventDescription");
     }
 
     private static string? ExtractPlainText(object? value)
@@ -2051,14 +2106,36 @@ internal static class TelemetryCollector
         return null;
     }
 
+    private static object? GetFieldValue(object? target, string name)
+    {
+        if (target == null) return null;
+
+        for (Type? type = target.GetType(); type != null; type = type.BaseType)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            try
+            {
+                FieldInfo? field = type.GetField(name, flags)
+                    ?? type.GetField($"<{name}>k__BackingField", flags);
+                if (field != null)
+                {
+                    return field.GetValue(target);
+                }
+            }
+            catch { /* best-effort reflection */ }
+        }
+
+        return null;
+    }
+
     private static string? ReadPlainHoverTipDescription(object? target, string memberName)
     {
-        object? hoverTip = GetPropertyOrFieldValue(target, memberName);
+        object? hoverTip = GetFieldValue(target, memberName);
         if (hoverTip is IEnumerable enumerable and not string)
         {
             foreach (object? item in enumerable)
             {
-                string? itemDescription = ReadSafeFormattedOrRawText(item, "Description");
+                string? itemDescription = ReadPlainTextFieldMember(item, "Description");
                 if (!string.IsNullOrWhiteSpace(itemDescription))
                 {
                     return itemDescription;
@@ -2068,7 +2145,7 @@ internal static class TelemetryCollector
             return null;
         }
 
-        string? description = ReadSafeFormattedOrRawText(hoverTip, "Description");
+        string? description = ReadPlainTextFieldMember(hoverTip, "Description");
         return string.IsNullOrWhiteSpace(description) ? null : description;
     }
 
