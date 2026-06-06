@@ -77,24 +77,31 @@ jobs:
       - name: Package mod
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          PKG_DIR="${{ env.MOD_NAME }}"
-          mkdir -p "$PKG_DIR"
+          STAGE="_release/${{ env.MOD_NAME }}"
+          rm -rf _release && mkdir -p "$STAGE"
 
           # DLL from publish output
-          find . -path '*/bin/Release/*/publish/*.dll' -name '${{ env.MOD_NAME }}.dll' \
-            -exec cp {} "$PKG_DIR/" \;
+          DLL=$(find . -path '*/publish/${{ env.MOD_NAME }}.dll' -print -quit)
+          if [ -z "$DLL" ]; then
+            echo "::error::${{ env.MOD_NAME }}.dll not found in publish output"
+            find . -name '*.dll' -path '*/publish/*' || true
+            exit 1
+          fi
+          cp "$DLL" "$STAGE/"
 
           # Mod manifest
-          cp ${{ env.MOD_NAME }}.json "$PKG_DIR/"
+          cp ${{ env.MOD_NAME }}.json "$STAGE/"
 
           # PCK: use pre-built from repo if available, otherwise skip
           if [ -f ".ci/${{ env.MOD_NAME }}.pck" ]; then
-            cp ".ci/${{ env.MOD_NAME }}.pck" "$PKG_DIR/"
+            cp ".ci/${{ env.MOD_NAME }}.pck" "$STAGE/"
           else
             echo "::warning::No pre-built .pck found in .ci/ — release zip will not include localization resources."
           fi
 
-          zip -r "${{ env.MOD_NAME }}-${VERSION}.zip" "$PKG_DIR/"
+          cd _release
+          zip -r "../${{ env.MOD_NAME }}-${VERSION}.zip" "${{ env.MOD_NAME }}/"
+          cd ..
           echo "ZIP_PATH=${{ env.MOD_NAME }}-${VERSION}.zip" >> "$GITHUB_ENV"
           echo "ZIP_NAME=${{ env.MOD_NAME }}-${VERSION}.zip" >> "$GITHUB_ENV"
 
@@ -125,8 +132,13 @@ jobs:
         with:
           name: mod-package
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
       - name: Install unex
-        run: pip install unex
+        run: dotnet tool install -g BUTR.NexusUploader
 
       - name: Upload to NexusMods
         env:
@@ -136,10 +148,8 @@ jobs:
           UNEX_MODID: ${{ secrets.NEXUS_MOD_ID }}
         run: |
           VERSION=${GITHUB_REF_NAME}
-          unex upload "${{ env.ZIP_NAME }}" \
-            --game "$UNEX_GAME" \
-            --mod-id "$UNEX_MODID" \
-            --file-name "${{ env.MOD_NAME }} ${VERSION}" \
-            --version "${VERSION}" \
-            --category main \
-            --description "Automated release ${VERSION}"
+          unex upload "$UNEX_MODID" "${{ env.ZIP_NAME }}" \
+            -v "${VERSION}" \
+            -f "${{ env.MOD_NAME }} ${VERSION}" \
+            -c main \
+            -t "Automated release ${VERSION}"
