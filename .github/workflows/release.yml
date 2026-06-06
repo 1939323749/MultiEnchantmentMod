@@ -89,13 +89,6 @@ jobs:
           # Mod manifest
           cp ${{ env.MOD_NAME }}.json "$STAGE/"
 
-          # PCK: use pre-built from repo if available, otherwise skip
-          if [ -f ".ci/${{ env.MOD_NAME }}.pck" ]; then
-            cp ".ci/${{ env.MOD_NAME }}.pck" "$STAGE/"
-          else
-            echo "::warning::No pre-built .pck found in .ci/ — release zip will not include localization resources."
-          fi
-
           cd _release
           zip -r "../${{ env.MOD_NAME }}-${VERSION}.zip" "${{ env.MOD_NAME }}/"
           cd ..
