@@ -38,6 +38,8 @@ internal static partial class MultiEnchantmentSupport
     {
         IncludeFields = true,
     };
+    private static readonly object ExtraCardTextWarningLock = new();
+    private static readonly HashSet<Type> ExtraCardTextFormatWarningTypes = new();
 
     public static void SerializeAdditionalEnchantments(CardModel card, SerializableCard save)
     {
@@ -278,14 +280,133 @@ internal static partial class MultiEnchantmentSupport
     private static bool TryGetFormattedExtraCardText(EnchantmentModel? enchantment, out string text)
     {
         text = string.Empty;
-        string? formatted = enchantment?.DynamicExtraCardText?.GetFormattedText();
-        if (string.IsNullOrEmpty(formatted))
+        object? extraCardText = enchantment?.DynamicExtraCardText;
+        if (extraCardText == null)
         {
             return false;
         }
 
-        text = formatted;
+        try
+        {
+            string? formatted = enchantment?.DynamicExtraCardText?.GetFormattedText();
+            if (!string.IsNullOrWhiteSpace(formatted))
+            {
+                text = formatted;
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogExtraCardTextFormatFailureOnce(enchantment, ex);
+        }
+
+        string? raw = ExtractPlainLocalizationText(extraCardText);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        text = raw;
         return true;
+    }
+
+    private static void LogExtraCardTextFormatFailureOnce(EnchantmentModel? enchantment, Exception ex)
+    {
+        Type? enchantmentType = enchantment?.GetType();
+        if (enchantmentType == null)
+        {
+            return;
+        }
+
+        lock (ExtraCardTextWarningLock)
+        {
+            if (!ExtraCardTextFormatWarningTypes.Add(enchantmentType))
+            {
+                return;
+            }
+        }
+
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] Failed to format extra card text for {enchantmentType.FullName}; " +
+            $"falling back to raw text when available. {ex.GetType().Name}: {ex.Message}");
+    }
+
+    private static string? ExtractPlainLocalizationText(object? value)
+    {
+        if (value == null)
+        {
+            return null;
+        }
+
+        if (value is string s)
+        {
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        string? rawText = TryInvokeLocalizationStringMethod(value, "GetRawText");
+        if (!string.IsNullOrWhiteSpace(rawText))
+        {
+            return rawText;
+        }
+
+        foreach (string memberName in new[]
+                 {
+                     "RawText",
+                     "Raw",
+                     "Text",
+                     "Value",
+                     "Key",
+                     "LocalizationKey",
+                     "LocKey",
+                 })
+        {
+            object? memberValue = GetLocalizationPropertyOrFieldValue(value, memberName);
+            if (memberValue is string memberText && !string.IsNullOrWhiteSpace(memberText))
+            {
+                return memberText;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryInvokeLocalizationStringMethod(object? value, string methodName)
+    {
+        if (value == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            string? text = value.GetType()
+                .GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, Type.EmptyTypes)
+                ?.Invoke(value, null)?.ToString();
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object? GetLocalizationPropertyOrFieldValue(object? target, string memberName)
+    {
+        if (target == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            Type type = target.GetType();
+            return type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(target)
+                   ?? type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(target);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string FormatExtraCardTextLine(EnchantmentModel enchantment, string text) =>

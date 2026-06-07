@@ -1341,14 +1341,32 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void DescriptionForPilePostfix(CardModel __instance, ref string __result)
     {
-        MultiEnchantmentSupport.AppendAdditionalExtraCardText(__instance, ref __result);
+        try
+        {
+            MultiEnchantmentSupport.AppendAdditionalExtraCardText(__instance, ref __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to append extra card text for Card={__instance.Id}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.GetDescriptionForUpgradePreview))]
     [HarmonyPostfix]
     private static void DescriptionForUpgradePreviewPostfix(CardModel __instance, ref string __result)
     {
-        MultiEnchantmentSupport.AppendAdditionalExtraCardText(__instance, ref __result);
+        try
+        {
+            MultiEnchantmentSupport.AppendAdditionalExtraCardText(__instance, ref __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to append upgrade preview extra card text for Card={__instance.Id}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), "get_ShouldGlowGold")]
@@ -2110,7 +2128,16 @@ internal static class MultiEnchantmentPatches
         // visual pass so formatter-generated extra card text is recomputed when enchantments change.
         if (__instance.Model != null && __instance.IsNodeReady())
         {
-            __instance.UpdateVisuals(__instance.Model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+            try
+            {
+                __instance.UpdateVisuals(__instance.Model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Failed to refresh card visuals after enchantment change for Card={__instance.Model.Id}. " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+            }
         }
     }
 

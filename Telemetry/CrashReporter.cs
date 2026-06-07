@@ -152,11 +152,6 @@ internal static class CrashReporter
 
         foreach (string frame in GetStackFrames(trace).Take(8))
         {
-            if (IsExternalDescriptionFormattingFrame(frame))
-            {
-                return false;
-            }
-
             if (RelevantNamespaces.Any(ns => frame.Contains($" at {ns}.", StringComparison.Ordinal)))
             {
                 return true;
@@ -169,13 +164,6 @@ internal static class CrashReporter
     private static IEnumerable<string> GetStackFrames(string trace) =>
         trace.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
             .Select(static line => line.Trim());
-
-    private static bool IsExternalDescriptionFormattingFrame(string frame) =>
-        frame.Contains("SmartFormat", StringComparison.Ordinal) ||
-        frame.Contains("LocManager.SmartFormat", StringComparison.Ordinal) ||
-        frame.Contains("CardModel.GetDescriptionForPile", StringComparison.Ordinal) ||
-        frame.Contains("CardModel.GetDescriptionForUpgradePreview", StringComparison.Ordinal) ||
-        frame.Contains("PowerModel.GetDumbHoverTip", StringComparison.Ordinal);
 
     private static bool IsRegisteredThirdPartyCodeInvolved(string trace)
     {
