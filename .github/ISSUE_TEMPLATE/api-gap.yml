@@ -1,0 +1,103 @@
+name: API 缺口 / API gap
+description: 请求新的 hook、查询 API、异步入口或数据暴露。
+title: "[API Gap]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        如果你在做第三方 mod 时发现现有接口不够用，请用这个模板。
+
+        中文或英文都可以。请尽量写清楚“你想做什么”和“当前 API 卡在哪里”。
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 你想实现什么？ / What are you trying to build?
+      description: 描述你的 mod、卡牌、附魔或联动效果。
+      placeholder: 例如：我想让一个附魔在任意卡被升级前修改升级结果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 你已经试过哪些 API？ / What have you tried?
+      description: 写下你用过的 hook、查询 API、同步/异步附魔 API，或者贴出最小代码片段。
+      placeholder: 例如：试过 OnCardPlayed / OnAnyCardPlayed / EnchantAsync，但拿不到某个上下文。
+      render: csharp
+    validations:
+      required: true
+
+  - type: textarea
+    id: gap
+    attributes:
+      label: 当前缺口是什么？ / What is missing?
+      description: 说明现有 API 为什么不够用。最好写清楚你需要哪个时间点、哪个对象、哪些数据。
+      placeholder: 例如：需要在附魔应用前读取候选卡列表，并允许取消或替换目标卡。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关范围 / Related area
+      multiple: true
+      options:
+        - Enchant / EnchantAsync
+        - BeforeCardEnchanted / AfterCardEnchanted
+        - Card event hooks
+        - Lifecycle / scope
+        - Stack behavior
+        - Query API
+        - Extra Icon
+        - Save / restore
+        - Compatibility / analyzer
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sync_async
+    attributes:
+      label: 你需要同步还是异步？ / Sync or async?
+      description: 如果会发命令、等待选择、自动打出，通常需要异步 API。
+      options:
+        - Not sure / 不确定
+        - Sync is enough / 同步就够
+        - Async is required / 需要异步
+        - Both sync and async are needed / 同步和异步都需要
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_api
+    attributes:
+      label: 你期望的 API 形状 / Proposed API shape
+      description: 可选。可以写伪代码、方法签名、事件上下文字段，或者你希望暴露的数据。
+      placeholder: |
+        public static IDisposable BeforeSomething(Func<SomethingContext, Task> handler);
+      render: csharp
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 当前绕法 / Current workaround
+      description: 可选。说明你现在是否在用 Harmony patch、反射、复制代码或其他不稳定方案。
+      placeholder: 例如：现在只能 patch 游戏方法，但和其他 mod 冲突风险很高。
+
+  - type: input
+    id: versions
+    attributes:
+      label: 版本信息 / Versions
+      description: 填写 MultiEnchantmentMod、游戏版本，以及你的 mod 名称/版本。
+      placeholder: MultiEnchantmentMod v2.3.5, Slay the Spire 2 0.106.1, MyMod v1.0.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: links_logs
+    attributes:
+      label: 相关链接或日志 / Links or logs
+      description: 可选。可以贴 GitHub 仓库、代码位置、`godot.log` 片段或截图。
+      placeholder: 请尽量只贴相关片段。
