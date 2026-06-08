@@ -33,3 +33,11 @@ dll_backup_*/
 
 # Telemetry secrets (use .env.props.template as reference)
 .env.props
+
+# Local Supabase migration drafts from dashboard experiments.
+supabase/migrations/20260606180712_fix_run_journey_and_active_players.sql
+supabase/migrations/20260606181022_restrict_active_player_view_grants.sql
+supabase/migrations/20260606183000_merge_journey_by_run_key.sql
+supabase/migrations/20260606184500_nullable_resumed_run_summary_counts.sql
+supabase/migrations/20260607195820_add_multiplayer_telemetry.sql
+supabase/migrations/20260608014000_optimize_deck_at_enchantment_view.sql
