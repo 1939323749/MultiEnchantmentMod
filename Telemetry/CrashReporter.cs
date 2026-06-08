@@ -16,6 +16,12 @@ internal static class CrashReporter
         "MultiEnchantmentScopeSupport",
     };
 
+    private static readonly string[] BridgeFrameMarkers =
+    {
+        "PostfixAsync(",
+        "PrefixAsync(",
+    };
+
     private static string? _sessionId;
     private static string? _lastHookName;
     private static bool _installed;
@@ -62,8 +68,12 @@ internal static class CrashReporter
             string trace = ex.StackTrace ?? "";
             bool isOurFault = IsOurCodeAtFault(ex, trace);
 
-            // Only report crashes that involve our code or registered third-party enchantment mods.
-            if (!isOurFault && !IsOurCodeInvolved(ex, trace) && !IsRegisteredThirdPartyCodeInvolved(trace))
+            // Only report crashes that originate in our code. Async postfix bridge frames are
+            // ignored for attribution: if the original game/other-mod task faults, our await
+            // continuation naturally appears below it in the stack trace, but that does not make
+            // it our crash. Third-party enchantment handler failures are tracked through
+            // SafeInvoker/combat telemetry instead of this global crash table.
+            if (!isOurFault)
             {
                 return;
             }
@@ -138,19 +148,6 @@ internal static class CrashReporter
         catch { /* crash reporter must never itself crash */ }
     }
 
-    private static bool IsOurCodeInvolved(Exception ex, string trace)
-    {
-        Type exceptionType = ex.GetType();
-        if (IsRelevantType(exceptionType))
-        {
-            return true;
-        }
-
-        return RelevantNamespaces.Any(ns =>
-            trace.Contains($" at {ns}.", StringComparison.Ordinal) ||
-            trace.Contains($" in {ns}.", StringComparison.Ordinal));
-    }
-
     private static bool IsOurCodeAtFault(Exception ex, string trace)
     {
         Type exceptionType = ex.GetType();
@@ -159,42 +156,42 @@ internal static class CrashReporter
             return true;
         }
 
-        foreach (string frame in GetStackFrames(trace).Take(8))
+        foreach (string frame in GetStackFrames(trace).Take(16))
         {
-            if (RelevantNamespaces.Any(ns => frame.Contains($" at {ns}.", StringComparison.Ordinal)))
+            if (IsIgnorableRuntimeFrame(frame))
             {
-                return true;
+                continue;
             }
+
+            return IsRelevantFrame(frame) && !IsBridgeFrame(frame);
         }
 
         return false;
     }
+
+    private static bool IsRelevantFrame(string frame) =>
+        RelevantNamespaces.Any(ns => frame.Contains($" at {ns}.", StringComparison.Ordinal));
+
+    private static bool IsBridgeFrame(string frame)
+    {
+        if (!BridgeFrameMarkers.Any(marker => frame.Contains(marker, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        return frame.Contains("MultiEnchantmentPatches.", StringComparison.Ordinal) ||
+               frame.Contains("MultiEnchantmentTransformPatches.", StringComparison.Ordinal) ||
+               frame.Contains("MultiEnchantmentStackPatches.", StringComparison.Ordinal);
+    }
+
+    private static bool IsIgnorableRuntimeFrame(string frame) =>
+        frame.StartsWith("at System.", StringComparison.Ordinal) ||
+        frame.StartsWith("at Microsoft.", StringComparison.Ordinal) ||
+        frame.StartsWith("--- End of stack trace", StringComparison.Ordinal);
 
     private static IEnumerable<string> GetStackFrames(string trace) =>
         trace.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
             .Select(static line => line.Trim());
-
-    private static bool IsRegisteredThirdPartyCodeInvolved(string trace)
-    {
-        try
-        {
-            foreach (Type type in Api.Internal.EnchantmentRegistry.GetAllRegisteredTypes())
-            {
-                if (IsRelevantType(type))
-                {
-                    continue;
-                }
-
-                if (StackTraceContainsType(trace, type))
-                {
-                    return true;
-                }
-            }
-        }
-        catch { }
-
-        return false;
-    }
 
     private static bool IsRelevantType(Type type)
     {
@@ -202,20 +199,6 @@ internal static class CrashReporter
         return fullName != null && RelevantNamespaces.Any(ns =>
             fullName.Equals(ns, StringComparison.Ordinal) ||
             fullName.StartsWith(ns + ".", StringComparison.Ordinal));
-    }
-
-    private static bool StackTraceContainsType(string trace, Type type)
-    {
-        string? fullName = type.FullName;
-        if (string.IsNullOrWhiteSpace(fullName))
-        {
-            return false;
-        }
-
-        string? assemblyName = type.Assembly.GetName().Name;
-        return trace.Contains($" at {fullName}.", StringComparison.Ordinal) ||
-               (!string.IsNullOrWhiteSpace(assemblyName) &&
-                trace.Contains($" in {assemblyName}", StringComparison.Ordinal));
     }
 
     private static string GetOsPlatform()
