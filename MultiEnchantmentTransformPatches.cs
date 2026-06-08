@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Relics;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod;
 
@@ -25,7 +26,7 @@ internal static class MultiEnchantmentTransformPatches
         // Preserve the vanilla transform result, then copy over every compatible enchantment.
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting ArchaicTooth.GetTranscendenceTransformedCard. " +
-            $"StarterCard={starterCard.Id}");
+            $"StarterCard={GetSafeCardId(starterCard)}");
         try
         {
             if (!TryGetTranscendenceTransformedCardWithMultiEnchantments(__instance, starterCard, out CardModel? result))
@@ -40,7 +41,7 @@ internal static class MultiEnchantmentTransformPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] ArchaicTooth.GetTranscendenceTransformedCard failed for StarterCard={starterCard.Id}. " +
+                $"[MultiEnchantment] ArchaicTooth.GetTranscendenceTransformedCard failed for StarterCard={GetSafeCardId(starterCard)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -55,7 +56,7 @@ internal static class MultiEnchantmentTransformPatches
         // Preserve the vanilla Maul creation/upgrade rules, then copy compatible enchantments.
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting Claws.CreateMaulFromOriginal. " +
-            $"Original={original.Id} ForPreview={forPreview}");
+            $"Original={GetSafeCardId(original)} ForPreview={forPreview}");
         try
         {
             __result = CreateMaulFromOriginalWithMultiEnchantments(__instance, original, forPreview);
@@ -64,7 +65,7 @@ internal static class MultiEnchantmentTransformPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Claws.CreateMaulFromOriginal failed for Card={original.Id}. " +
+                $"[MultiEnchantment] Claws.CreateMaulFromOriginal failed for Card={GetSafeCardId(original)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }

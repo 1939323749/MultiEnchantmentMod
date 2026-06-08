@@ -45,6 +45,7 @@ using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
 using MultiEnchantmentMod.Api;
 using MultiEnchantmentMod.Api.Internal;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod;
 
@@ -64,76 +65,187 @@ internal static class MultiEnchantmentPatches
     private static readonly FieldInfo? NDeckHistoryEntryEnchantmentImageField =
         AccessTools.Field(typeof(NDeckHistoryEntry), "_enchantmentImage");
 
+    private static void LogNonFatalPatchFailure(string context, Exception ex)
+    {
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] {context} failed. {ex.GetType().Name}: {ex.Message}");
+    }
+
+    private static void TryRefreshExtraEnchantmentTabs(NCard? cardNode, string context)
+    {
+        if (cardNode == null)
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"{context} for Card={GetSafeCardNodeModelId(cardNode)}", ex);
+        }
+    }
+
+    private static void TryRefreshExtraTabTransformOnly(NCard? cardNode, string context)
+    {
+        if (cardNode == null)
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentSupport.RefreshExtraTabTransformOnly(cardNode);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"{context} for Card={GetSafeCardNodeModelId(cardNode)}", ex);
+        }
+    }
+
+    private static void TryRefreshExtraTabsPreferInPlace(NCard? cardNode, string context)
+    {
+        if (cardNode == null)
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentSupport.RefreshExtraTabsPreferInPlace(cardNode);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"{context} for Card={GetSafeCardNodeModelId(cardNode)}", ex);
+        }
+    }
+
+    private static void TryClearCardUi(NCard? cardNode, string context)
+    {
+        if (cardNode == null)
+        {
+            return;
+        }
+
+        try
+        {
+            MultiEnchantmentSupport.ClearCardUi(cardNode);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"{context} for Card={GetSafeCardNodeModelId(cardNode)}", ex);
+        }
+    }
+
+    private static void SendCombatTelemetryAndReset(bool combatWon, IRunState runState, ICombatState? combatState)
+    {
+        try
+        {
+            Telemetry.TelemetryCollector.SendCombatData(
+                combatWon: combatWon,
+                runState: runState,
+                combatState: combatState);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure(
+                $"Hook.AfterCombatEnd combat telemetry send (combatWon={combatWon})", ex);
+        }
+        finally
+        {
+            try
+            {
+                Telemetry.TelemetryCollector.ResetForCombat();
+            }
+            catch (Exception ex)
+            {
+                LogNonFatalPatchFailure("Hook.AfterCombatEnd combat telemetry reset", ex);
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
     private static void CanEnchantPostfix(EnchantmentModel __instance, CardModel card, ref bool __result)
     {
-        // Base-game source: EnchantmentModel.CanEnchant.
-        // Run as a postfix so other mods' prefixes / transpilers on CanEnchant can take effect:
-        //   - If vanilla allowed it, tighten with the mod's PassesAdditionalCanEnchantRules.
-        //   - If vanilla rejected it ONLY because of the "same enchantment type already present"
-        //     clause, re-allow when the stack behavior permits duplicates. All other vanilla
-        //     rejection reasons are re-checked to make sure we don't override unrelated rejections
-        //     from vanilla or upstream patches.
-
-        if (__result)
+        try
         {
-            if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card))
+            // Base-game source: EnchantmentModel.CanEnchant.
+            // Run as a postfix so other mods' prefixes / transpilers on CanEnchant can take effect:
+            //   - If vanilla allowed it, tighten with the mod's PassesAdditionalCanEnchantRules.
+            //   - If vanilla rejected it ONLY because of the "same enchantment type already present"
+            //     clause, re-allow when the stack behavior permits duplicates. All other vanilla
+            //     rejection reasons are re-checked to make sure we don't override unrelated rejections
+            //     from vanilla or upstream patches.
+
+            if (__result)
             {
-                __result = false;
-                MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CanEnchant postfix tightening. " +
-                    $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=AdditionalRules");
+                if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card))
+                {
+                    __result = false;
+                    MultiEnchantmentMod.Logger.Info(
+                        $"[MultiEnchantment] CanEnchant postfix tightening. " +
+                        $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)} Result=False Reason=AdditionalRules");
+                    return;
+                }
+
+                // Vanilla CanEnchant only inspects card.Enchantment (the primary slot) — it cannot
+                // see the mod's extra enchantments. So a DisallowDuplicate type that already exists
+                // ONLY as an extra (with no primary) slips past vanilla's "same exists" check.
+                // Tighten here: if the type already exists anywhere on the card and the stack policy
+                // doesn't permit merging, reject. Stack-allowing types (MergeAmount /
+                // DuplicateInstance / ExistenceStack) skip this branch because CanStackOnto is true.
+                if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) &&
+                    !MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType()))
+                {
+                    __result = false;
+                    MultiEnchantmentMod.Logger.Info(
+                        $"[MultiEnchantment] CanEnchant postfix tightening. " +
+                        $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)} Result=False Reason=DuplicateExtra");
+                }
                 return;
             }
 
-            // Vanilla CanEnchant only inspects card.Enchantment (the primary slot) — it cannot
-            // see the mod's extra enchantments. So a DisallowDuplicate type that already exists
-            // ONLY as an extra (with no primary) slips past vanilla's "same exists" check.
-            // Tighten here: if the type already exists anywhere on the card and the stack policy
-            // doesn't permit merging, reject. Stack-allowing types (MergeAmount /
-            // DuplicateInstance / ExistenceStack) skip this branch because CanStackOnto is true.
-            if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) &&
-                !MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType()))
+            // Re-verify the non-stack vanilla rejection reasons; if any of them still fail, leave
+            // __result alone so unrelated rejections (from vanilla or other patches) survive.
+            CardType type = card.Type;
+            // STS2 0.106.x vanilla CanEnchant rejects enum values 4..6: Status, Curse, Quest.
+            if (type is CardType.Status or CardType.Curse or CardType.Quest) return;
+            if (!__instance.CanEnchantCardType(type)) return;
+            CardPile? pile = card.Pile;
+            if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return;
+            if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card)) return;
+
+            // Vanilla's only remaining rejection reason is the occupied primary slot (clause ④ of
+            // EnchantmentModel.CanEnchant). If that clause does NOT hold, vanilla itself would have
+            // returned true — so this false came from another mod's patch for a reason we can't see.
+            // Leave it alone rather than relaxing it.
+            bool vanillaPrimarySlotRejection =
+                card.Enchantment != null &&
+                (!__instance.IsStackable || card.Enchantment.GetType() != __instance.GetType());
+            if (!vanillaPrimarySlotRejection) return;
+
+            // All other vanilla checks pass. The remaining vanilla failure is that the primary
+            // enchantment slot is already occupied. Re-enable when this is either a new extra
+            // enchantment type or a supported same-type stack.
+            bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) ||
+                MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
+            if (relaxed)
             {
-                __result = false;
+                __result = true;
                 MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CanEnchant postfix tightening. " +
-                    $"Card={card.Id} Enchantment={__instance.Id} Result=False Reason=DuplicateExtra");
+                    $"[MultiEnchantment] CanEnchant postfix re-allowed via stack policy. " +
+                    $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)}");
             }
-            return;
         }
-
-        // Re-verify the non-stack vanilla rejection reasons; if any of them still fail, leave
-        // __result alone so unrelated rejections (from vanilla or other patches) survive.
-        CardType type = card.Type;
-        if (type is CardType.Status or CardType.Curse or CardType.Quest) return;
-        if (!__instance.CanEnchantCardType(type)) return;
-        CardPile? pile = card.Pile;
-        if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return;
-        if (!MultiEnchantmentStackSupport.PassesAdditionalCanEnchantRules(__instance, card)) return;
-
-        // Vanilla's only remaining rejection reason is the occupied primary slot (clause ④ of
-        // EnchantmentModel.CanEnchant). If that clause does NOT hold, vanilla itself would have
-        // returned true — so this false came from another mod's patch for a reason we can't see.
-        // Leave it alone rather than relaxing it.
-        bool vanillaPrimarySlotRejection =
-            card.Enchantment != null &&
-            (!__instance.IsStackable || card.Enchantment.GetType() != __instance.GetType());
-        if (!vanillaPrimarySlotRejection) return;
-
-        // All other vanilla checks pass. The remaining vanilla failure is that the primary
-        // enchantment slot is already occupied. Re-enable when this is either a new extra
-        // enchantment type or a supported same-type stack.
-        bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) ||
-            MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
-        if (relaxed)
+        catch (Exception ex)
         {
-            __result = true;
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] CanEnchant postfix re-allowed via stack policy. " +
-                $"Card={card.Id} Enchantment={__instance.Id}");
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] CanEnchant postfix failed for Card={GetSafeCardId(card)} " +
+                $"Enchantment={GetSafeEnchantmentId(__instance)}. Keeping base result={__result}. {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -144,7 +256,7 @@ internal static class MultiEnchantmentPatches
     {
         MultiEnchantmentMod.Logger.Info(
             $"[MultiEnchantment] Intercepting CardCmd.Enchant. " +
-            $"Card={card.Id} Enchantment={enchantment.Id} Amount={amount}");
+            $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)} Amount={amount}");
         try
         {
             // CardCmd.Enchant is the vanilla API. It often re-fires the same enchantment from
@@ -155,7 +267,7 @@ internal static class MultiEnchantmentPatches
             if (existing != null && !MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType()))
             {
                 MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CardCmd.Enchant skipped — {enchantment.Id} already on card {card.Id} (vanilla re-apply). " +
+                    $"[MultiEnchantment] CardCmd.Enchant skipped — {GetSafeEnchantmentId(enchantment)} already on card {GetSafeCardId(card)} (vanilla re-apply). " +
                     $"Returning existing instance.");
                 __result = existing;
                 return false;
@@ -170,7 +282,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] CardCmd.Enchant failed for Card={card.Id} Enchantment={enchantment.Id}. " +
+                $"[MultiEnchantment] CardCmd.Enchant failed for Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -194,22 +306,32 @@ internal static class MultiEnchantmentPatches
     [HarmonyPrefix]
     private static bool ClearEnchantmentPrefix(CardModel card)
     {
-        EnchantmentModel? primary = card.Enchantment;
-        if (primary == null)
+        try
         {
-            MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: true);
+            EnchantmentModel? primary = card.Enchantment;
+            if (primary == null)
+            {
+                MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: true);
+                return false;
+            }
+
+            MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: false);
+            MultiEnchantmentSupport.RemoveEnchantmentInternal(
+                card,
+                primary,
+                RemovalReason.CardCleared,
+                bypassVeto: true,
+                refreshCard: true,
+                triggerChanged: true);
             return false;
         }
-
-        MultiEnchantmentSupport.ClearAdditionalEnchantments(card, triggerChanged: false);
-        MultiEnchantmentSupport.RemoveEnchantmentInternal(
-            card,
-            primary,
-            RemovalReason.CardCleared,
-            bypassVeto: true,
-            refreshCard: true,
-            triggerChanged: true);
-        return false;
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] CardCmd.ClearEnchantment failed for Card={GetSafeCardId(card)}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeCombatStart))]
@@ -225,22 +347,36 @@ internal static class MultiEnchantmentPatches
         // enchantment registry must be considered closed. Late registrations after this point
         // would change semantics for cards already cached / normalized inside the running combat.
         // SealRegistryIfNeeded is idempotent (Interlocked-guarded), so subsequent combats no-op.
-        Api.Internal.AssemblyScanner.SealRegistryIfNeeded();
-
-        await original;
-        if (combatState == null)
+        try
         {
-            return;
+            Api.Internal.AssemblyScanner.SealRegistryIfNeeded();
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.BeforeCombatStart registry seal", ex);
         }
 
-        MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
-        Telemetry.TelemetryCollector.SendSessionDataOnce();
-        Telemetry.TelemetryCollector.NoteCombatStarting(runState);
-        // NOTE: ResetForCombat is intentionally NOT called here. It is called at the end of
-        // combat (after SendCombatData) so that enchantments applied between combats — such as
-        // those from relic pickups (e.g. VampireCrawlerMod's gem relics calling
-        // MultiEnchantmentApi.Enchant in AfterObtained) — are captured in the next combat's data
-        // instead of being silently discarded.
+        await original;
+        try
+        {
+            if (combatState == null)
+            {
+                return;
+            }
+
+            MultiEnchantmentScopeSupport.OnCombatStarted(combatState);
+            Telemetry.TelemetryCollector.SendSessionDataOnce();
+            Telemetry.TelemetryCollector.NoteCombatStarting(runState);
+            // NOTE: ResetForCombat is intentionally NOT called here. It is called at the end of
+            // combat (after SendCombatData) so that enchantments applied between combats — such as
+            // those from relic pickups (e.g. VampireCrawlerMod's gem relics calling
+            // MultiEnchantmentApi.Enchant in AfterObtained) — are captured in the next combat's data
+            // instead of being silently discarded.
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.BeforeCombatStart postfix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCombatEnd))]
@@ -253,16 +389,19 @@ internal static class MultiEnchantmentPatches
     private static async Task AfterCombatEndPostfixAsync(Task original, IRunState runState, ICombatState? combatState)
     {
         await original;
-        MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
+        try
+        {
+            MultiEnchantmentScopeSupport.OnCombatEnded(runState, combatState);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.AfterCombatEnd scope cleanup", ex);
+        }
 
         // In STS2 0.106.x this hook is called from CombatManager.EndCombatInternal,
         // which is the victory path. Hook.AfterCombatVictory runs later, so a flag set
         // there is one combat late.
-        Telemetry.TelemetryCollector.SendCombatData(
-            combatWon: true,
-            runState: runState,
-            combatState: combatState);
-        Telemetry.TelemetryCollector.ResetForCombat();
+        SendCombatTelemetryAndReset(combatWon: true, runState, combatState);
     }
 
     [HarmonyPatch]
@@ -300,13 +439,13 @@ internal static class MultiEnchantmentPatches
             try
             {
                 MultiEnchantmentScopeSupport.OnCombatEnded(__state.RunState, __state);
-                Telemetry.TelemetryCollector.SendCombatData(
-                    combatWon: false,
-                    runState: __state.RunState,
-                    combatState: __state);
-                Telemetry.TelemetryCollector.ResetForCombat();
             }
-            catch { /* telemetry must never crash the game */ }
+            catch (Exception ex)
+            {
+                LogNonFatalPatchFailure("CombatManager.ProcessPendingLoss scope cleanup", ex);
+            }
+
+            SendCombatTelemetryAndReset(combatWon: false, __state.RunState, __state);
         }
     }
 
@@ -660,17 +799,24 @@ internal static class MultiEnchantmentPatches
     private static async Task AfterCardEnteredCombatPostfixAsync(Task original, ICombatState combatState, CardModel card)
     {
         await original;
-        // Fires OnCombatStart for cards that join combat AFTER BeforeCombatStart's initial
-        // sweep (relic-copies, Madness-generated cards, etc.). The scope support method gates
-        // on whether the sweep has completed, so deck-setup additions stay handled by the
-        // sweep itself — see OnCardEnteredCombat for the timing rationale.
-        MultiEnchantmentScopeSupport.OnCardEnteredCombat(combatState, card);
+        try
+        {
+            // Fires OnCombatStart for cards that join combat AFTER BeforeCombatStart's initial
+            // sweep (relic-copies, Madness-generated cards, etc.). The scope support method gates
+            // on whether the sweep has completed, so deck-setup additions stay handled by the
+            // sweep itself — see OnCardEnteredCombat for the timing rationale.
+            MultiEnchantmentScopeSupport.OnCardEnteredCombat(combatState, card);
 
-        // Phase 3a T3a.5: separate lifecycle that fires on every entry, including deck-setup
-        // sweep. OnCardEnteredCombat lifecycle and OnCombatStart lifecycle are distinct — the
-        // former is the per-event "card just landed in combat" signal, the latter is the
-        // once-per-combat-per-card "initialize" signal. IsActive is enforced inside Dispatch.
-        MultiEnchantmentScopeSupport.DispatchOnCardEnteredCombatForCard(card);
+            // Phase 3a T3a.5: separate lifecycle that fires on every entry, including deck-setup
+            // sweep. OnCardEnteredCombat lifecycle and OnCombatStart lifecycle are distinct — the
+            // former is the per-event "card just landed in combat" signal, the latter is the
+            // once-per-combat-per-card "initialize" signal. IsActive is enforced inside Dispatch.
+            MultiEnchantmentScopeSupport.DispatchOnCardEnteredCombatForCard(card);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardEnteredCombat postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
@@ -683,28 +829,35 @@ internal static class MultiEnchantmentPatches
     private static async Task AfterTurnEndPostfixAsync(Task original, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
     {
         await original;
-        // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
-        // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
-        // just Side. The file's `using Godot;` makes the unqualified name resolve to
-        // Godot.Side (the UI margin enum Left/Top/Right/Bottom), which leaves Harmony with a
-        // parameter-type mismatch, so UntilTurnEnds and LingerForTurns(N) silently never fire
-        // at turn end.
-        if (side == CombatSide.Player)
+        try
         {
-            MultiEnchantmentScopeSupport.OnPlayerTurnEnded(combatState);
-
-            // Fan the player-scoped AfterPlayerTurnEnd activation trigger out to every card-owned
-            // enchantment in PlayerCombatState. Combined with the v2 MaxActivations / RemoveWhen
-            // surface this lets authors express "expire after 2 turn endings" cleanly.
-            foreach (Player player in ((combatState as CombatState)?.Players
-                         ?? Enumerable.Empty<Player>()).ToList())
+            // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
+            // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
+            // just Side. The file's `using Godot;` makes the unqualified name resolve to
+            // Godot.Side (the UI margin enum Left/Top/Right/Bottom), which leaves Harmony with a
+            // parameter-type mismatch, so UntilTurnEnds and LingerForTurns(N) silently never fire
+            // at turn end.
+            if (side == CombatSide.Player)
             {
-                if (player.IsActiveForHooks && player.PlayerCombatState != null)
+                MultiEnchantmentScopeSupport.OnPlayerTurnEnded(combatState);
+
+                // Fan the player-scoped AfterPlayerTurnEnd activation trigger out to every card-owned
+                // enchantment in PlayerCombatState. Combined with the v2 MaxActivations / RemoveWhen
+                // surface this lets authors express "expire after 2 turn endings" cleanly.
+                foreach (Player player in ((combatState as CombatState)?.Players
+                             ?? Enumerable.Empty<Player>()).ToList())
                 {
-                    MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
-                        player, ActivationTrigger.AfterPlayerTurnEnd);
+                    if (player.IsActiveForHooks && player.PlayerCombatState != null)
+                    {
+                        MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+                            player, ActivationTrigger.AfterPlayerTurnEnd);
+                    }
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterTurnEnd postfix for Side={side}", ex);
         }
     }
 
@@ -718,26 +871,33 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterCardPlayedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
         await original;
-        // Goopy already drives its own AfterCardPlayed counter via HandleGoopyAfterCardPlayed.
-        // For the general v2 surface, fan the AfterCardPlayed activation trigger out to every
-        // enchantment on the played card so MaxActivations(N, AfterCardPlayed) / RemoveWhen
-        // checks can count it.
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
-            cardPlay?.Card, ActivationTrigger.AfterCardPlayed);
-
-        // Phase 3a T3a.1: fan the OnCardPlayed lifecycle out to active enchantments on the
-        // played card. Distinct from the activation-trigger fan-out above: that one drives
-        // scope counters (MaxActivations / RemoveWhen), this one delivers an author-facing
-        // event for arbitrary side-effects.
-        MultiEnchantmentScopeSupport.DispatchOnCardPlayedForCard(cardPlay?.Card);
-
-        // Phase 4: broadcast OnAnyCardPlayed to every enchantment in combat that opted in.
-        MultiEnchantmentScopeSupport.DispatchOnAnyCardPlayedBroadcast(cardPlay?.Card, combatState);
-
-        // Telemetry: track enchanted card plays.
-        if (cardPlay?.Card != null)
+        try
         {
-            Telemetry.TelemetryCollector.NoteEnchantedCardPlayed(cardPlay.Card);
+            // Goopy already drives its own AfterCardPlayed counter via HandleGoopyAfterCardPlayed.
+            // For the general v2 surface, fan the AfterCardPlayed activation trigger out to every
+            // enchantment on the played card so MaxActivations(N, AfterCardPlayed) / RemoveWhen
+            // checks can count it.
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+                cardPlay?.Card, ActivationTrigger.AfterCardPlayed);
+
+            // Phase 3a T3a.1: fan the OnCardPlayed lifecycle out to active enchantments on the
+            // played card. Distinct from the activation-trigger fan-out above: that one drives
+            // scope counters (MaxActivations / RemoveWhen), this one delivers an author-facing
+            // event for arbitrary side-effects.
+            MultiEnchantmentScopeSupport.DispatchOnCardPlayedForCard(cardPlay?.Card);
+
+            // Phase 4: broadcast OnAnyCardPlayed to every enchantment in combat that opted in.
+            MultiEnchantmentScopeSupport.DispatchOnAnyCardPlayedBroadcast(cardPlay?.Card, combatState);
+
+            // Telemetry: track enchanted card plays.
+            if (cardPlay?.Card != null)
+            {
+                Telemetry.TelemetryCollector.NoteEnchantedCardPlayed(cardPlay.Card);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardPlayed postfix for Card={GetSafeCardId(cardPlay?.Card)}", ex);
         }
     }
 
@@ -751,14 +911,21 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterCardDrawnPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)
     {
         await original;
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
-            card, ActivationTrigger.AfterCardDrawn);
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+                card, ActivationTrigger.AfterCardDrawn);
 
-        // Phase 3a T3a.2: OnCardDrawn lifecycle for active enchantments.
-        MultiEnchantmentScopeSupport.DispatchOnCardDrawnForCard(card);
+            // Phase 3a T3a.2: OnCardDrawn lifecycle for active enchantments.
+            MultiEnchantmentScopeSupport.DispatchOnCardDrawnForCard(card);
 
-        // Phase 4: broadcast OnAnyCardDrawn to every enchantment in combat that opted in.
-        MultiEnchantmentScopeSupport.DispatchOnAnyCardDrawnBroadcast(card, combatState);
+            // Phase 4: broadcast OnAnyCardDrawn to every enchantment in combat that opted in.
+            MultiEnchantmentScopeSupport.DispatchOnAnyCardDrawnBroadcast(card, combatState);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardDrawn postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDrawn))]
@@ -782,8 +949,15 @@ internal static class MultiEnchantmentPatches
         bool fromHandDraw)
     {
         await original;
-        await MultiEnchantmentSupport.DispatchAfterCardDrawnStacked(choiceContext, card, fromHandDraw);
-        await MultiEnchantmentSupport.DispatchAfterAnyCardDrawnStacked(choiceContext, combatState, card, fromHandDraw);
+        try
+        {
+            await MultiEnchantmentSupport.DispatchAfterCardDrawnStacked(choiceContext, card, fromHandDraw);
+            await MultiEnchantmentSupport.DispatchAfterAnyCardDrawnStacked(choiceContext, combatState, card, fromHandDraw);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardDrawn stacked postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardExhausted))]
@@ -796,14 +970,21 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterCardExhaustedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
     {
         await original;
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
-            card, ActivationTrigger.AfterCardExhausted);
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+                card, ActivationTrigger.AfterCardExhausted);
 
-        // Phase 3a T3a.3: OnCardExhausted lifecycle for active enchantments.
-        MultiEnchantmentScopeSupport.DispatchOnCardExhaustedForCard(card);
+            // Phase 3a T3a.3: OnCardExhausted lifecycle for active enchantments.
+            MultiEnchantmentScopeSupport.DispatchOnCardExhaustedForCard(card);
 
-        // Phase 4: broadcast OnAnyCardExhausted to every enchantment in combat that opted in.
-        MultiEnchantmentScopeSupport.DispatchOnAnyCardExhaustedBroadcast(card, combatState);
+            // Phase 4: broadcast OnAnyCardExhausted to every enchantment in combat that opted in.
+            MultiEnchantmentScopeSupport.DispatchOnAnyCardExhaustedBroadcast(card, combatState);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardExhausted postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardDiscarded))]
@@ -816,14 +997,21 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterCardDiscardedPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, CardModel card)
     {
         await original;
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
-            card, ActivationTrigger.AfterCardDiscarded);
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
+                card, ActivationTrigger.AfterCardDiscarded);
 
-        // Phase 3a T3a.4: OnCardDiscarded lifecycle for active enchantments.
-        MultiEnchantmentScopeSupport.DispatchOnCardDiscardedForCard(card);
+            // Phase 3a T3a.4: OnCardDiscarded lifecycle for active enchantments.
+            MultiEnchantmentScopeSupport.DispatchOnCardDiscardedForCard(card);
 
-        // Phase 4: broadcast OnAnyCardDiscarded to every enchantment in combat that opted in.
-        MultiEnchantmentScopeSupport.DispatchOnAnyCardDiscardedBroadcast(card, combatState);
+            // Phase 4: broadcast OnAnyCardDiscarded to every enchantment in combat that opted in.
+            MultiEnchantmentScopeSupport.DispatchOnAnyCardDiscardedBroadcast(card, combatState);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardDiscarded postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterPlayerTurnStart))]
@@ -836,8 +1024,15 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterPlayerTurnStartPostfixAsync(Task original, ICombatState combatState, PlayerChoiceContext choiceContext, Player player)
     {
         await original;
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
-            player, ActivationTrigger.AfterPlayerTurnStart);
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+                player, ActivationTrigger.AfterPlayerTurnStart);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.AfterPlayerTurnStart postfix", ex);
+        }
     }
 
     // === Phase 3c — pile / guard / block bridges ============================================
@@ -852,7 +1047,14 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterCardChangedPilesPostfixAsync(Task original, IRunState runState, ICombatState? combatState, CardModel card, PileType oldPile, AbstractModel? clonedBy)
     {
         await original;
-        MultiEnchantmentScopeSupport.DispatchOnCardChangedPilesForCard(card, oldPile, clonedBy);
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchOnCardChangedPilesForCard(card, oldPile, clonedBy);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterCardChangedPiles postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     // vanilla doesn't expose a per-card AfterCardRetained Hook entry point — only AfterFlush
@@ -879,13 +1081,20 @@ internal static class MultiEnchantmentPatches
         IReadOnlyCollection<CardModel> retainedCards)
     {
         await original;
-        if (retainedCards == null)
+        try
         {
-            return;
+            if (retainedCards == null)
+            {
+                return;
+            }
+            foreach (CardModel card in retainedCards)
+            {
+                MultiEnchantmentScopeSupport.DispatchOnCardRetainedForCard(card);
+            }
         }
-        foreach (CardModel card in retainedCards)
+        catch (Exception ex)
         {
-            MultiEnchantmentScopeSupport.DispatchOnCardRetainedForCard(card);
+            LogNonFatalPatchFailure("Hook.AfterFlush retained-card postfix", ex);
         }
     }
 
@@ -899,8 +1108,15 @@ internal static class MultiEnchantmentPatches
     private static async Task HookBeforeBlockGainedPostfixAsync(Task original, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
     {
         await original;
-        BlockGainContext context = new(creature, amount, cardSource);
-        MultiEnchantmentScopeSupport.DispatchOnBeforeBlockGainedForPlayer(context);
+        try
+        {
+            BlockGainContext context = new(creature, amount, cardSource);
+            MultiEnchantmentScopeSupport.DispatchOnBeforeBlockGainedForPlayer(context);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.BeforeBlockGained postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterBlockGained))]
@@ -913,25 +1129,40 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterBlockGainedPostfixAsync(Task original, ICombatState combatState, Creature creature, decimal amount, ValueProp props, CardModel? cardSource)
     {
         await original;
-        BlockGainContext context = new(creature, amount, cardSource);
-        MultiEnchantmentScopeSupport.DispatchOnBlockGainedForPlayer(context);
+        try
+        {
+            BlockGainContext context = new(creature, amount, cardSource);
+            MultiEnchantmentScopeSupport.DispatchOnBlockGainedForPlayer(context);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterBlockGained postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.ShouldDie))]
     [HarmonyPostfix]
     private static void HookShouldDiePostfix(Creature creature, ref bool __result, ref AbstractModel? preventer)
     {
-        // Guard semantics: vanilla returns true when nothing prevented death. If it already
-        // returned false (some other listener vetoed), don't second-guess. Otherwise, ask the
-        // mod's active enchantments — any single false vetoes.
-        if (!__result)
+        try
         {
-            return;
+            // Guard semantics: vanilla returns true when nothing prevented death. If it already
+            // returned false (some other listener vetoed), don't second-guess. Otherwise, ask the
+            // mod's active enchantments — any single false vetoes.
+            if (!__result)
+            {
+                return;
+            }
+            if (!MultiEnchantmentScopeSupport.DispatchOnShouldDieForCreature(creature, out AbstractModel? modPreventer))
+            {
+                __result = false;
+                preventer = modPreventer;
+            }
         }
-        if (!MultiEnchantmentScopeSupport.DispatchOnShouldDieForCreature(creature, out AbstractModel? modPreventer))
+        catch (Exception ex)
         {
-            __result = false;
-            preventer = modPreventer;
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] Hook.ShouldDie postfix failed. A death-preventing enchantment may not have been consulted. Error: {ex}");
         }
     }
 
@@ -947,10 +1178,17 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterSideTurnStartPostfixAsync(Task original, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
     {
         await original;
-        // Phase 3b T3b.1: bridge to OnSideTurnStart lifecycle. Vanilla fires both for player and
-        // enemy turns; handlers can branch on the side parameter. The existing OnTurnStart
-        // lifecycle remains player-only for backward compatibility.
-        MultiEnchantmentScopeSupport.DispatchOnSideTurnStart(combatState, side);
+        try
+        {
+            // Phase 3b T3b.1: bridge to OnSideTurnStart lifecycle. Vanilla fires both for player and
+            // enemy turns; handlers can branch on the side parameter. The existing OnTurnStart
+            // lifecycle remains player-only for backward compatibility.
+            MultiEnchantmentScopeSupport.DispatchOnSideTurnStart(combatState, side);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterSideTurnStart postfix for Side={side}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeSideTurnStart))]
@@ -963,8 +1201,15 @@ internal static class MultiEnchantmentPatches
     private static async Task HookBeforeSideTurnStartPostfixAsync(Task original, ICombatState combatState, CombatSide side, IReadOnlyList<Creature> participants)
     {
         await original;
-        // Phase 3b T3b.2: bridge to OnBeforeSideTurnStart lifecycle.
-        MultiEnchantmentScopeSupport.DispatchOnBeforeSideTurnStart(combatState, side);
+        try
+        {
+            // Phase 3b T3b.2: bridge to OnBeforeSideTurnStart lifecycle.
+            MultiEnchantmentScopeSupport.DispatchOnBeforeSideTurnStart(combatState, side);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.BeforeSideTurnStart postfix for Side={side}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeAttack))]
@@ -977,9 +1222,16 @@ internal static class MultiEnchantmentPatches
     private static async Task HookBeforeAttackPostfixAsync(Task original, ICombatState combatState, AttackCommand command)
     {
         await original;
-        // Phase 3b T3b.3: bridge to OnBeforeAttack lifecycle. AttackCommand exposes Attacker,
-        // CardSource, Results — handlers filter as needed.
-        MultiEnchantmentScopeSupport.DispatchOnBeforeAttack(combatState, command);
+        try
+        {
+            // Phase 3b T3b.3: bridge to OnBeforeAttack lifecycle. AttackCommand exposes Attacker,
+            // CardSource, Results — handlers filter as needed.
+            MultiEnchantmentScopeSupport.DispatchOnBeforeAttack(combatState, command);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.BeforeAttack postfix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterAttack))]
@@ -992,8 +1244,15 @@ internal static class MultiEnchantmentPatches
     private static async Task HookAfterAttackPostfixAsync(Task original, ICombatState combatState, AttackCommand command)
     {
         await original;
-        // Phase 3b T3b.4: bridge to OnAfterAttack lifecycle.
-        MultiEnchantmentScopeSupport.DispatchOnAfterAttack(combatState, command);
+        try
+        {
+            // Phase 3b T3b.4: bridge to OnAfterAttack lifecycle.
+            MultiEnchantmentScopeSupport.DispatchOnAfterAttack(combatState, command);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.AfterAttack postfix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageReceived))]
@@ -1024,22 +1283,29 @@ internal static class MultiEnchantmentPatches
         CardModel? cardSource)
     {
         await original;
-        // Trigger fires when the OWNER of an enchanted card takes damage. Filter to player
-        // owners so an enemy taking damage from an attack doesn't burn through MaxActivations
-        // counters on player-side enchantments.
-        if (target?.Player == null)
+        try
         {
-            return;
+            // Trigger fires when the OWNER of an enchanted card takes damage. Filter to player
+            // owners so an enemy taking damage from an attack doesn't burn through MaxActivations
+            // counters on player-side enchantments.
+            if (target?.Player == null)
+            {
+                return;
+            }
+
+            MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
+                target.Player, ActivationTrigger.AfterDamageReceived);
+
+            // Phase 3a T3a.6: deliver an author-facing OnAfterDamageReceived lifecycle in addition
+            // to the scope-counter activation trigger. Build a single context bundle here so every
+            // enchantment sees the same payload (target / damage breakdown / dealer / card source).
+            DamageReceivedContext context = new(target, result, dealer, cardSource);
+            MultiEnchantmentScopeSupport.DispatchOnAfterDamageReceivedForPlayer(target.Player, context);
         }
-
-        MultiEnchantmentScopeSupport.DispatchActivationTriggerForPlayer(
-            target.Player, ActivationTrigger.AfterDamageReceived);
-
-        // Phase 3a T3a.6: deliver an author-facing OnAfterDamageReceived lifecycle in addition
-        // to the scope-counter activation trigger. Build a single context bundle here so every
-        // enchantment sees the same payload (target / damage breakdown / dealer / card source).
-        DamageReceivedContext context = new(target, result, dealer, cardSource);
-        MultiEnchantmentScopeSupport.DispatchOnAfterDamageReceivedForPlayer(target.Player, context);
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterDamageReceived postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageGiven))]
@@ -1069,13 +1335,20 @@ internal static class MultiEnchantmentPatches
         CardModel? cardSource)
     {
         await original;
-        await MultiEnchantmentSupport.DispatchAfterDamageGivenStacked(
-            choiceContext,
-            cardSource,
-            dealer,
-            results,
-            props,
-            target);
+        try
+        {
+            await MultiEnchantmentSupport.DispatchAfterDamageGivenStacked(
+                choiceContext,
+                cardSource,
+                dealer,
+                results,
+                props,
+                target);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterDamageGiven stacked postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.ModifyEnergyCostInCombat))]
@@ -1083,7 +1356,14 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static void HookModifyEnergyCostInCombatPostfix(ICombatState combatState, CardModel card, ref decimal __result)
     {
-        __result = MultiEnchantmentSupport.ApplyEnergyCostContributions(card, __result);
+        try
+        {
+            __result = MultiEnchantmentSupport.ApplyEnergyCostContributions(card, __result);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.ModifyEnergyCostInCombat postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(MysticLighter), nameof(MysticLighter.ModifyDamageAdditive))]
@@ -1095,20 +1375,27 @@ internal static class MultiEnchantmentPatches
         CardModel? cardSource,
         ref decimal __result)
     {
-        // Base-game source: MysticLighter.ModifyDamageAdditive.
-        // Vanilla checks only cardSource.Enchantment. Re-enable the same bonus when the card's
-        // only enchantments live in the mod's extra slots.
-        if (__result != 0m ||
-            !props.IsPoweredAttack() ||
-            cardSource == null ||
-            cardSource.Enchantment != null ||
-            !MultiEnchantmentSupport.HasAnyEnchantments(cardSource) ||
-            cardSource.Owner != __instance.Owner)
+        try
         {
-            return;
-        }
+            // Base-game source: MysticLighter.ModifyDamageAdditive.
+            // Vanilla checks only cardSource.Enchantment. Re-enable the same bonus when the card's
+            // only enchantments live in the mod's extra slots.
+            if (__result != 0m ||
+                !props.IsPoweredAttack() ||
+                cardSource == null ||
+                cardSource.Enchantment != null ||
+                !MultiEnchantmentSupport.HasAnyEnchantments(cardSource) ||
+                cardSource.Owner != __instance.Owner)
+            {
+                return;
+            }
 
-        __result = __instance.DynamicVars.Damage.IntValue;
+            __result = __instance.DynamicVars.Damage.IntValue;
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"MysticLighter.ModifyDamageAdditive postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(Hook), nameof(Hook.BeforeFlush))]
@@ -1122,19 +1409,33 @@ internal static class MultiEnchantmentPatches
     private static async Task HookBeforeFlushStackedPostfixAsync(Task original, ICombatState combatState, Player player)
     {
         await original;
-        if (player.Creature?.CombatState == null)
+        try
         {
-            return;
-        }
+            if (player.Creature?.CombatState == null)
+            {
+                return;
+            }
 
-        await MultiEnchantmentSupport.DispatchBeforeFlushStacked(null, player);
+            await MultiEnchantmentSupport.DispatchBeforeFlushStacked(null, player);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Hook.BeforeFlush stacked postfix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.ClearEnchantment))]
     [HarmonyPostfix]
     private static void ClearEnchantmentPostfix(CardModel card)
     {
-        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        try
+        {
+            MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"CardCmd.ClearEnchantment postfix for Card={GetSafeCardId(card)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(AbstractModel), nameof(AbstractModel.MutableClone))]
@@ -1170,56 +1471,128 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void ReplayCountPostfix(CardModel __instance, ref int __result)
     {
-        // Stay out of the way when the mod has nothing to add: vanilla already computed
-        // primary.EnchantPlayCount(BaseReplayCount), which equals the mod's result whenever there
-        // are no extras and no merged-slice metadata. Keeping this as a postfix (instead of a
-        // prefix-replace) lets other mods' prefixes / transpilers on GetEnchantedReplayCount run
-        // normally.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
+        try
         {
-            return;
-        }
+            // Stay out of the way when the mod has nothing to add: vanilla already computed
+            // primary.EnchantPlayCount(BaseReplayCount), which equals the mod's result whenever there
+            // are no extras and no merged-slice metadata. Keeping this as a postfix (instead of a
+            // prefix-replace) lets other mods' prefixes / transpilers on GetEnchantedReplayCount run
+            // normally.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
+            {
+                return;
+            }
 
-        __result = MultiEnchantmentSupport.GetReplayCount(__instance);
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
-            $"Card={__instance.Id} Result={__result}");
+            __result = MultiEnchantmentSupport.GetReplayCount(__instance);
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
+                $"Card={GetSafeCardId(__instance)} Result={__result}");
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"CardModel.GetEnchantedReplayCount postfix for Card={GetSafeCardId(__instance)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
     [HarmonyPrefix]
     private static void UpgradePrefix(ref IEnumerable<CardModel> cards, out List<(CardModel Card, int UpgradeLevel)> __state)
     {
-        List<CardModel> snapshot = cards.ToList();
-        cards = snapshot;
-        __state = snapshot
-            .Where(MultiEnchantmentSupport.RequiresMultiEnchantmentLogic)
-            .Select(static card => (card, card.CurrentUpgradeLevel))
-            .ToList();
+        __state = new List<(CardModel Card, int UpgradeLevel)>();
+
+        if (cards == null)
+        {
+            cards = Array.Empty<CardModel>();
+            MultiEnchantmentMod.Logger.Warn("[MultiEnchantment] CardCmd.Upgrade received a null card enumerable; treating it as empty.");
+            return;
+        }
+
+        List<CardModel> snapshot;
+        try
+        {
+            snapshot = cards.ToList();
+            cards = snapshot;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to snapshot CardCmd.Upgrade input; upgrade lifecycle callbacks will be skipped. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+
+        foreach (CardModel card in snapshot)
+        {
+            try
+            {
+                if (card == null)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        "[MultiEnchantment] CardCmd.Upgrade received a null card element; skipping multi-enchantment upgrade callbacks for that element.");
+                    continue;
+                }
+
+                if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+                {
+                    continue;
+                }
+
+                __state.Add((card, card.CurrentUpgradeLevel));
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Failed to snapshot upgrade state for Card={GetSafeCardId(card)}; " +
+                    $"upgrade lifecycle callbacks will be skipped for this card. {ex.GetType().Name}: {ex.Message}");
+            }
+        }
     }
 
     [HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
     [HarmonyPostfix]
-    private static void UpgradePostfix(List<(CardModel Card, int UpgradeLevel)> __state)
+    private static void UpgradePostfix(List<(CardModel Card, int UpgradeLevel)>? __state)
     {
+        if (__state == null)
+        {
+            return;
+        }
+
         foreach ((CardModel card, int upgradeLevel) in __state)
         {
-            if (card.CurrentUpgradeLevel <= upgradeLevel)
-            {
-                continue;
-            }
-
             try
             {
+                int currentUpgradeLevel = card.CurrentUpgradeLevel;
+                if (currentUpgradeLevel <= upgradeLevel)
+                {
+                    continue;
+                }
+
                 MultiEnchantmentScopeSupport.DispatchOnRestoredForCard(card);
                 MultiEnchantmentScopeSupport.DispatchOnCardUpgradedForCard(card);
             }
             catch (Exception ex)
             {
                 MultiEnchantmentMod.Logger.Error(
-                    $"[MultiEnchantment] Failed to refresh extra enchantments after upgrade for Card={card.Id}. " +
+                    $"[MultiEnchantment] Failed to refresh extra enchantments after upgrade for Card={GetSafeCardId(card)}. " +
                     $"Card may temporarily show vanilla-only upgraded state. Error: {ex}");
             }
+        }
+    }
+
+    private static string GetSafeCardNodeModelId(NCard? cardNode)
+    {
+        if (cardNode == null)
+        {
+            return "null";
+        }
+
+        try
+        {
+            return GetSafeCardId(cardNode.Model);
+        }
+        catch
+        {
+            return cardNode.GetType().FullName ?? cardNode.GetType().Name;
         }
     }
 
@@ -1227,20 +1600,20 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void DowngradeInternalPostfix(CardModel __instance)
     {
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
-        {
-            return;
-        }
-
         try
         {
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(__instance))
+            {
+                return;
+            }
+
             MultiEnchantmentSupport.ReapplyMultiEnchantmentsAfterDowngrade(__instance);
             MultiEnchantmentScopeSupport.DispatchOnCardDowngradedForCard(__instance);
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Failed to reapply extra enchantments after downgrade for Card={__instance.Id}. " +
+                $"[MultiEnchantment] Failed to reapply extra enchantments after downgrade for Card={GetSafeCardId(__instance)}. " +
                 $"Card may temporarily show vanilla-only downgraded state. Error: {ex}");
         }
     }
@@ -1249,7 +1622,14 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void ToSerializablePostfix(CardModel __instance, ref SerializableCard __result)
     {
-        MultiEnchantmentSupport.SerializeAdditionalEnchantments(__instance, __result);
+        try
+        {
+            MultiEnchantmentSupport.SerializeAdditionalEnchantments(__instance, __result);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"CardModel.ToSerializable postfix for Card={GetSafeCardId(__instance)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.FromSerializable))]
@@ -1270,7 +1650,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Failed to restore multi-enchantment state for card {__result.Id}. " +
+                $"[MultiEnchantment] Failed to restore multi-enchantment state for card {GetSafeCardId(__result)}. " +
                 $"The card will load with vanilla enchantment state only. A third-party enchantment mod " +
                 $"may have been removed or updated. Error: {ex}");
         }
@@ -1280,42 +1660,79 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void EnchantmentToSerializablePostfix(EnchantmentModel __instance, ref SerializableEnchantment __result)
     {
-        MultiEnchantmentStackSupport.WriteSerializedProps(__instance, ref __result);
-        // Capture in-memory ScopeRuntimeState (MaxActivations / LingerForTurns counters) so the
-        // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
-        // for why the Scope kind itself is NOT serialized.
-        MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
+        try
+        {
+            MultiEnchantmentStackSupport.WriteSerializedProps(__instance, ref __result);
+            // Capture in-memory ScopeRuntimeState (MaxActivations / LingerForTurns counters) so the
+            // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
+            // for why the Scope kind itself is NOT serialized.
+            MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"EnchantmentModel.ToSerializable postfix for Enchantment={GetSafeEnchantmentId(__instance)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.FromSerializable))]
     [HarmonyPostfix]
     private static void EnchantmentFromSerializablePostfix(SerializableEnchantment save, ref EnchantmentModel __result)
     {
-        MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
+        try
+        {
+            MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"EnchantmentModel.FromSerializable postfix for Enchantment={GetSafeEnchantmentId(__result)}", ex);
+        }
     }
 
     [HarmonyPatch(typeof(SavedPropertiesTypeCache), nameof(SavedPropertiesTypeCache.InjectTypeIntoCache))]
     [HarmonyPostfix]
     private static void SavedPropertiesInjectTypeIntoCachePostfix()
     {
-        MultiEnchantmentSupport.RefreshSavedPropertiesNetIdBitSize();
+        try
+        {
+            MultiEnchantmentSupport.RefreshSavedPropertiesNetIdBitSize();
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("SavedPropertiesTypeCache.InjectTypeIntoCache postfix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun), new[] { typeof(SerializableRun), typeof(bool) })]
     [HarmonyPrefix]
     private static void SaveRunPrefix(SerializableRun save, bool isMultiplayer)
     {
-        MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, isMultiplayer);
+        try
+        {
+            Telemetry.TelemetryCollector.NoteRunSaveMode(isMultiplayer);
+            MultiEnchantmentSaveSidecar.PrepareRunForDisk(save, isMultiplayer);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("RunSaveManager.SaveRun prefix", ex);
+        }
     }
 
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.LoadRunSave))]
     [HarmonyPostfix]
     private static void LoadRunSavePostfix(ReadSaveResult<SerializableRun> __result)
     {
-        if (__result is { Success: true, SaveData: { } save })
+        try
         {
-            MultiEnchantmentSaveSidecar.Reload(multiplayer: false);
-            MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
+            if (__result is { Success: true, SaveData: { } save })
+            {
+                Telemetry.TelemetryCollector.NoteRunLoadedFromSave(isMultiplayer: false);
+                MultiEnchantmentSaveSidecar.Reload(multiplayer: false);
+                MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("RunSaveManager.LoadRunSave postfix", ex);
         }
     }
 
@@ -1323,10 +1740,18 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void LoadMultiplayerRunSavePostfix(ReadSaveResult<SerializableRun> __result)
     {
-        if (__result is { Success: true, SaveData: { } save })
+        try
         {
-            MultiEnchantmentSaveSidecar.Reload(multiplayer: true);
-            MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
+            if (__result is { Success: true, SaveData: { } save })
+            {
+                Telemetry.TelemetryCollector.NoteRunLoadedFromSave(isMultiplayer: true);
+                MultiEnchantmentSaveSidecar.Reload(multiplayer: true);
+                MultiEnchantmentSaveSidecar.RestoreRunFromDisk(save);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("RunSaveManager.LoadMultiplayerRunSave postfix", ex);
         }
     }
 
@@ -1334,7 +1759,16 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void HoverTipsPostfix(CardModel __instance, ref IEnumerable<IHoverTip> __result)
     {
-        __result = MultiEnchantmentSupport.AppendAdditionalHoverTips(__instance, __result);
+        try
+        {
+            __result = MultiEnchantmentSupport.AppendAdditionalHoverTips(__instance, __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to append additional hover tips for Card={GetSafeCardId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.GetDescriptionForPile), new[] { typeof(PileType), typeof(Creature) })]
@@ -1348,7 +1782,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] Failed to append extra card text for Card={__instance.Id}. " +
+                $"[MultiEnchantment] Failed to append extra card text for Card={GetSafeCardId(__instance)}. " +
                 $"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -1364,7 +1798,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] Failed to append upgrade preview extra card text for Card={__instance.Id}. " +
+                $"[MultiEnchantment] Failed to append upgrade preview extra card text for Card={GetSafeCardId(__instance)}. " +
                 $"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -1373,14 +1807,32 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void ShouldGlowGoldPostfix(CardModel __instance, ref bool __result)
     {
-        __result = __result || MultiEnchantmentSupport.ShouldGlowGold(__instance);
+        try
+        {
+            __result = __result || MultiEnchantmentSupport.ShouldGlowGold(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] ShouldGlowGold postfix failed for Card={GetSafeCardId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CardModel), "get_ShouldGlowRed")]
     [HarmonyPostfix]
     private static void ShouldGlowRedPostfix(CardModel __instance, ref bool __result)
     {
-        __result = __result || MultiEnchantmentSupport.ShouldGlowRed(__instance);
+        try
+        {
+            __result = __result || MultiEnchantmentSupport.ShouldGlowRed(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] ShouldGlowRed postfix failed for Card={GetSafeCardId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn", new[] { typeof(Player), typeof(HookPlayerChoiceContext) })]
@@ -1392,18 +1844,18 @@ internal static class MultiEnchantmentPatches
         HookPlayerChoiceContext playerChoiceContext,
         ref Task __result)
     {
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CombatManager.SetupPlayerTurn. " +
-            $"Player={player.NetId}");
         try
         {
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting CombatManager.SetupPlayerTurn. " +
+                $"Player={GetSafePlayerId(player)}");
             __result = SetupPlayerTurnWithMultiEnchantments(__instance, player, playerChoiceContext);
             return false;
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] CombatManager.SetupPlayerTurn failed for Player={player.NetId}. " +
+                $"[MultiEnchantment] CombatManager.SetupPlayerTurn failed for Player={GetSafePlayerId(player)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -1422,23 +1874,24 @@ internal static class MultiEnchantmentPatches
         ref IEnumerable<AbstractModel> modifiers,
         ref decimal __result)
     {
-        // Base-game source: Hook.ModifyBlock.
-        // Vanilla applies only cardSource.Enchantment; we fold in every enchantment on the card
-        // before preserving the original additive -> multiplicative listener order.
-
-        // Fast path: when the card has no extra enchantments and no multi-slice merged primary,
-        // vanilla and the mod produce identical results. Defer to vanilla so other mods' patches
-        // on Hook.ModifyBlock still take effect.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
-        {
-            return true;
-        }
-
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Hook.ModifyBlock. " +
-            $"CardSource={cardSource?.Id} Block={block}");
         try
         {
+            // Base-game source: Hook.ModifyBlock.
+            // Vanilla applies only cardSource.Enchantment; we fold in every enchantment on the card
+            // before preserving the original additive -> multiplicative listener order.
+
+            // Fast path: when the card has no extra enchantments and no multi-slice merged primary,
+            // vanilla and the mod produce identical results. Defer to vanilla so other mods' patches
+            // on Hook.ModifyBlock still take effect.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
+            {
+                return true;
+            }
+
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Hook.ModifyBlock. " +
+                $"CardSource={GetSafeCardId(cardSource)} Block={block}");
+
             List<AbstractModel> modifyingModels = new();
             decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(cardSource, block, props);
 
@@ -1474,7 +1927,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Hook.ModifyBlock failed. " +
+                $"[MultiEnchantment] Hook.ModifyBlock failed for CardSource={GetSafeCardId(cardSource)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -1496,23 +1949,24 @@ internal static class MultiEnchantmentPatches
         ref IEnumerable<AbstractModel> modifiers,
         ref decimal __result)
     {
-        // Base-game source: Hook.ModifyDamage.
-        // Vanilla applies only the primary enchantment; this patch extends that to all enchantments
-        // while preserving the vanilla multi-target preview behavior and listener ordering.
-
-        // Fast path: when the card has no extras and no multi-slice primary, vanilla's single
-        // primary-enchantment call equals the mod's per-slice loop. Defer to vanilla so other
-        // mods' patches on Hook.ModifyDamage still take effect.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
-        {
-            return true;
-        }
-
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Hook.ModifyDamage. " +
-            $"CardSource={cardSource?.Id} Damage={damage} PreviewMode={previewMode}");
         try
         {
+            // Base-game source: Hook.ModifyDamage.
+            // Vanilla applies only the primary enchantment; this patch extends that to all enchantments
+            // while preserving the vanilla multi-target preview behavior and listener ordering.
+
+            // Fast path: when the card has no extras and no multi-slice primary, vanilla's single
+            // primary-enchantment call equals the mod's per-slice loop. Defer to vanilla so other
+            // mods' patches on Hook.ModifyDamage still take effect.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(cardSource))
+            {
+                return true;
+            }
+
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Hook.ModifyDamage. " +
+                $"CardSource={GetSafeCardId(cardSource)} Damage={damage} PreviewMode={previewMode}");
+
             decimal value = ApplyCardDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
             bool multiTargetPreview = target == null && previewMode == CardPreviewMode.MultiCreatureTargeting;
 
@@ -1576,7 +2030,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Hook.ModifyDamage failed. " +
+                $"[MultiEnchantment] Hook.ModifyDamage failed for CardSource={GetSafeCardId(cardSource)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -1625,7 +2079,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] CardModel.OnPlayWrapper failed for Card={__instance.Id}. " +
+                $"[MultiEnchantment] CardModel.OnPlayWrapper failed for Card={GetSafeCardId(__instance)}. " +
                 $"Falling back to base-game OnPlayWrapper. Error: {ex}");
             return true;
         }
@@ -1658,12 +2112,21 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void RecalculateCardValuesPostfix(PlayerCombatState __instance)
     {
-        // Snapshot AllCards: RecalculateAdditionalEnchantments calls EnchantmentModel.RecalculateValues
-        // on each enchantment. Vanilla is read-only there, but a user-defined override could call
-        // into mod APIs that mutate AllCards. Defensive snapshot keeps this batch loop safe.
-        foreach (CardModel card in __instance.AllCards.ToList())
+        try
         {
-            MultiEnchantmentSupport.RecalculateAdditionalEnchantments(card);
+            // Snapshot AllCards: RecalculateAdditionalEnchantments calls EnchantmentModel.RecalculateValues
+            // on each enchantment. Vanilla is read-only there, but a user-defined override could call
+            // into mod APIs that mutate AllCards. Defensive snapshot keeps this batch loop safe.
+            foreach (CardModel card in __instance.AllCards.ToList())
+            {
+                MultiEnchantmentSupport.RecalculateAdditionalEnchantments(card);
+            }
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to recalculate additional enchantments for combat cards. " +
+                $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1671,14 +2134,32 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void RunListenersPostfix(RunState __instance, ref IEnumerable<AbstractModel> __result)
     {
-        __result = MultiEnchantmentSupport.AppendRunStateExtraEnchantments(__instance, __result);
+        try
+        {
+            __result = MultiEnchantmentSupport.AppendRunStateExtraEnchantments(__instance, __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to append run-state extra enchantment listeners. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(CombatState), nameof(CombatState.IterateHookListeners))]
     [HarmonyPostfix]
     private static void CombatListenersPostfix(CombatState __instance, ref IEnumerable<AbstractModel> __result)
     {
-        __result = MultiEnchantmentSupport.AppendCombatStateExtraEnchantments(__instance, __result);
+        try
+        {
+            __result = MultiEnchantmentSupport.AppendCombatStateExtraEnchantments(__instance, __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to append combat-state extra enchantment listeners. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(DamageVar), nameof(DamageVar.UpdateCardPreview))]
@@ -1686,38 +2167,48 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool DamageVarUpdateCardPreviewPrefix(DamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
-        // Fast path: card has no mod-specific enchant state, vanilla preview is equivalent.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        try
         {
+            // Fast path: card has no mod-specific enchant state, vanilla preview is equivalent.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+            {
+                return true;
+            }
+
+            decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
+            if (!card.IsEnchantmentPreview)
+            {
+                if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+                {
+                    MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                }
+                else
+                {
+                    MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+                }
+            }
+
+            value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
+                card,
+                __instance.Name,
+                value,
+                __instance.Props,
+                target,
+                TryGetPreviewOwner(card, out Player? owner) ? owner.Creature : null,
+                ModifyDamageHookType.All,
+                previewMode,
+                runGlobalHooks);
+
+            __instance.PreviewValue = value;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] DamageVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
-
-        decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
-        if (!card.IsEnchantmentPreview)
-        {
-            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
-            {
-                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
-            }
-            else
-            {
-                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
-            }
-        }
-
-        value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
-            card,
-            __instance.Name,
-            value,
-            __instance.Props,
-            target,
-            TryGetPreviewOwner(card, out Player? owner) ? owner.Creature : null,
-            ModifyDamageHookType.All,
-            previewMode,
-            runGlobalHooks);
-
-        __instance.PreviewValue = value;
-        return false;
     }
 
     [HarmonyPatch(typeof(BlockVar), nameof(BlockVar.UpdateCardPreview))]
@@ -1725,51 +2216,61 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool BlockVarUpdateCardPreviewPrefix(BlockVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        try
         {
-            return true;
-        }
-
-        decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, __instance.BaseValue, __instance.Props);
-        if (!card.IsEnchantmentPreview)
-        {
-            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
             {
-                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                return true;
             }
-            else
-            {
-                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
-            }
-        }
 
-        if (runGlobalHooks)
-        {
-            // Hook.ModifyBlock's prefix already chains ApplyDynamicVarEnchantments — see the
-            // matching comment on DamageVar above.
-            if (TryGetPreviewOwner(card, out Player? owner) &&
-                TryGetPreviewCreature(owner, out Creature? ownerCreature) &&
-                TryGetPreviewCombatState(card, ownerCreature, out ICombatState? combatState))
+            decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, __instance.BaseValue, __instance.Props);
+            if (!card.IsEnchantmentPreview)
             {
-                value = ApplyBlockPreviewDynamicVarAndGlobalHooks(
-                    card,
-                    __instance.Name,
-                    value,
-                    __instance.Props,
-                    runGlobalHooks);
+                if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+                {
+                    MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                }
+                else
+                {
+                    MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+                }
+            }
+
+            if (runGlobalHooks)
+            {
+                // Hook.ModifyBlock's prefix already chains ApplyDynamicVarEnchantments — see the
+                // matching comment on DamageVar above.
+                if (TryGetPreviewOwner(card, out Player? owner) &&
+                    TryGetPreviewCreature(owner, out Creature? ownerCreature) &&
+                    TryGetPreviewCombatState(card, ownerCreature, out ICombatState? combatState))
+                {
+                    value = ApplyBlockPreviewDynamicVarAndGlobalHooks(
+                        card,
+                        __instance.Name,
+                        value,
+                        __instance.Props,
+                        runGlobalHooks);
+                }
+                else
+                {
+                    value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+                }
             }
             else
             {
                 value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
             }
-        }
-        else
-        {
-            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
-        }
 
-        __instance.PreviewValue = value;
-        return false;
+            __instance.PreviewValue = value;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] BlockVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(CalculatedDamageVar), nameof(CalculatedDamageVar.UpdateCardPreview))]
@@ -1782,16 +2283,16 @@ internal static class MultiEnchantmentPatches
         Creature? target,
         bool runGlobalHooks)
     {
-        // Base-game source: CalculatedDamageVar.UpdateCardPreview.
-        // Calculate() folds CalculationBase + ExtraDamage * multiplier. Card enchantments modify
-        // that full attack amount, matching AttackCommand -> CreatureCmd.Damage -> Hook.ModifyDamage.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
-        {
-            return true;
-        }
-
         try
         {
+            // Base-game source: CalculatedDamageVar.UpdateCardPreview.
+            // Calculate() folds CalculationBase + ExtraDamage * multiplier. Card enchantments modify
+            // that full attack amount, matching AttackCommand -> CreatureCmd.Damage -> Hook.ModifyDamage.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+            {
+                return true;
+            }
+
             decimal calculatedBase = __instance.Calculate(target);
             decimal enchantedBase = ApplyCardDamageEnchantments(card, calculatedBase, __instance.Props, ModifyDamageHookType.All);
             enchantedBase = Math.Max(enchantedBase, 0m);
@@ -1837,7 +2338,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] CalculatedDamageVar.UpdateCardPreview failed for Card={card.Id}. " +
+                $"[MultiEnchantment] CalculatedDamageVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -1853,16 +2354,16 @@ internal static class MultiEnchantmentPatches
         Creature? target,
         bool runGlobalHooks)
     {
-        // Base-game source: CalculatedBlockVar.UpdateCardPreview.
-        // Keep this in sync with the damage variant above: card enchantments modify the complete
-        // calculated block amount before global block listeners run.
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
-        {
-            return true;
-        }
-
         try
         {
+            // Base-game source: CalculatedBlockVar.UpdateCardPreview.
+            // Keep this in sync with the damage variant above: card enchantments modify the complete
+            // calculated block amount before global block listeners run.
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+            {
+                return true;
+            }
+
             decimal calculatedBase = __instance.Calculate(target);
             decimal enchantedBase = MultiEnchantmentSupport.ApplyBlockEnchantments(card, calculatedBase, __instance.Props);
             if (card.IsEnchantmentPreview)
@@ -1903,7 +2404,7 @@ internal static class MultiEnchantmentPatches
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] CalculatedBlockVar.UpdateCardPreview failed for Card={card.Id}. " +
+                $"[MultiEnchantment] CalculatedBlockVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -1919,27 +2420,37 @@ internal static class MultiEnchantmentPatches
         Creature? target,
         bool runGlobalHooks)
     {
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        try
         {
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+            {
+                return true;
+            }
+
+            decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, ValueProp.Move, ModifyDamageHookType.Multiplicative);
+            if (!card.IsEnchantmentPreview)
+            {
+                if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+                {
+                    MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                }
+                else
+                {
+                    MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+                }
+            }
+
+            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+            __instance.PreviewValue = value;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] ExtraDamageVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
-
-        decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, ValueProp.Move, ModifyDamageHookType.Multiplicative);
-        if (!card.IsEnchantmentPreview)
-        {
-            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
-            {
-                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
-            }
-            else
-            {
-                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
-            }
-        }
-
-        value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
-        __instance.PreviewValue = value;
-        return false;
     }
 
     [HarmonyPatch(typeof(OstyDamageVar), nameof(OstyDamageVar.UpdateCardPreview))]
@@ -1947,57 +2458,67 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool OstyDamageVarUpdateCardPreviewPrefix(OstyDamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+        try
         {
-            return true;
-        }
-
-        decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
-        if (!card.IsEnchantmentPreview)
-        {
-            if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
             {
-                MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                return true;
             }
-            else
-            {
-                MultiEnchantmentSupport.ResetEnchantedValue(__instance);
-            }
-        }
 
-        if (runGlobalHooks)
-        {
-            // Hook.ModifyDamage's prefix applies legacy damage enchantments and
-            // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
-            // passing the already-enchanted local value would apply card damage twice.
-            if (TryGetPreviewOwner(card, out Player? owner) &&
-                TryGetPreviewRunState(owner, out IRunState? runState) &&
-                TryGetPreviewCreature(owner, out Creature? ownerCreature))
+            decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
+            if (!card.IsEnchantmentPreview)
             {
-                ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
-                value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
-                    card,
-                    "damage",
-                    value,
-                    __instance.Props,
-                    target,
-                    owner.Osty,
-                    ModifyDamageHookType.All,
-                    previewMode,
-                    runGlobalHooks);
+                if (MultiEnchantmentSupport.HasAnyEnchantments(card))
+                {
+                    MultiEnchantmentSupport.SetEnchantedValue(__instance, value);
+                }
+                else
+                {
+                    MultiEnchantmentSupport.ResetEnchantedValue(__instance);
+                }
+            }
+
+            if (runGlobalHooks)
+            {
+                // Hook.ModifyDamage's prefix applies legacy damage enchantments and
+                // ModifyDynamicVar("damage") before global hooks/caps. Keep passing BaseValue here;
+                // passing the already-enchanted local value would apply card damage twice.
+                if (TryGetPreviewOwner(card, out Player? owner) &&
+                    TryGetPreviewRunState(owner, out IRunState? runState) &&
+                    TryGetPreviewCreature(owner, out Creature? ownerCreature))
+                {
+                    ICombatState? combatState = card.CombatState ?? ownerCreature.CombatState;
+                    value = ApplyDamagePreviewDynamicVarAndGlobalHooks(
+                        card,
+                        "damage",
+                        value,
+                        __instance.Props,
+                        target,
+                        owner.Osty,
+                        ModifyDamageHookType.All,
+                        previewMode,
+                        runGlobalHooks);
+                }
+                else
+                {
+                    value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
+                }
             }
             else
             {
                 value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
             }
-        }
-        else
-        {
-            value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, value);
-        }
 
-        __instance.PreviewValue = value;
-        return false;
+            __instance.PreviewValue = value;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] OstyDamageVar.UpdateCardPreview failed for Card={GetSafeCardId(card)}. " +
+                $"Falling back to base-game implementation. Error: {ex}");
+            return true;
+        }
     }
 
     // Postfix on the base DynamicVar.UpdateCardPreview — fires for "plain" DynamicVar instances
@@ -2011,36 +2532,39 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static void DynamicVarUpdateCardPreviewPostfix(DynamicVar __instance, CardModel card)
     {
-        if (string.IsNullOrEmpty(__instance.Name))
-        {
-            return;
-        }
-
-        if (!MultiEnchantmentSupport.HasDynamicVarContributionsFor(__instance.Name))
-        {
-            return;
-        }
-
-        if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
-        {
-            return;
-        }
-
+        string varName = __instance.GetType().FullName ?? __instance.GetType().Name;
         try
         {
+            string? name = __instance.Name;
+            if (string.IsNullOrEmpty(name))
+            {
+                return;
+            }
+            varName = name;
+
+            if (!MultiEnchantmentSupport.HasDynamicVarContributionsFor(name))
+            {
+                return;
+            }
+
+            if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
+            {
+                return;
+            }
+
             // Start from BaseValue so the postfix is idempotent — re-running it on a previously
             // previewed var (PreviewValue already contains last-round contributions) would
             // otherwise compound contributions. Base no-op UpdateCardPreview hasn't touched
             // PreviewValue yet, but other game systems (RecalculateForUpgradeOrEnchant) reset
             // PreviewValue to BaseValue through ResetToBase. We mirror that contract here.
-            decimal value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, __instance.Name, __instance.BaseValue);
+            decimal value = MultiEnchantmentSupport.ApplyDynamicVarEnchantments(card, name, __instance.BaseValue);
             __instance.PreviewValue = value;
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] DynamicVar.UpdateCardPreview postfix for Var={__instance.Name} " +
-                $"Card={card.Id} failed: {ex}");
+                $"[MultiEnchantment] DynamicVar.UpdateCardPreview postfix for Var={varName} " +
+                $"Card={GetSafeCardId(card)} failed: {ex}");
         }
     }
 
@@ -2062,7 +2586,7 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Failed to preserve compatible enchantments during transform. " +
-                $"Original={__instance.Original.Id} Replacement={__result.Id}: {ex}");
+                $"Original={GetSafeCardId(__instance.Original)} Replacement={GetSafeCardId(__result)}: {ex}");
         }
     }
 
@@ -2071,9 +2595,18 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static void TransformPreviewInitializePrefix(ref IEnumerable<CardTransformation> cardTransformations)
     {
-        cardTransformations = cardTransformations
-            .Select(CreateTransformPreviewTransformation)
-            .ToList();
+        try
+        {
+            cardTransformations = cardTransformations
+                .Select(CreateTransformPreviewTransformation)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to build transform preview transformations. " +
+                $"Falling back to vanilla preview input. {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NEnchantPreview), nameof(NEnchantPreview.Init))]
@@ -2081,33 +2614,53 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool EnchantPreviewPrefix(NEnchantPreview __instance, CardModel card, EnchantmentModel canonicalEnchantment, int amount)
     {
-        // Base-game source: NEnchantPreview.Init.
-        // We need the mod-aware enchant path here so previews can show an added extra enchantment.
-        canonicalEnchantment.AssertCanonical();
-        AccessTools.Method(typeof(NEnchantPreview), "RemoveExistingCards")?.Invoke(__instance, null);
+        try
+        {
+            // Base-game source: NEnchantPreview.Init.
+            // We need the mod-aware enchant path here so previews can show an added extra enchantment.
+            canonicalEnchantment.AssertCanonical();
+            AccessTools.Method(typeof(NEnchantPreview), "RemoveExistingCards")?.Invoke(__instance, null);
 
-        Control before = __instance.GetNode<Control>("%Before");
-        Control after = __instance.GetNode<Control>("%After");
+            Control before = __instance.GetNode<Control>("%Before");
+            Control after = __instance.GetNode<Control>("%After");
 
-        NPreviewCardHolder beforeHolder = NPreviewCardHolder.Create(NCard.Create(card)!, showHoverTips: true, scaleOnHover: false)!;
-        before.AddChild(beforeHolder);
-        beforeHolder.CardNode!.UpdateVisuals(card.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+            NPreviewCardHolder beforeHolder = NPreviewCardHolder.Create(NCard.Create(card)!, showHoverTips: true, scaleOnHover: false)!;
+            before.AddChild(beforeHolder);
+            beforeHolder.CardNode!.UpdateVisuals(card.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
 
-        CardModel previewCard = card.CardScope!.CloneCard(card);
-        MultiEnchantmentSupport.ApplyEnchantment(canonicalEnchantment.ToMutable(), previewCard, amount);
-        previewCard.IsEnchantmentPreview = true;
+            CardModel previewCard = card.CardScope!.CloneCard(card);
+            MultiEnchantmentSupport.ApplyEnchantment(canonicalEnchantment.ToMutable(), previewCard, amount);
+            previewCard.IsEnchantmentPreview = true;
 
-        NPreviewCardHolder afterHolder = NPreviewCardHolder.Create(NCard.Create(previewCard)!, showHoverTips: true, scaleOnHover: false)!;
-        after.AddChild(afterHolder);
-        afterHolder.CardNode!.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
-        return false;
+            NPreviewCardHolder afterHolder = NPreviewCardHolder.Create(NCard.Create(previewCard)!, showHoverTips: true, scaleOnHover: false)!;
+            after.AddChild(afterHolder);
+            afterHolder.CardNode!.UpdateVisuals(PileType.None, CardPreviewMode.Normal);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] NEnchantPreview.Init prefix failed for Card={GetSafeCardId(card)} " +
+                $"Enchantment={GetSafeEnchantmentId(canonicalEnchantment)}. Falling back to vanilla preview. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(NCard), nameof(NCard.UpdateVisuals))]
     [HarmonyPrefix]
     private static void CardVisualsPrefix(NCard __instance, PileType pileType, CardPreviewMode previewMode)
     {
-        MultiEnchantmentSupport.UpdateAdditionalEnchantmentPreviews(__instance, previewMode);
+        try
+        {
+            MultiEnchantmentSupport.UpdateAdditionalEnchantmentPreviews(__instance, previewMode);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to update additional enchantment previews for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NCard), nameof(NCard.UpdateVisuals))]
@@ -2117,7 +2670,16 @@ internal static class MultiEnchantmentPatches
         // Display-only extra icons must also work on card-library / encyclopedia cards that have
         // no live enchantment instance. Sync after the full visual pass so the marker is present
         // even if vanilla skipped UpdateEnchantmentVisuals for an unenchanted card.
-        MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
+        try
+        {
+            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to sync extra enchantment tabs for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NCard), "OnEnchantmentChanged")]
@@ -2126,18 +2688,19 @@ internal static class MultiEnchantmentPatches
     {
         // Base-game NCard.OnEnchantmentChanged only refreshes enchantment icons. Re-run the full
         // visual pass so formatter-generated extra card text is recomputed when enchantments change.
-        if (__instance.Model != null && __instance.IsNodeReady())
+        try
         {
-            try
+            CardModel? model = __instance.Model;
+            if (model != null && __instance.IsNodeReady())
             {
-                __instance.UpdateVisuals(__instance.Model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+                __instance.UpdateVisuals(model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
             }
-            catch (Exception ex)
-            {
-                MultiEnchantmentMod.Logger.Warn(
-                    $"[MultiEnchantment] Failed to refresh card visuals after enchantment change for Card={__instance.Model.Id}. " +
-                    $"{ex.GetType().Name}: {ex.Message}");
-            }
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to refresh card visuals after enchantment change for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -2145,7 +2708,16 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void CardEnchantTabsPostfix(NCard __instance)
     {
-        MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
+        try
+        {
+            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to sync enchantment tabs after UpdateEnchantmentVisuals for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NCard), "OnEnchantmentStatusChanged")]
@@ -2155,7 +2727,16 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCard.OnEnchantmentStatusChanged only updates the primary enchantment
         // tab. Multi-stack visuals that expand one enchantment into several tabs, such as stacked
         // Sown, must resync the extra tabs too so queued/replay cards reflect the consumed state.
-        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__instance);
+        try
+        {
+            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to refresh enchantment tabs after status change for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NCard), nameof(NCard.OnReturnedFromPool))]
@@ -2164,9 +2745,16 @@ internal static class MultiEnchantmentPatches
     {
         // Base-game source: NCard.OnReturnedFromPool only resets ready nodes. Match that boundary
         // here so pooled-but-not-ready cards never hit the mod's cleanup path.
-        if (__instance.IsNodeReady())
+        try
         {
-            MultiEnchantmentSupport.ClearCardUi(__instance);
+            if (__instance.IsNodeReady())
+            {
+                TryClearCardUi(__instance, "NCard.OnReturnedFromPool postfix");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"NCard.OnReturnedFromPool postfix for Card={GetSafeCardNodeModelId(__instance)}", ex);
         }
     }
 
@@ -2177,9 +2765,13 @@ internal static class MultiEnchantmentPatches
         // CenterCard and related targeting flows animate the holder without necessarily refreshing
         // the card's enchantment visuals again. Mirror the primary tab state here so extra tabs
         // keep following the centered card.
-        if (__instance.CardNode != null)
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraTabTransformOnly(__instance.CardNode);
+            TryRefreshExtraTabTransformOnly(__instance.CardNode, "NHandCardHolder.SetTargetPosition postfix");
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NHandCardHolder.SetTargetPosition postfix", ex);
         }
     }
 
@@ -2187,9 +2779,13 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void HandCardHolderTargetScalePostfix(NHandCardHolder __instance)
     {
-        if (__instance.CardNode != null)
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraTabTransformOnly(__instance.CardNode);
+            TryRefreshExtraTabTransformOnly(__instance.CardNode, "NHandCardHolder.SetTargetScale postfix");
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NHandCardHolder.SetTargetScale postfix", ex);
         }
     }
 
@@ -2197,7 +2793,14 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void CardPlayCenterCardPostfix(NCardPlay __instance)
     {
-        MultiEnchantmentSupport.RefreshExtraTabsPreferInPlace(__instance.Holder?.CardNode);
+        try
+        {
+            TryRefreshExtraTabsPreferInPlace(__instance.Holder?.CardNode, "NCardPlay.CenterCard postfix");
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NCardPlay.CenterCard postfix", ex);
+        }
     }
 
     [HarmonyPatch(
@@ -2207,9 +2810,16 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void TargetManagerStartCardTargetingPostfix(Control control)
     {
-        if (control is NCard cardNode)
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraTabsPreferInPlace(cardNode);
+            if (control is NCard cardNode)
+            {
+                TryRefreshExtraTabsPreferInPlace(cardNode, "NTargetManager.StartTargeting postfix");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NTargetManager.StartTargeting postfix", ex);
         }
     }
 
@@ -2220,9 +2830,16 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCardPlayQueue.TweenCardToQueuePosition.
         // Queue cards are re-scaled and moved by tween without a fresh card-visual pass. Mirror
         // the primary enchant tab state here so extra enchant tabs stay visible on queued cards.
-        if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+            if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+            {
+                TryRefreshExtraEnchantmentTabs(cardNode, "NCardPlayQueue.TweenCardToQueuePosition postfix");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NCardPlayQueue.TweenCardToQueuePosition postfix", ex);
         }
     }
 
@@ -2233,9 +2850,16 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCardPlayQueue.UpdateCardVisuals.
         // Queue entries can swap to a new combat-card model before execution. Refresh after the
         // model swap so extra enchantment tabs are recreated for the active queued card instance.
-        if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+            if (AccessTools.Field(item.GetType(), "card")?.GetValue(item) is NCard cardNode)
+            {
+                TryRefreshExtraEnchantmentTabs(cardNode, "NCardPlayQueue.UpdateCardVisuals postfix");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NCardPlayQueue.UpdateCardVisuals postfix", ex);
         }
     }
 
@@ -2246,7 +2870,7 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCombatUi.AddToPlayContainer.
         // Reparenting into PlayContainer is another path that can reuse an existing NCard without
         // recreating visuals. Refresh here so extra tabs survive hand -> queue -> play moves.
-        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(card);
+        TryRefreshExtraEnchantmentTabs(card, "NCombatUi.AddToPlayContainer postfix");
     }
 
     [HarmonyPatch(typeof(NCombatUi), "OnPeekButtonToggled")]
@@ -2256,9 +2880,16 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCombatUi.OnPeekButtonToggled.
         // Peeking recenters cards already in PlayContainer without rerunning NCard visuals.
         // Refresh the extra enchantment tabs after the toggle so the full stack stays visible.
-        foreach (NCard cardNode in __instance.PlayContainer.GetChildren().OfType<NCard>())
+        try
         {
-            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(cardNode);
+            foreach (NCard cardNode in __instance.PlayContainer.GetChildren().OfType<NCard>())
+            {
+                TryRefreshExtraEnchantmentTabs(cardNode, "NCombatUi.OnPeekButtonToggled postfix");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("NCombatUi.OnPeekButtonToggled postfix", ex);
         }
     }
 
@@ -2269,10 +2900,7 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NPlayerHand.Add.
         // Cards can be reattached to the hand after queue cancellation or other UI flows while
         // keeping the same NCard instance. Refresh the extra tabs after the holder is rebuilt.
-        if (__result?.CardNode != null)
-        {
-            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__result.CardNode);
-        }
+        TryRefreshExtraEnchantmentTabs(__result?.CardNode, "NPlayerHand.Add postfix");
     }
 
     [HarmonyPatch(typeof(NSelectedHandCardContainer), nameof(NSelectedHandCardContainer.Add))]
@@ -2282,10 +2910,7 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NSelectedHandCardContainer.Add.
         // Multi-select UI reparents live card nodes into a separate container. Mirror the primary
         // enchant tab again so centered/selected cards keep the full enchantment stack visible.
-        if (__result?.CardNode != null)
-        {
-            MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__result.CardNode);
-        }
+        TryRefreshExtraEnchantmentTabs(__result?.CardNode, "NSelectedHandCardContainer.Add postfix");
     }
 
     [HarmonyPatch(typeof(NCard), nameof(NCard.AnimCardToPlayPile))]
@@ -2295,14 +2920,14 @@ internal static class MultiEnchantmentPatches
         // Base-game source: NCard.AnimCardToPlayPile.
         // The played-card animation shrinks and moves the same node. Refresh immediately before the
         // tween runs so any reused card node keeps its extra enchantment tabs attached.
-        MultiEnchantmentSupport.RefreshExtraEnchantmentTabs(__instance);
+        TryRefreshExtraEnchantmentTabs(__instance, "NCard.AnimCardToPlayPile postfix");
     }
 
     [HarmonyPatch(typeof(NCard), "UnsubscribeFromModel")]
     [HarmonyPostfix]
     private static void CardUnsubscribePostfix(NCard __instance)
     {
-        MultiEnchantmentSupport.ClearCardUi(__instance);
+        TryClearCardUi(__instance, "NCard.UnsubscribeFromModel postfix");
     }
 
     [HarmonyPatch(typeof(CloneRestSiteOption), nameof(CloneRestSiteOption.OnSelect))]
@@ -2332,27 +2957,44 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void CardEnchantVfxPostfix(NCardEnchantVfx __instance)
     {
-        // Base-game source: NCardEnchantVfx._Ready.
-        // Vanilla animates exactly one enchantment badge. Preserve that animated path for only the
-        // newest enchantment, then render older enchantment badges as static card-local copies so
-        // the shader sweep no longer affects the entire stack at once.
-        CardModel? card = NCardEnchantVfxCardModelField?.GetValue(__instance) as CardModel;
-        NCard? cardNode = NCardEnchantVfxCardNodeField?.GetValue(__instance) as NCard;
-        TextureRect? icon = NCardEnchantVfxIconField?.GetValue(__instance) as TextureRect;
-        // Base-game source: NCardEnchantVfx._Ready hides only the primary enchantment tab on the
-        // embedded NCard. The mod's extra tabs need to be hidden too so only the VFX badge stack
-        // remains visible during the enchant animation.
-        MultiEnchantmentSupport.HideExtraEnchantmentTabs(cardNode);
-        MultiEnchantmentSupport.SyncEnchantVfxPresentation(__instance, card, cardNode, icon);
+        try
+        {
+            // Base-game source: NCardEnchantVfx._Ready.
+            // Vanilla animates exactly one enchantment badge. Preserve that animated path for only the
+            // newest enchantment, then render older enchantment badges as static card-local copies so
+            // the shader sweep no longer affects the entire stack at once.
+            CardModel? card = NCardEnchantVfxCardModelField?.GetValue(__instance) as CardModel;
+            NCard? cardNode = NCardEnchantVfxCardNodeField?.GetValue(__instance) as NCard;
+            TextureRect? icon = NCardEnchantVfxIconField?.GetValue(__instance) as TextureRect;
+            // Base-game source: NCardEnchantVfx._Ready hides only the primary enchantment tab on the
+            // embedded NCard. The mod's extra tabs need to be hidden too so only the VFX badge stack
+            // remains visible during the enchant animation.
+            MultiEnchantmentSupport.HideExtraEnchantmentTabs(cardNode);
+            MultiEnchantmentSupport.SyncEnchantVfxPresentation(__instance, card, cardNode, icon);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to sync enchant VFX presentation. {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NCardEnchantVfx), nameof(NCardEnchantVfx.Create))]
     [HarmonyPostfix]
     private static void CardEnchantVfxCreatePostfix(CardModel card, ref NCardEnchantVfx? __result)
     {
-        // Snapshot the visible enchantment stack at VFX creation time so the animation does not
-        // depend on later UI refreshes or card-node state during _Ready.
-        MultiEnchantmentSupport.CaptureEnchantVfxSnapshot(__result, card);
+        try
+        {
+            // Snapshot the visible enchantment stack at VFX creation time so the animation does not
+            // depend on later UI refreshes or card-node state during _Ready.
+            MultiEnchantmentSupport.CaptureEnchantVfxSnapshot(__result, card);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to capture enchant VFX snapshot for Card={GetSafeCardId(card)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [HarmonyPatch(typeof(NDeckHistoryEntry), "Reload")]
@@ -2360,26 +3002,35 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static void DeckHistoryEntryReloadPostfix(NDeckHistoryEntry __instance)
     {
-        // Base-game source: NDeckHistoryEntry.Reload.
-        // Vanilla uses only Card.Enchantment for the purple title and icon. If the primary slot is
-        // empty but the sidecar restored extra enchantments, mirror the same one-icon treatment.
-        CardModel? card = __instance.Card;
-        if (card == null ||
-            card.Enchantment != null ||
-            !MultiEnchantmentSupport.TryGetFirstVisualState(card, out MultiEnchantmentSupport.EnchantmentVisualState? visualState))
+        try
         {
-            return;
-        }
+            // Base-game source: NDeckHistoryEntry.Reload.
+            // Vanilla uses only Card.Enchantment for the purple title and icon. If the primary slot is
+            // empty but the sidecar restored extra enchantments, mirror the same one-icon treatment.
+            CardModel? card = __instance.Card;
+            if (card == null ||
+                card.Enchantment != null ||
+                !MultiEnchantmentSupport.TryGetFirstVisualState(card, out MultiEnchantmentSupport.EnchantmentVisualState? visualState))
+            {
+                return;
+            }
 
-        if (NDeckHistoryEntryTitleLabelField?.GetValue(__instance) is Label titleLabel)
-        {
-            titleLabel.AddThemeColorOverride(ThemeConstants.Label.FontColor, StsColors.purple);
-        }
+            if (NDeckHistoryEntryTitleLabelField?.GetValue(__instance) is Label titleLabel)
+            {
+                titleLabel.AddThemeColorOverride(ThemeConstants.Label.FontColor, StsColors.purple);
+            }
 
-        if (NDeckHistoryEntryEnchantmentImageField?.GetValue(__instance) is TextureRect enchantmentImage)
+            if (NDeckHistoryEntryEnchantmentImageField?.GetValue(__instance) is TextureRect enchantmentImage)
+            {
+                enchantmentImage.Texture = visualState.Icon;
+                enchantmentImage.Visible = true;
+            }
+        }
+        catch (Exception ex)
         {
-            enchantmentImage.Texture = visualState.Icon;
-            enchantmentImage.Visible = true;
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to update deck history enchantment visuals. " +
+                $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -2387,21 +3038,29 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void RestSiteOptionGeneratePostfix(Player player, ref List<RestSiteOption> __result)
     {
-        // Base-game source: RestSiteOption.Generate.
-        // Vanilla only gets the clone fire option from PaelsGrowth's hook. Console-added Clone
-        // enchantments bypass that source, so add the option whenever any deck card currently has
-        // Clone, regardless of whether Clone is the primary or an extra enchantment.
-        if (!MultiEnchantmentSupport.ShouldOfferCloneRestSiteOption(player))
+        try
         {
-            return;
-        }
+            // Base-game source: RestSiteOption.Generate.
+            // Vanilla only gets the clone fire option from PaelsGrowth's hook. Console-added Clone
+            // enchantments bypass that source, so add the option whenever any deck card currently has
+            // Clone, regardless of whether Clone is the primary or an extra enchantment.
+            if (!MultiEnchantmentSupport.ShouldOfferCloneRestSiteOption(player))
+            {
+                return;
+            }
 
-        if (__result.Any(static option => option.OptionId == "CLONE"))
+            if (__result.Any(static option => option.OptionId == "CLONE"))
+            {
+                return;
+            }
+
+            __result.Add(new CloneRestSiteOption(player));
+        }
+        catch (Exception ex)
         {
-            return;
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to add Clone rest-site option. {ex.GetType().Name}: {ex.Message}");
         }
-
-        __result.Add(new CloneRestSiteOption(player));
     }
 
     private static bool TryGetPreviewOwner(CardModel card, [NotNullWhen(true)] out Player? owner)
@@ -2453,7 +3112,7 @@ internal static class MultiEnchantmentPatches
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Failed to build multi-enchantment transform preview for " +
-                $"{transformation.Original.Id}. Falling back to vanilla preview. {ex}");
+                $"{GetSafeCardId(transformation.Original)}. Falling back to vanilla preview. {ex}");
             return transformation;
         }
     }
@@ -2833,29 +3492,39 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
     [HarmonyPriority(Priority.Low)]
     private static bool CardGroupKeyEqualsPrefix(object __instance, object? obj, ref bool __result)
     {
-        // Base-game source: NMultiplayerPlayerExpandedState.CardGroupKey.Equals.
-        // Card grouping in the multiplayer deck view needs the full enchantment signature so cards
-        // with different extra enchantments or enchantment state do not collapse into one row.
-        if (obj == null || CardGroupKeyType == null || obj.GetType() != CardGroupKeyType)
+        try
         {
-            __result = false;
+            // Base-game source: NMultiplayerPlayerExpandedState.CardGroupKey.Equals.
+            // Card grouping in the multiplayer deck view needs the full enchantment signature so cards
+            // with different extra enchantments or enchantment state do not collapse into one row.
+            if (obj == null || CardGroupKeyType == null || obj.GetType() != CardGroupKeyType)
+            {
+                __result = false;
+                return false;
+            }
+
+            if (!TryGetCardFromGroupKey(__instance, out CardModel? left) ||
+                !TryGetCardFromGroupKey(obj, out CardModel? right))
+            {
+                // Fallback when the inner type or field is unavailable (renamed/removed in newer game
+                // versions): let the base-game Equals handle card grouping.
+                MultiEnchantmentMod.Logger.Info(
+                    "[MultiEnchantment] CardGroupKey.Equals falling back to base-game implementation (reflection unavailable).");
+                return true;
+            }
+
+            __result = EqualityComparer<ModelId>.Default.Equals(left.Id, right.Id) &&
+                       left.CurrentUpgradeLevel == right.CurrentUpgradeLevel &&
+                       MultiEnchantmentSupport.HaveSameEnchantments(left, right);
             return false;
         }
-
-        if (!TryGetCardFromGroupKey(__instance, out CardModel? left) ||
-            !TryGetCardFromGroupKey(obj, out CardModel? right))
+        catch (Exception ex)
         {
-            // Fallback when the inner type or field is unavailable (renamed/removed in newer game
-            // versions): let the base-game Equals handle card grouping.
-            MultiEnchantmentMod.Logger.Info(
-                "[MultiEnchantment] CardGroupKey.Equals falling back to base-game implementation (reflection unavailable).");
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] CardGroupKey.Equals prefix failed. Falling back to base-game implementation. " +
+                $"{ex.GetType().Name}: {ex.Message}");
             return true;
         }
-
-        __result = left.Id.Equals(right.Id) &&
-                   left.CurrentUpgradeLevel == right.CurrentUpgradeLevel &&
-                   MultiEnchantmentSupport.HaveSameEnchantments(left, right);
-        return false;
     }
 
     [HarmonyPatch]
@@ -2871,21 +3540,32 @@ internal static class MultiEnchantmentMultiplayerGroupingPatches
         [HarmonyPriority(Priority.Low)]
         private static bool Prefix(object __instance, ref int __result)
         {
-            if (!TryGetCardFromGroupKey(__instance, out CardModel? card))
+            try
             {
-                // Fallback when the inner type or field is unavailable: let the base-game
-                // GetHashCode handle card grouping.
-                MultiEnchantmentMod.Logger.Info(
-                    "[MultiEnchantment] CardGroupKey.GetHashCode falling back to base-game implementation (reflection unavailable).");
+                if (!TryGetCardFromGroupKey(__instance, out CardModel? card))
+                {
+                    // Fallback when the inner type or field is unavailable: let the base-game
+                    // GetHashCode handle card grouping.
+                    MultiEnchantmentMod.Logger.Info(
+                        "[MultiEnchantment] CardGroupKey.GetHashCode falling back to base-game implementation (reflection unavailable).");
+                    return true;
+                }
+
+                // Keep hash inputs aligned with CardGroupKeyEqualsPrefix above.
+                __result = HashCode.Combine(
+                    card.Id,
+                    card.CurrentUpgradeLevel,
+                    MultiEnchantmentSupport.GetEnchantmentsHashCode(card));
+                return false;
+            }
+            catch (Exception ex)
+            {
+                TryGetCardFromGroupKey(__instance, out CardModel? card);
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] CardGroupKey.GetHashCode prefix failed for Card={GetSafeCardId(card)}. " +
+                    $"Falling back to base-game implementation. {ex.GetType().Name}: {ex.Message}");
                 return true;
             }
-
-            // Keep hash inputs aligned with CardGroupKeyEqualsPrefix above.
-            __result = HashCode.Combine(
-                card.Id,
-                card.CurrentUpgradeLevel,
-                MultiEnchantmentSupport.GetEnchantmentsHashCode(card));
-            return false;
         }
     }
 
@@ -2989,57 +3669,80 @@ internal static class MultiEnchantmentSerializableCardGroupingPatches
         _savedCardsEnchanted = null;
         _separatedHistoryEntries = null;
 
-        List<CardEnchantmentHistoryEntry> original = playerEntry.CardsEnchanted;
-        if (original.Count == 0) return;
-
-        List<SeparatedHistoryEntry>? separated = null;
-
-        for (int i = original.Count - 1; i >= 0; i--)
+        try
         {
-            CardEnchantmentHistoryEntry entry = original[i];
-            EnchantmentModel enchModel = SaveUtil.EnchantmentOrDeprecated(entry.Enchantment);
-            Type enchType = enchModel.GetType();
+            List<CardEnchantmentHistoryEntry> original = playerEntry.CardsEnchanted;
+            if (original.Count == 0) return;
 
-            HistoryDisplayMode mode = EnchantmentRegistry.GetHistoryDisplayMode(enchType);
-            if (mode == HistoryDisplayMode.Auto)
+            List<SeparatedHistoryEntry>? separated = null;
+
+            for (int i = original.Count - 1; i >= 0; i--)
             {
-                mode = HistoryDisplayMode.InRewards;
+                CardEnchantmentHistoryEntry entry = original[i];
+                EnchantmentModel enchModel = SaveUtil.EnchantmentOrDeprecated(entry.Enchantment);
+                Type enchType = enchModel.GetType();
+
+                HistoryDisplayMode mode = EnchantmentRegistry.GetHistoryDisplayMode(enchType);
+                if (mode == HistoryDisplayMode.Auto)
+                {
+                    mode = HistoryDisplayMode.InRewards;
+                }
+
+                if (mode == HistoryDisplayMode.Hidden)
+                {
+                    _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                    original.RemoveAt(i);
+                    continue;
+                }
+
+                if (mode is HistoryDisplayMode.InActions or HistoryDisplayMode.CustomGroup)
+                {
+                    _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                    string? groupHeader = mode == HistoryDisplayMode.CustomGroup
+                        ? EnchantmentRegistry.GetHistoryGroupHeader(enchType)
+                        : null;
+                    HistoryTextFormatter? formatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
+                    separated ??= new();
+                    separated.Add(new SeparatedHistoryEntry(entry, mode, groupHeader, formatter));
+                    original.RemoveAt(i);
+                    continue;
+                }
+
+                HistoryTextFormatter? rewFormatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
+                if (rewFormatter != null)
+                {
+                    _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
+                    separated ??= new();
+                    separated.Add(new SeparatedHistoryEntry(entry, HistoryDisplayMode.InRewards, null, rewFormatter));
+                    original.RemoveAt(i);
+                }
             }
 
-            if (mode == HistoryDisplayMode.Hidden)
+            if (separated != null)
             {
-                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
-                original.RemoveAt(i);
-                continue;
-            }
-
-            if (mode is HistoryDisplayMode.InActions or HistoryDisplayMode.CustomGroup)
-            {
-                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
-                string? groupHeader = mode == HistoryDisplayMode.CustomGroup
-                    ? EnchantmentRegistry.GetHistoryGroupHeader(enchType)
-                    : null;
-                HistoryTextFormatter? formatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
-                separated ??= new();
-                separated.Add(new SeparatedHistoryEntry(entry, mode, groupHeader, formatter));
-                original.RemoveAt(i);
-                continue;
-            }
-
-            HistoryTextFormatter? rewFormatter = EnchantmentRegistry.GetHistoryTextFormatter(enchType);
-            if (rewFormatter != null)
-            {
-                _savedCardsEnchanted ??= new List<CardEnchantmentHistoryEntry>(original);
-                separated ??= new();
-                separated.Add(new SeparatedHistoryEntry(entry, HistoryDisplayMode.InRewards, null, rewFormatter));
-                original.RemoveAt(i);
+                separated.Reverse();
+                _separatedHistoryEntries = separated;
             }
         }
-
-        if (separated != null)
+        catch (Exception ex)
         {
-            separated.Reverse();
-            _separatedHistoryEntries = separated;
+            if (_savedCardsEnchanted != null)
+            {
+                try
+                {
+                    playerEntry.CardsEnchanted.Clear();
+                    playerEntry.CardsEnchanted.AddRange(_savedCardsEnchanted);
+                }
+                catch
+                {
+                    // History display must never crash the run-history screen.
+                }
+            }
+
+            _savedCardsEnchanted = null;
+            _separatedHistoryEntries = null;
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] History display prefix failed; leaving base-game reward history unchanged. {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -3160,10 +3863,18 @@ internal static class MultiEnchantmentSerializableCardGroupingPatches
     {
         if (enchantedLoc != null)
         {
-            enchantedLoc.Add("Icon", "[img=top]res://images/packed/sprite_fonts/card_icon.png[/img]");
-            enchantedLoc.Add("Title1", cardTitle);
-            enchantedLoc.Add("Title2", enchTitle);
-            return enchantedLoc.GetFormattedText() ?? $"{cardTitle} → {enchTitle}";
+            try
+            {
+                enchantedLoc.Add("Icon", "[img=top]res://images/packed/sprite_fonts/card_icon.png[/img]");
+                enchantedLoc.Add("Title1", cardTitle);
+                enchantedLoc.Add("Title2", enchTitle);
+                return enchantedLoc.GetFormattedText() ?? $"{cardTitle} → {enchTitle}";
+            }
+            catch (Exception ex)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] History text localization failed. {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         return $"{cardTitle} → {enchTitle}";

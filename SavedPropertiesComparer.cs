@@ -145,7 +145,7 @@ internal static class SavedPropertiesComparer
             return false;
         }
 
-        return Equals(left.Id, right.Id) &&
+        return EqualityComparer<ModelId>.Default.Equals(left.Id, right.Id) &&
                left.CurrentUpgradeLevel == right.CurrentUpgradeLevel &&
                HaveSameSerializableEnchantment(left.Enchantment, right.Enchantment) &&
                HaveSame(left.Props, right.Props) &&
@@ -164,7 +164,7 @@ internal static class SavedPropertiesComparer
             return false;
         }
 
-        return Equals(left.Id, right.Id) &&
+        return EqualityComparer<ModelId>.Default.Equals(left.Id, right.Id) &&
                left.Amount == right.Amount &&
                HaveSame(left.Props, right.Props);
     }

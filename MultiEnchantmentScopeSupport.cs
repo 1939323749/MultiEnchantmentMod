@@ -19,6 +19,7 @@ using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using MultiEnchantmentMod.Api;
 using MultiEnchantmentMod.Api.Internal;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod;
 
@@ -54,7 +55,7 @@ internal static class MultiEnchantmentScopeSupport
             if (!string.Equals(savedKind, currentKind, StringComparison.Ordinal))
             {
                 MultiEnchantmentMod.Logger.Warn(
-                    $"[MultiEnchantment][Scope] Restored counters for {enchantment.Id} were saved under scope kind '{savedKind}' but the current registry resolves '{currentKind}'. Counters were preserved; review the EnchantmentDefinition.Scope change if behavior looks off.");
+                    $"[MultiEnchantment][Scope] Restored counters for {GetSafeEnchantmentId(enchantment)} were saved under scope kind '{savedKind}' but the current registry resolves '{currentKind}'. Counters were preserved; review the EnchantmentDefinition.Scope change if behavior looks off.");
             }
         }
 
@@ -78,7 +79,7 @@ internal static class MultiEnchantmentScopeSupport
         }
 
         MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment][Scope] {apiName} rejected non-persistable scope override {scope.GetType().Name} for {enchantment.Id}. ConditionalActive/RemoveWhen overrides carry predicates and must be registered at the enchantment type level.");
+            $"[MultiEnchantment][Scope] {apiName} rejected non-persistable scope override {scope.GetType().Name} for {GetSafeEnchantmentId(enchantment)}. ConditionalActive/RemoveWhen overrides carry predicates and must be registered at the enchantment type level.");
         return true;
     }
 
@@ -400,7 +401,7 @@ internal static class MultiEnchantmentScopeSupport
             catch (Exception ex)
             {
                 MultiEnchantmentMod.Logger.Warn(
-                    $"[MultiEnchantment][Scope] RemoveWhen predicate failed for {enchantment.Id} on {card.Id}: {ex}");
+                    $"[MultiEnchantment][Scope] RemoveWhen predicate failed for {GetSafeEnchantmentId(enchantment)} on {GetSafeCardId(card)}: {ex}");
                 return;
             }
 
@@ -427,7 +428,14 @@ internal static class MultiEnchantmentScopeSupport
 
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
-            NoteActivation(enchantment, trigger);
+            try
+            {
+                NoteActivation(enchantment, trigger);
+            }
+            catch (Exception ex)
+            {
+                LogLifecycleFailure(card, enchantment, $"activation:{trigger}", ex);
+            }
         }
 
         MultiEnchantmentSupport.FlushPendingRemovals(card);
@@ -868,13 +876,20 @@ internal static class MultiEnchantmentScopeSupport
         Func<EnchantmentEntry, bool> hasHandler,
         Action<EnchantmentEntry, TContext, CardModel, EnchantmentModel> action)
     {
-        EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
-        if (entry == null)
+        try
         {
-            return;
-        }
+            EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
+            if (entry == null)
+            {
+                return;
+            }
 
-        action(entry, context, card, enchantment);
+            action(entry, context, card, enchantment);
+        }
+        catch (Exception ex)
+        {
+            LogLifecycleFailure(card, enchantment, "lifecycle dispatch", ex);
+        }
     }
 
     internal static bool IsActive(CardModel card, EnchantmentModel enchantment)
@@ -902,7 +917,7 @@ internal static class MultiEnchantmentScopeSupport
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Active predicate failed for {enchantment.Id} on {card.Id}: {ex}");
+                $"[MultiEnchantment][Scope] Active predicate failed for {GetSafeEnchantmentId(enchantment)} on {GetSafeCardId(card)}: {ex}");
             return true;
         }
     }
@@ -1035,13 +1050,25 @@ internal static class MultiEnchantmentScopeSupport
         Func<EnchantmentEntry, bool> hasHandler,
         Action<EnchantmentEntry, CardModel, EnchantmentModel> action)
     {
-        EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
-        if (entry == null)
+        try
         {
-            return;
-        }
+            EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
+            if (entry == null)
+            {
+                return;
+            }
 
-        action(entry, card, enchantment);
+            action(entry, card, enchantment);
+        }
+        catch (Exception ex)
+        {
+            LogLifecycleFailure(card, enchantment, "lifecycle dispatch", ex);
+        }
+    }
+
+    private static void LogLifecycleFailure(CardModel card, EnchantmentModel enchantment, string hookName, Exception ex)
+    {
+        SafeInvoker.LogFailure(enchantment.GetType(), hookName, ex, GetSafeCardId(card));
     }
 
     private static IEnumerable<CardModel> EnumerateCombatCards(ICombatState? combatState, bool includeDeckVersions)
@@ -1163,7 +1190,7 @@ internal static class MultiEnchantmentScopeSupport
     private static EnchantmentScope? WarnUnknownScopeOverride(string kind, EnchantmentModel enchantment)
     {
         MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment][Scope] Ignoring unknown scope override kind '{kind}' for {enchantment.Id}.");
+            $"[MultiEnchantment][Scope] Ignoring unknown scope override kind '{kind}' for {GetSafeEnchantmentId(enchantment)}.");
         return null;
     }
 
@@ -1172,7 +1199,7 @@ internal static class MultiEnchantmentScopeSupport
         if (turns is not > 0)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Ignoring invalid LingerForTurns override for {enchantment.Id}: turns={turns?.ToString() ?? "<missing>"}.");
+                $"[MultiEnchantment][Scope] Ignoring invalid LingerForTurns override for {GetSafeEnchantmentId(enchantment)}: turns={turns?.ToString() ?? "<missing>"}.");
             return null;
         }
 
@@ -1187,7 +1214,7 @@ internal static class MultiEnchantmentScopeSupport
         if (max is not > 0)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Ignoring invalid MaxActivations override for {enchantment.Id}: max={max?.ToString() ?? "<missing>"}.");
+                $"[MultiEnchantment][Scope] Ignoring invalid MaxActivations override for {GetSafeEnchantmentId(enchantment)}: max={max?.ToString() ?? "<missing>"}.");
             return null;
         }
 
@@ -1219,7 +1246,7 @@ internal static class MultiEnchantmentScopeSupport
     private static ActivationTrigger WarnUnknownActivationTrigger(string name, EnchantmentModel enchantment)
     {
         MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment][Scope] Unknown activation trigger '{name}' in scope override for {enchantment.Id}; falling back to OnPlay.");
+            $"[MultiEnchantment][Scope] Unknown activation trigger '{name}' in scope override for {GetSafeEnchantmentId(enchantment)}; falling back to OnPlay.");
         return ActivationTrigger.OnPlay;
     }
 
@@ -1276,7 +1303,7 @@ internal static class MultiEnchantmentScopeSupport
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment][Scope] Failed to deserialize scope state for {enchantment.Id}: {ex}");
+                $"[MultiEnchantment][Scope] Failed to deserialize scope state for {GetSafeEnchantmentId(enchantment)}: {ex}");
             return false;
         }
     }

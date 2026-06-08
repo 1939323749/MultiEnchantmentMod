@@ -29,6 +29,7 @@ using MegaCrit.Sts2.Core.Saves.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
 using MultiEnchantmentMod.Api;
 using MultiEnchantmentMod.Api.Internal;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod;
 
@@ -92,7 +93,9 @@ internal static partial class MultiEnchantmentSupport
         }
         catch (Exception ex)
         {
-            MultiEnchantmentMod.Logger.Error($"Failed to deserialize extra enchantments for card {card.Id}: {ex}");
+            MultiEnchantmentMod.Logger.Error($"Failed to deserialize extra enchantments for card {GetSafeCardId(card)}: {ex}");
+            Telemetry.TelemetryCollector.NoteDeserializationFailure(
+                $"{SavePropertyName}:payload", GetSafeCardId(card), ex);
             RemoveSavedString(save.Props, SavePropertyName);
             DeserializeApplicationOrder(save, card);
             return;
@@ -121,9 +124,9 @@ internal static partial class MultiEnchantmentSupport
             catch (Exception ex)
             {
                 MultiEnchantmentMod.Logger.Error(
-                    $"Failed to restore extra enchantment {serializable.Id} on card {card.Id}: {ex}");
+                    $"Failed to restore extra enchantment {GetSafeModelId(serializable.Id)} on card {GetSafeCardId(card)}: {ex}");
                 Telemetry.TelemetryCollector.NoteDeserializationFailure(
-                    serializable.Id?.ToString() ?? "unknown", card.Id.ToString(), ex);
+                    GetSafeModelId(serializable.Id), GetSafeCardId(card), ex);
             }
         }
 
@@ -179,7 +182,9 @@ internal static partial class MultiEnchantmentSupport
         }
         catch (Exception ex)
         {
-            MultiEnchantmentMod.Logger.Error($"Failed to deserialize enchantment order for card {card.Id}: {ex}");
+            MultiEnchantmentMod.Logger.Error($"Failed to deserialize enchantment order for card {GetSafeCardId(card)}: {ex}");
+            Telemetry.TelemetryCollector.NoteDeserializationFailure(
+                $"{OrderSavePropertyName}:payload", GetSafeCardId(card), ex);
             RemoveSavedString(save.Props, OrderSavePropertyName);
             return;
         }

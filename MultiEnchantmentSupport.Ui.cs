@@ -450,7 +450,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping dangling extra enchantment on {listenerSource} hook listeners. " +
-                $"ExpectedCard={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+                $"ExpectedCard={DescribeCard(card)} Enchantment={SafeModelId(enchantment)} Type={enchantment.GetType().FullName}");
             return false;
         }
 
@@ -458,7 +458,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping mismatched extra enchantment on {listenerSource} hook listeners. " +
-                $"ExpectedCard={card.Id} ActualCard={ownerCard.Id} Enchantment={enchantment.Id} " +
+                $"ExpectedCard={DescribeCard(card)} ActualCard={DescribeCard(ownerCard)} Enchantment={SafeModelId(enchantment)} " +
                 $"Type={enchantment.GetType().FullName}");
             return false;
         }
@@ -467,7 +467,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping removed-card extra enchantment on {listenerSource} hook listeners. " +
-                $"Card={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+                $"Card={DescribeCard(card)} Enchantment={SafeModelId(enchantment)} Type={enchantment.GetType().FullName}");
             return false;
         }
 
@@ -476,7 +476,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping ownerless-card extra enchantment on {listenerSource} hook listeners. " +
-                $"Card={card.Id} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+                $"Card={DescribeCard(card)} Enchantment={SafeModelId(enchantment)} Type={enchantment.GetType().FullName}");
             return false;
         }
 
@@ -484,7 +484,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping inactive-owner extra enchantment on {listenerSource} hook listeners. " +
-                $"Card={card.Id} Owner={owner.NetId} Enchantment={enchantment.Id} Type={enchantment.GetType().FullName}");
+                $"Card={DescribeCard(card)} Owner={SafePlayerId(owner)} Enchantment={SafeModelId(enchantment)} Type={enchantment.GetType().FullName}");
             return false;
         }
 
@@ -492,7 +492,7 @@ internal static partial class MultiEnchantmentSupport
         {
             MultiEnchantmentMod.Logger.Warn(
                 $"[MultiEnchantment] Skipping off-combat extra enchantment on {listenerSource} hook listeners. " +
-                $"Card={card.Id} Pile={ownerCard.Pile?.Type.ToString() ?? "<none>"} Enchantment={enchantment.Id} " +
+                $"Card={DescribeCard(card)} Pile={SafePileType(ownerCard)} Enchantment={SafeModelId(enchantment)} " +
                 $"Type={enchantment.GetType().FullName}");
             return false;
         }
@@ -737,14 +737,14 @@ internal static partial class MultiEnchantmentSupport
         string id = SafeModelId(model);
         return model switch
         {
-            CardModel card => $"ListenerType={typeName} Id={id} Card={card.Id} Owner={SafePlayerId(card.Owner)} Pile={card.Pile?.Type.ToString() ?? "<none>"} Removed={card.HasBeenRemovedFromState}",
-            EnchantmentModel enchantment => $"ListenerType={typeName} Id={id} Enchantment={enchantment.Id} Card={DescribeCard(enchantment.Card)}",
-            AfflictionModel affliction => $"ListenerType={typeName} Id={id} Affliction={affliction.Id} Card={DescribeCard(affliction.Card)}",
-            PowerModel power => $"ListenerType={typeName} Id={id} Power={power.Id} Owner={DescribeCreature(power.Owner)}",
-            RelicModel relic => $"ListenerType={typeName} Id={id} Relic={relic.Id} Owner={SafePlayerId(relic.Owner)} Removed={relic.HasBeenRemovedFromState}",
-            PotionModel potion => $"ListenerType={typeName} Id={id} Potion={potion.Id} Owner={SafePlayerId(potion.Owner)} Removed={potion.HasBeenRemovedFromState}",
-            OrbModel orb => $"ListenerType={typeName} Id={id} Orb={orb.Id} Owner={SafePlayerId(orb.Owner)} Removed={orb.HasBeenRemovedFromState}",
-            MonsterModel monster => $"ListenerType={typeName} Id={id} Monster={monster.Id} Creature={DescribeCreature(monster.Creature)}",
+            CardModel card => $"ListenerType={typeName} Id={id} Card={DescribeCard(card)}",
+            EnchantmentModel enchantment => $"ListenerType={typeName} Id={id} Enchantment={SafeModelId(enchantment)} Card={DescribeCard(enchantment.Card)}",
+            AfflictionModel affliction => $"ListenerType={typeName} Id={id} Affliction={SafeModelId(affliction)} Card={DescribeCard(affliction.Card)}",
+            PowerModel power => $"ListenerType={typeName} Id={id} Power={SafeModelId(power)} Owner={DescribeCreature(power.Owner)}",
+            RelicModel relic => $"ListenerType={typeName} Id={id} Relic={SafeModelId(relic)} Owner={SafePlayerId(relic.Owner)} Removed={SafeRemoved(relic)}",
+            PotionModel potion => $"ListenerType={typeName} Id={id} Potion={SafeModelId(potion)} Owner={SafePlayerId(potion.Owner)} Removed={SafeRemoved(potion)}",
+            OrbModel orb => $"ListenerType={typeName} Id={id} Orb={SafeModelId(orb)} Owner={SafePlayerId(orb.Owner)} Removed={SafeRemoved(orb)}",
+            MonsterModel monster => $"ListenerType={typeName} Id={id} Monster={SafeModelId(monster)} Creature={DescribeCreature(monster.Creature)}",
             _ => $"ListenerType={typeName} Id={id}",
         };
     }
@@ -756,7 +756,14 @@ internal static partial class MultiEnchantmentSupport
             return "<null>";
         }
 
-        return $"{card.Id} Owner={SafePlayerId(card.Owner)} Pile={card.Pile?.Type.ToString() ?? "<none>"} Removed={card.HasBeenRemovedFromState}";
+        try
+        {
+            return $"{SafeModelId(card)} Owner={SafePlayerId(card.Owner)} Pile={SafePileType(card)} Removed={card.HasBeenRemovedFromState}";
+        }
+        catch (Exception ex)
+        {
+            return $"<card describe threw {ex.GetType().Name}>";
+        }
     }
 
     private static string DescribeCreature(Creature? creature)
@@ -766,12 +773,31 @@ internal static partial class MultiEnchantmentSupport
             return "<null>";
         }
 
-        return $"{creature.LogName} CombatState={(creature.CombatState == null ? "<null>" : "present")} Player={SafePlayerId(creature.Player)}";
+        try
+        {
+            return $"{creature.LogName} CombatState={(creature.CombatState == null ? "<null>" : "present")} Player={SafePlayerId(creature.Player)}";
+        }
+        catch (Exception ex)
+        {
+            return $"<creature describe threw {ex.GetType().Name}>";
+        }
     }
 
     private static string SafePlayerId(Player? player)
     {
-        return player == null ? "<null>" : player.NetId.ToString();
+        if (player == null)
+        {
+            return "<null>";
+        }
+
+        try
+        {
+            return player.NetId.ToString();
+        }
+        catch (Exception ex)
+        {
+            return $"<player id threw {ex.GetType().Name}>";
+        }
     }
 
     private static string SafeModelId(AbstractModel model)
@@ -783,6 +809,37 @@ internal static partial class MultiEnchantmentSupport
         catch (Exception ex)
         {
             return $"<id threw {ex.GetType().Name}>";
+        }
+    }
+
+    private static string SafePileType(CardModel? card)
+    {
+        try
+        {
+            return card?.Pile?.Type.ToString() ?? "<none>";
+        }
+        catch (Exception ex)
+        {
+            return $"<pile threw {ex.GetType().Name}>";
+        }
+    }
+
+    private static bool SafeRemoved(AbstractModel model)
+    {
+        try
+        {
+            return model switch
+            {
+                CardModel card => card.HasBeenRemovedFromState,
+                RelicModel relic => relic.HasBeenRemovedFromState,
+                PotionModel potion => potion.HasBeenRemovedFromState,
+                OrbModel orb => orb.HasBeenRemovedFromState,
+                _ => false,
+            };
+        }
+        catch
+        {
+            return false;
         }
     }
 

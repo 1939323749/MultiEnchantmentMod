@@ -13,6 +13,7 @@ using System.Threading;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Models.Relics;
@@ -40,6 +41,9 @@ internal static class TelemetryCollector
     private static bool _runEndedSent;
     private static bool _pendingLossCombatForRunSummary;
     private static string? _pendingLossRunIdentityKey;
+    private static bool? _pendingRunIsMultiplayer;
+    private static bool? _runIsMultiplayer;
+    private static int? _runPlayerCount;
     private static TelemetryHashCache? _runtimeHashCache;
 
     private static readonly JsonSerializerOptions HashJsonOptions = new()
@@ -68,7 +72,6 @@ internal static class TelemetryCollector
     private static int _totalApplications;
     private static int _totalRemovals;
     private static int _maxEnchantmentsOnCard;
-    private static int _beforeEnchantedCancelCount;
     private static int _eventBusPublishCount;
     private static int _deserializationFailureCount;
     private static int _enchantedCardPlays;
@@ -281,7 +284,6 @@ internal static class TelemetryCollector
         _totalApplications = 0;
         _totalRemovals = 0;
         _maxEnchantmentsOnCard = 0;
-        _beforeEnchantedCancelCount = 0;
         _eventBusPublishCount = 0;
         _deserializationFailureCount = 0;
         _enchantedCardPlays = 0;
@@ -369,6 +371,7 @@ internal static class TelemetryCollector
             try { deckCardIds = CollectDeckCardIds(combatState); } catch { }
             try { relicIds = CollectRelicIds(combatState); } catch { }
             try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
+            var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, combatState));
 
             TelemetryReporter.SendCombat(new
             {
@@ -389,6 +392,8 @@ internal static class TelemetryCollector
                 room_name = roomName,
                 floor,
                 ascension,
+                is_multiplayer = multiplayer.IsMultiplayer,
+                player_count = multiplayer.PlayerCount,
 
                 // Game state snapshot (null when no enchantment activity → omitted by serializer)
                 deck_card_ids = deckCardIds,
@@ -420,7 +425,6 @@ internal static class TelemetryCollector
                 }).ToList(),
                 deserialization_failure_count = _deserializationFailureCount,
                 deserialization_failures = deserializationFailuresSnapshot,
-                before_enchanted_cancel_count = _beforeEnchantedCancelCount,
                 event_bus_publish_count = _eventBusPublishCount,
             });
 
@@ -483,6 +487,7 @@ internal static class TelemetryCollector
              string.Equals(_runIdentityKey, identityKey, StringComparison.Ordinal)))
         {
             _currentRunState = runState;
+            MergeMultiplayerContext(GetMultiplayerContext(runState, null));
             return;
         }
 
@@ -508,6 +513,10 @@ internal static class TelemetryCollector
         _runEndedSent = false;
         _pendingLossCombatForRunSummary = false;
         _pendingLossRunIdentityKey = null;
+        _runIsMultiplayer = _pendingRunIsMultiplayer;
+        _runPlayerCount = null;
+        _pendingRunIsMultiplayer = null;
+        MergeMultiplayerContext(GetMultiplayerContext(runState, null));
     }
 
     private static void SendRunSummary(IRunState? runState, string outcome)
@@ -528,6 +537,8 @@ internal static class TelemetryCollector
             combatCount = (combatCount ?? 0) + 1;
         }
 
+        var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, null));
+
         TelemetryReporter.SendRun(new
         {
             session_id = _sessionId,
@@ -542,6 +553,8 @@ internal static class TelemetryCollector
             character = GetCharacterName(runState),
             ascension,
             combat_count = combatCount,
+            is_multiplayer = multiplayer.IsMultiplayer,
+            player_count = multiplayer.PlayerCount,
             game_version = TelemetryConfig.GameVersion,
             mod_version = TelemetryConfig.ModVersion,
             api_version = MultiEnchantmentApiVersion.Current,
@@ -657,6 +670,7 @@ internal static class TelemetryCollector
             try { ascension = runState?.AscensionLevel; } catch { }
             try { roomType = runState?.CurrentRoom?.RoomType.ToString(); } catch { }
             try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
+            var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, null));
             try
             {
                 object? characterObj = GetPropertyOrFieldValue(player, "Character");
@@ -686,6 +700,8 @@ internal static class TelemetryCollector
                 ascension,
                 room_type = roomType,
                 room_name = roomName,
+                is_multiplayer = multiplayer.IsMultiplayer,
+                player_count = multiplayer.PlayerCount,
                 reward_type = reward?.GetType().Name,
                 offered_card_ids = offeredCardIds.ToList(),
                 selected_card_ids = selectedCardIds.ToList(),
@@ -701,9 +717,39 @@ internal static class TelemetryCollector
         catch { /* telemetry must never crash the game */ }
     }
 
-    internal static void NoteEnchantRemoved() => _totalRemovals++;
+    internal static void NoteRunSaveMode(bool isMultiplayer)
+    {
+        if (!TelemetryConfig.IsEnabled) return;
 
-    internal static void NoteBeforeEnchantCancelled() => _beforeEnchantedCancelCount++;
+        try
+        {
+            if (_runId == null)
+            {
+                _pendingRunIsMultiplayer = isMultiplayer;
+                return;
+            }
+
+            MergeMultiplayerContext((isMultiplayer, null));
+        }
+        catch { /* telemetry must never crash the game */ }
+    }
+
+    internal static void NoteRunLoadedFromSave(bool isMultiplayer)
+    {
+        if (!TelemetryConfig.IsEnabled) return;
+
+        try
+        {
+            _pendingRunIsMultiplayer = isMultiplayer;
+            if (_runId != null)
+            {
+                MergeMultiplayerContext((isMultiplayer, null));
+            }
+        }
+        catch { /* telemetry must never crash the game */ }
+    }
+
+    internal static void NoteEnchantRemoved() => _totalRemovals++;
 
     internal static void NoteEventBusPublish() => _eventBusPublishCount++;
 
@@ -734,31 +780,122 @@ internal static class TelemetryCollector
 
     private static List<object> CollectLoadedMods()
     {
-        var result = new List<object>();
+        var snapshots = new Dictionary<string, ModSnapshot>(StringComparer.OrdinalIgnoreCase);
+        List<ModManifestInfo> manifests = CollectInstalledModManifests();
+        var manifestsById = manifests
+            .Where(static m => !string.IsNullOrWhiteSpace(m.Id))
+            .GroupBy(static m => m.Id!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static g => g.Key, static g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var manifestsByDirectory = manifests
+            .Where(static m => !string.IsNullOrWhiteSpace(m.Directory))
+            .GroupBy(static m => m.Directory!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static g => g.Key, static g => g.First(), StringComparer.OrdinalIgnoreCase);
+        ModSettingsSnapshot settings = CollectModSettingsSnapshot();
         string ourAsmName = typeof(TelemetryCollector).Assembly.GetName().Name ?? "";
 
+        int runtimeCount = AddRuntimeModSnapshots(snapshots, manifestsById);
+        AddAssemblyModSnapshots(snapshots, manifestsByDirectory, settings, ourAsmName);
+        AddEnabledManifestSnapshots(snapshots, manifests, settings);
+
+        DiagLog($"CollectLoadedMods: runtime={runtimeCount} loaded={snapshots.Values.Count(static m => m.Loaded)} manifests={manifests.Count} settings_found={settings.Found} total={snapshots.Count}");
+        return StableSortForHash(snapshots.Values.Cast<object>());
+    }
+
+    private static int AddRuntimeModSnapshots(
+        Dictionary<string, ModSnapshot> snapshots,
+        IReadOnlyDictionary<string, ModManifestInfo> manifestsById)
+    {
+        int count = 0;
+        try
+        {
+            int order = 0;
+            foreach (Mod mod in ModManager.Mods)
+            {
+                ModManifest? runtimeManifest = mod.manifest;
+                string? id = runtimeManifest?.id;
+                bool loaded = mod.state == ModLoadState.Loaded;
+                bool enabled = mod.state is not ModLoadState.Disabled and not ModLoadState.DisabledDuplicate;
+
+                if (!enabled && !loaded)
+                {
+                    order++;
+                    continue;
+                }
+
+                ModManifestInfo? diskManifest = null;
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    manifestsById.TryGetValue(id, out diskManifest);
+                }
+
+                ModSnapshot snapshot = ModSnapshot.FromRuntimeMod(mod, diskManifest, order);
+                string key = snapshot.Key;
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    snapshots[key] = snapshot;
+                    count++;
+                }
+
+                order++;
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"AddRuntimeModSnapshots FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return count;
+    }
+
+    private static void AddAssemblyModSnapshots(
+        Dictionary<string, ModSnapshot> snapshots,
+        IReadOnlyDictionary<string, ModManifestInfo> manifestsByDirectory,
+        ModSettingsSnapshot settings,
+        string ourAsmName)
+    {
         foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
         {
-            if (!TryGetRelevantModAssembly(
-                    asm,
-                    ourAsmName,
-                    out string asmName,
-                    out bool referencesUs,
-                    out bool hasThirdPartyEnchantments))
+            if (!TryGetLoadedModSnapshot(asm, ourAsmName, manifestsByDirectory, settings, out ModSnapshot? snapshot) ||
+                snapshot == null)
             {
                 continue;
             }
 
-            result.Add(new
+            string key = snapshot.Key;
+            if (!string.IsNullOrWhiteSpace(key) && !snapshots.ContainsKey(key))
             {
-                name = asmName,
-                version = GetModVersion(asm),
-                references_us = referencesUs,
-                has_enchantments = hasThirdPartyEnchantments,
-            });
+                snapshots[key] = snapshot;
+            }
         }
+    }
 
-        return StableSortForHash(result);
+    private static void AddEnabledManifestSnapshots(
+        Dictionary<string, ModSnapshot> snapshots,
+        IReadOnlyList<ModManifestInfo> manifests,
+        ModSettingsSnapshot settings)
+    {
+        foreach (ModManifestInfo manifest in manifests)
+        {
+            ModEnableInfo? enableInfo = settings.Find(manifest.Id, manifest.Directory);
+            if (settings.Found &&
+                (!settings.ModsEnabled || enableInfo?.IsEnabled != true))
+            {
+                continue;
+            }
+
+            if (!settings.Found && !ManifestDependsOnUs(manifest))
+            {
+                continue;
+            }
+
+            string key = manifest.Id ?? manifest.Directory ?? manifest.ManifestFileName;
+            if (string.IsNullOrWhiteSpace(key) || snapshots.ContainsKey(key))
+            {
+                continue;
+            }
+
+            snapshots[key] = ModSnapshot.FromManifest(manifest, enableInfo);
+        }
     }
 
     private static List<object> CollectApiCompatibilityResults()
@@ -1454,6 +1591,636 @@ internal static class TelemetryCollector
         }
     }
 
+    private static bool TryGetLoadedModSnapshot(
+        Assembly asm,
+        string ourAsmName,
+        IReadOnlyDictionary<string, ModManifestInfo> manifestsByDirectory,
+        ModSettingsSnapshot settings,
+        out ModSnapshot? snapshot)
+    {
+        snapshot = null;
+        string asmName = asm.GetName().Name ?? "";
+        if (string.IsNullOrWhiteSpace(asmName))
+        {
+            return false;
+        }
+
+        bool isOurAssembly = string.Equals(asmName, ourAsmName, StringComparison.OrdinalIgnoreCase);
+        if (!isOurAssembly && IsFrameworkOrGameAssembly(asmName, ourAsmName))
+        {
+            return false;
+        }
+
+        bool referencesUs = false;
+        try
+        {
+            referencesUs = asm.GetReferencedAssemblies()
+                .Any(r => string.Equals(r.Name, ourAsmName, StringComparison.OrdinalIgnoreCase));
+        }
+        catch { /* ignore reflection failures */ }
+
+        bool hasThirdPartyEnchantments = ContainsThirdPartyEnchantmentTypes(asm);
+        ModManifestInfo? manifest = TryFindManifestForAssembly(asm, manifestsByDirectory);
+        ModEnableInfo? enableInfo = settings.Find(manifest?.Id ?? asmName, manifest?.Directory);
+
+        if (!isOurAssembly &&
+            manifest == null &&
+            !referencesUs &&
+            !hasThirdPartyEnchantments &&
+            !IsAssemblyUnderModsRoot(asm))
+        {
+            return false;
+        }
+
+        snapshot = ModSnapshot.FromAssembly(
+            asm,
+            manifest,
+            enableInfo,
+            referencesUs,
+            hasThirdPartyEnchantments);
+        return true;
+    }
+
+    private static ModManifestInfo? TryFindManifestForAssembly(
+        Assembly asm,
+        IReadOnlyDictionary<string, ModManifestInfo> manifestsByDirectory)
+    {
+        try
+        {
+            string? location = asm.Location;
+            if (string.IsNullOrWhiteSpace(location)) return null;
+
+            string? directory = GetTopLevelModDirectoryName(location);
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                manifestsByDirectory.TryGetValue(directory, out ModManifestInfo? byDirectory))
+            {
+                return byDirectory;
+            }
+        }
+        catch { /* best-effort */ }
+
+        return null;
+    }
+
+    private static bool IsAssemblyUnderModsRoot(Assembly asm)
+    {
+        try
+        {
+            string? location = asm.Location;
+            return !string.IsNullOrWhiteSpace(location) &&
+                   GetTopLevelModDirectoryName(location) != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static ModSettingsSnapshot CollectModSettingsSnapshot()
+    {
+        try
+        {
+            ModSettingsSnapshot? fromRuntime = TryCollectRuntimeModSettingsSnapshot();
+            if (fromRuntime != null)
+            {
+                return fromRuntime;
+            }
+
+            string? settingsPath = FindLatestSettingsSavePath();
+            if (!string.IsNullOrWhiteSpace(settingsPath))
+            {
+                ModSettingsSnapshot? fromFile = TryReadModSettingsSnapshot(settingsPath);
+                if (fromFile != null)
+                {
+                    return fromFile;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"CollectModSettingsSnapshot FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return ModSettingsSnapshot.NotFound;
+    }
+
+    private static ModSettingsSnapshot? TryCollectRuntimeModSettingsSnapshot()
+    {
+        try
+        {
+            var mods = ModManager.Mods;
+            if (mods == null || mods.Count == 0)
+            {
+                return null;
+            }
+
+            var byKey = new Dictionary<string, ModEnableInfo>(StringComparer.OrdinalIgnoreCase);
+            int order = 0;
+            foreach (Mod mod in mods)
+            {
+                string? id = mod.manifest?.id;
+                if (string.IsNullOrWhiteSpace(id))
+                {
+                    order++;
+                    continue;
+                }
+
+                bool enabled = mod.state is not ModLoadState.Disabled and not ModLoadState.DisabledDuplicate;
+                var info = new ModEnableInfo
+                {
+                    Id = id,
+                    IsEnabled = enabled,
+                    Source = mod.modSource.ToString(),
+                    LoadOrder = order,
+                };
+                AddModEnableInfo(byKey, info, mod.path);
+                order++;
+            }
+
+            return byKey.Count == 0
+                ? null
+                : new ModSettingsSnapshot
+                {
+                    Found = true,
+                    ModsEnabled = true,
+                    ModsByKey = byKey,
+                };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? FindLatestSettingsSavePath()
+    {
+        try
+        {
+            string? appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrWhiteSpace(appData))
+            {
+                return null;
+            }
+
+            string root = Path.Combine(appData, "SlayTheSpire2");
+            if (!Directory.Exists(root))
+            {
+                return null;
+            }
+
+            return Directory.EnumerateFiles(root, "settings.save", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static ModSettingsSnapshot? TryReadModSettingsSnapshot(string settingsPath)
+    {
+        try
+        {
+            if (!File.Exists(settingsPath))
+            {
+                return null;
+            }
+
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(settingsPath, Encoding.UTF8));
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("mod_settings", out JsonElement modSettings) ||
+                modSettings.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            bool modsEnabled = ReadJsonBool(modSettings, "mods_enabled") ?? true;
+            var byKey = new Dictionary<string, ModEnableInfo>(StringComparer.OrdinalIgnoreCase);
+            if (modSettings.TryGetProperty("mod_list", out JsonElement modList) &&
+                modList.ValueKind == JsonValueKind.Array)
+            {
+                int order = 0;
+                foreach (JsonElement entry in modList.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object)
+                    {
+                        order++;
+                        continue;
+                    }
+
+                    string? id = ReadJsonString(entry, "id");
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        order++;
+                        continue;
+                    }
+
+                    var info = new ModEnableInfo
+                    {
+                        Id = id,
+                        IsEnabled = modsEnabled && (ReadJsonBool(entry, "is_enabled") ?? true),
+                        Source = ReadJsonString(entry, "source"),
+                        LoadOrder = order,
+                    };
+                    AddModEnableInfo(byKey, info, null);
+                    order++;
+                }
+            }
+
+            return new ModSettingsSnapshot
+            {
+                Found = true,
+                ModsEnabled = modsEnabled,
+                ModsByKey = byKey,
+            };
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"TryReadModSettingsSnapshot FAILED: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static void AddModEnableInfo(
+        IDictionary<string, ModEnableInfo> map,
+        ModEnableInfo info,
+        string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(info.Id))
+        {
+            map[info.Id] = info;
+        }
+
+        string? directory = null;
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            try
+            {
+                directory = Path.GetFileName(path.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar));
+            }
+            catch { /* best-effort */ }
+        }
+
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            map[directory] = info;
+        }
+    }
+
+    private static List<ModManifestInfo> CollectInstalledModManifests()
+    {
+        var result = new List<ModManifestInfo>();
+        string? modsRoot = FindModsRoot();
+        if (string.IsNullOrWhiteSpace(modsRoot) || !Directory.Exists(modsRoot))
+        {
+            DiagLog("CollectInstalledModManifests: mods root not found");
+            return result;
+        }
+
+        try
+        {
+            foreach (string modDirectory in Directory.EnumerateDirectories(modsRoot))
+            {
+                ModManifestInfo? manifest = TryReadManifestFromModDirectory(modDirectory);
+                if (manifest != null)
+                {
+                    result.Add(manifest);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"CollectInstalledModManifests FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return result;
+    }
+
+    private static ModManifestInfo? TryReadManifestFromModDirectory(string modDirectory)
+    {
+        try
+        {
+            if (!Directory.Exists(modDirectory)) return null;
+
+            string directoryName = Path.GetFileName(modDirectory.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar));
+
+            IEnumerable<string> candidates = new[]
+                {
+                    Path.Combine(modDirectory, $"{directoryName}.json"),
+                    Path.Combine(modDirectory, "mod_manifest.json"),
+                }
+                .Concat(Directory.EnumerateFiles(modDirectory, "*.json", SearchOption.TopDirectoryOnly)
+                    .Where(static p => !Path.GetFileName(p).EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase)));
+
+            foreach (string path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                ModManifestInfo? manifest = TryReadModManifestInfo(path, directoryName);
+                if (manifest != null)
+                {
+                    return manifest;
+                }
+            }
+        }
+        catch { /* best-effort */ }
+
+        return null;
+    }
+
+    private static ModManifestInfo? TryReadModManifestInfo(string path, string directoryName)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+
+            string text = File.ReadAllText(path, Encoding.UTF8);
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(text);
+                JsonElement root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object ||
+                    !LooksLikeModManifest(root))
+                {
+                    return null;
+                }
+
+                string? id = ReadJsonString(root, "id");
+                string? name = ReadJsonString(root, "name");
+                string? version = ReadJsonString(root, "version");
+                if (string.IsNullOrWhiteSpace(id) && string.IsNullOrWhiteSpace(version))
+                {
+                    return null;
+                }
+
+                return new ModManifestInfo
+                {
+                    Id = string.IsNullOrWhiteSpace(id) ? Path.GetFileNameWithoutExtension(path) : id,
+                    DisplayName = name,
+                    Version = version,
+                    Directory = directoryName,
+                    ManifestFileName = Path.GetFileName(path),
+                    HasDll = ReadJsonBool(root, "has_dll") ?? ReadJsonBool(root, "hasDll"),
+                    HasPck = ReadJsonBool(root, "has_pck") ?? ReadJsonBool(root, "hasPck"),
+                    AffectsGameplay = ReadJsonBool(root, "affects_gameplay") ?? ReadJsonBool(root, "affectsGameplay"),
+                    Dependencies = ReadManifestDependencies(root),
+                };
+            }
+            catch (JsonException)
+            {
+                return TryReadLooseModManifestInfo(text, path, directoryName);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool LooksLikeModManifest(JsonElement root)
+    {
+        return root.TryGetProperty("id", out _) ||
+               root.TryGetProperty("has_dll", out _) ||
+               root.TryGetProperty("hasDll", out _) ||
+               root.TryGetProperty("has_pck", out _) ||
+               root.TryGetProperty("hasPck", out _) ||
+               root.TryGetProperty("affects_gameplay", out _) ||
+               root.TryGetProperty("affectsGameplay", out _);
+    }
+
+    private static ModManifestInfo? TryReadLooseModManifestInfo(string text, string path, string directoryName)
+    {
+        if (!Regex.IsMatch(text, "\"(id|has_dll|hasDll|has_pck|hasPck|affects_gameplay|affectsGameplay)\"\\s*:",
+                RegexOptions.IgnoreCase))
+        {
+            return null;
+        }
+
+        string? id = ReadLooseJsonString(text, "id");
+        string? version = ReadLooseJsonString(text, "version");
+        if (string.IsNullOrWhiteSpace(id) && string.IsNullOrWhiteSpace(version))
+        {
+            return null;
+        }
+
+        return new ModManifestInfo
+        {
+            Id = string.IsNullOrWhiteSpace(id) ? Path.GetFileNameWithoutExtension(path) : id,
+            DisplayName = ReadLooseJsonString(text, "name"),
+            Version = version,
+            Directory = directoryName,
+            ManifestFileName = Path.GetFileName(path),
+            HasDll = ReadLooseJsonBool(text, "has_dll") ?? ReadLooseJsonBool(text, "hasDll"),
+            HasPck = ReadLooseJsonBool(text, "has_pck") ?? ReadLooseJsonBool(text, "hasPck"),
+            AffectsGameplay = ReadLooseJsonBool(text, "affects_gameplay") ?? ReadLooseJsonBool(text, "affectsGameplay"),
+        };
+    }
+
+    private static string? ReadJsonString(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => value.ToString(),
+            _ => null,
+        };
+    }
+
+    private static bool? ReadJsonBool(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(value.GetString(), out bool parsed) => parsed,
+            _ => null,
+        };
+    }
+
+    private static List<object>? ReadManifestDependencies(JsonElement root)
+    {
+        if (!root.TryGetProperty("dependencies", out JsonElement dependencies) ||
+            dependencies.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var result = new List<object>();
+        foreach (JsonElement dependency in dependencies.EnumerateArray().Take(50))
+        {
+            switch (dependency.ValueKind)
+            {
+                case JsonValueKind.String:
+                    string? id = dependency.GetString();
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        result.Add(new { id });
+                    }
+                    break;
+                case JsonValueKind.Object:
+                    string? objectId = ReadJsonString(dependency, "id");
+                    if (!string.IsNullOrWhiteSpace(objectId))
+                    {
+                        result.Add(new
+                        {
+                            id = objectId,
+                            version = ReadJsonString(dependency, "version"),
+                            min_version = ReadJsonString(dependency, "min_version"),
+                            max_version = ReadJsonString(dependency, "max_version"),
+                        });
+                    }
+                    break;
+            }
+        }
+
+        return result.Count == 0 ? null : result;
+    }
+
+    private static bool ManifestDependsOnUs(ModManifestInfo manifest)
+    {
+        string ourAsmName = typeof(TelemetryCollector).Assembly.GetName().Name ?? "";
+        if (string.IsNullOrWhiteSpace(ourAsmName) || manifest.Dependencies == null)
+        {
+            return false;
+        }
+
+        foreach (object dependency in manifest.Dependencies)
+        {
+            string? id = GetPropertyOrFieldValue(dependency, "id")?.ToString();
+            if (string.Equals(id, ourAsmName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool RuntimeManifestDependsOnUs(ModManifest? manifest)
+    {
+        string ourAsmName = typeof(TelemetryCollector).Assembly.GetName().Name ?? "";
+        if (string.IsNullOrWhiteSpace(ourAsmName) || manifest?.dependencies == null)
+        {
+            return false;
+        }
+
+        foreach (ModDependency dependency in manifest.dependencies)
+        {
+            if (string.Equals(dependency.id, ourAsmName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<object>? ReadRuntimeManifestDependencies(ModManifest? manifest)
+    {
+        if (manifest?.dependencies == null || manifest.dependencies.Count == 0)
+        {
+            return null;
+        }
+
+        var result = new List<object>();
+        foreach (ModDependency dependency in manifest.dependencies.Take(50))
+        {
+            if (!string.IsNullOrWhiteSpace(dependency.id))
+            {
+                result.Add(new
+                {
+                    id = dependency.id,
+                    min_version = dependency.minVersion,
+                });
+            }
+        }
+
+        return result.Count == 0 ? null : result;
+    }
+
+    private static string? ReadLooseJsonString(string text, string propertyName)
+    {
+        Match match = Regex.Match(
+            text,
+            $"\"{Regex.Escape(propertyName)}\"\\s*:\\s*\"(?<value>[^\"]*)\"",
+            RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["value"].Value : null;
+    }
+
+    private static bool? ReadLooseJsonBool(string text, string propertyName)
+    {
+        Match match = Regex.Match(
+            text,
+            $"\"{Regex.Escape(propertyName)}\"\\s*:\\s*(?<value>true|false)",
+            RegexOptions.IgnoreCase);
+        return match.Success && bool.TryParse(match.Groups["value"].Value, out bool parsed)
+            ? parsed
+            : null;
+    }
+
+    private static string? FindModsRoot()
+    {
+        string? dir = Path.GetDirectoryName(typeof(TelemetryCollector).Assembly.Location);
+        string? current = dir;
+        for (int depth = 0; depth <= 8 && !string.IsNullOrWhiteSpace(current); depth++)
+        {
+            if (string.Equals(Path.GetFileName(current), "mods", StringComparison.OrdinalIgnoreCase))
+            {
+                return current;
+            }
+
+            string childMods = Path.Combine(current, "mods");
+            if (Directory.Exists(childMods))
+            {
+                return childMods;
+            }
+
+            current = Directory.GetParent(current)?.FullName;
+        }
+
+        string? parent = Directory.GetParent(dir ?? "")?.FullName;
+        return !string.IsNullOrWhiteSpace(parent) &&
+               string.Equals(Path.GetFileName(parent), "mods", StringComparison.OrdinalIgnoreCase)
+            ? parent
+            : null;
+    }
+
+    private static string? GetTopLevelModDirectoryName(string path)
+    {
+        string? modsRoot = FindModsRoot();
+        if (string.IsNullOrWhiteSpace(modsRoot)) return null;
+
+        string fullRoot = Path.GetFullPath(modsRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+            Path.DirectorySeparatorChar;
+        string fullPath = Path.GetFullPath(path);
+        if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string relative = Path.GetRelativePath(fullRoot, fullPath);
+        string? directory = relative
+            .Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(directory) ? null : directory;
+    }
+
     private static bool IsThirdPartyEnchantmentType(Type type)
     {
         return !type.IsAbstract &&
@@ -1679,6 +2446,107 @@ internal static class TelemetryCollector
         {
             return false;
         }
+    }
+
+    private static (bool? IsMultiplayer, int? PlayerCount) GetMultiplayerContext(
+        IRunState? runState,
+        ICombatState? combatState)
+    {
+        int? playerCount = TryGetPlayerCount(combatState?.Players)
+                           ?? TryGetPlayerCount(GetPropertyOrFieldValue(runState, "Players"));
+        bool? isMultiplayer = TryGetMultiplayerFlag(combatState)
+                              ?? TryGetMultiplayerFlag(runState);
+
+        if (playerCount > 1)
+        {
+            isMultiplayer = true;
+        }
+
+        return (isMultiplayer, playerCount);
+    }
+
+    private static (bool? IsMultiplayer, int? PlayerCount) MergeMultiplayerContext(
+        (bool? IsMultiplayer, int? PlayerCount) context)
+    {
+        if (context.IsMultiplayer == true)
+        {
+            _runIsMultiplayer = true;
+        }
+        else if (!_runIsMultiplayer.HasValue && context.IsMultiplayer == false)
+        {
+            _runIsMultiplayer = false;
+        }
+
+        if (context.PlayerCount.HasValue &&
+            (!_runPlayerCount.HasValue || context.PlayerCount.Value > _runPlayerCount.Value))
+        {
+            _runPlayerCount = context.PlayerCount.Value;
+        }
+
+        if (_runPlayerCount > 1)
+        {
+            _runIsMultiplayer = true;
+        }
+
+        return (_runIsMultiplayer, _runPlayerCount);
+    }
+
+    private static bool? TryGetMultiplayerFlag(object? source)
+    {
+        foreach (string memberName in new[]
+                 {
+                     "IsMultiplayer",
+                     "IsMultiplayerRun",
+                     "IsOnline",
+                     "IsOnlineRun",
+                     "Multiplayer",
+                 })
+        {
+            object? value = GetPropertyOrFieldValue(source, memberName);
+            if (value is bool b)
+            {
+                return b;
+            }
+        }
+
+        return null;
+    }
+
+    private static int? TryGetPlayerCount(object? players)
+    {
+        if (players == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            object? countValue = GetPropertyOrFieldValue(players, "Count")
+                                 ?? GetPropertyOrFieldValue(players, "Length");
+            if (countValue is int reflectedCount && reflectedCount >= 0)
+            {
+                return reflectedCount;
+            }
+
+            if (players is ICollection collection)
+            {
+                return collection.Count;
+            }
+
+            if (players is IEnumerable enumerable)
+            {
+                int count = 0;
+                foreach (object _ in enumerable)
+                {
+                    count++;
+                }
+
+                return count;
+            }
+        }
+        catch { /* best-effort */ }
+
+        return null;
     }
 
     private static string BuildRunIdentityKey(IRunState runState)
@@ -2227,6 +3095,196 @@ internal static class TelemetryCollector
         public string Assembly { get; init; } = "";
         public string AssemblyVersion { get; init; } = "";
         public bool IsThirdParty { get; init; }
+    }
+
+    private sealed class ModSnapshot
+    {
+        [JsonIgnore]
+        public string Key => Id ?? Directory ?? Assembly ?? Name;
+
+        public string Name { get; init; } = "";
+        public string? Id { get; init; }
+        public string? Assembly { get; init; }
+        public string? Version { get; init; }
+        public string? Directory { get; init; }
+        public string? Manifest { get; init; }
+        public bool Loaded { get; init; }
+        public bool Enabled { get; init; }
+        public bool Installed { get; init; }
+        public string? LoadState { get; init; }
+        public string? Source { get; init; }
+        public int? LoadOrder { get; init; }
+        public bool ReferencesUs { get; init; }
+        public bool HasEnchantments { get; init; }
+        public bool? HasDll { get; init; }
+        public bool? HasPck { get; init; }
+        public bool? AffectsGameplay { get; init; }
+        public List<object>? Dependencies { get; init; }
+
+        public static ModSnapshot FromAssembly(
+            Assembly assembly,
+            ModManifestInfo? manifest,
+            ModEnableInfo? enableInfo,
+            bool referencesUs,
+            bool hasThirdPartyEnchantments)
+        {
+            string asmName = assembly.GetName().Name ?? "unknown";
+            return new ModSnapshot
+            {
+                Id = manifest?.Id,
+                Name = manifest?.DisplayName ?? manifest?.Id ?? asmName,
+                Assembly = asmName,
+                Version = manifest?.Version ?? GetModVersion(assembly),
+                Directory = manifest?.Directory ?? TryGetTopLevelModDirectoryName(assembly),
+                Manifest = manifest?.ManifestFileName,
+                Loaded = true,
+                Enabled = enableInfo?.IsEnabled ?? true,
+                Installed = manifest != null,
+                LoadState = "Loaded",
+                Source = enableInfo?.Source,
+                LoadOrder = enableInfo?.LoadOrder,
+                ReferencesUs = referencesUs,
+                HasEnchantments = hasThirdPartyEnchantments,
+                HasDll = manifest?.HasDll,
+                HasPck = manifest?.HasPck,
+                AffectsGameplay = manifest?.AffectsGameplay,
+                Dependencies = manifest?.Dependencies,
+            };
+        }
+
+        public static ModSnapshot FromRuntimeMod(Mod mod, ModManifestInfo? diskManifest, int order)
+        {
+            ModManifest? manifest = mod.manifest;
+            string? id = manifest?.id ?? diskManifest?.Id;
+            string? assemblyName = mod.assembly?.GetName().Name;
+            bool loaded = mod.state == ModLoadState.Loaded;
+            bool enabled = mod.state is not ModLoadState.Disabled and not ModLoadState.DisabledDuplicate;
+            return new ModSnapshot
+            {
+                Id = id,
+                Name = manifest?.name ?? diskManifest?.DisplayName ?? id ?? assemblyName ?? "unknown",
+                Assembly = assemblyName,
+                Version = manifest?.version ?? diskManifest?.Version ?? (mod.assembly == null ? null : GetModVersion(mod.assembly)),
+                Directory = TryGetDirectoryName(mod.path) ?? diskManifest?.Directory,
+                Manifest = diskManifest?.ManifestFileName ?? (string.IsNullOrWhiteSpace(id) ? null : id + ".json"),
+                Loaded = loaded,
+                Enabled = enabled,
+                Installed = true,
+                LoadState = mod.state.ToString(),
+                Source = mod.modSource.ToString(),
+                LoadOrder = order,
+                ReferencesUs = RuntimeManifestDependsOnUs(manifest) || (diskManifest != null && ManifestDependsOnUs(diskManifest)),
+                HasEnchantments = mod.assembly != null && ContainsThirdPartyEnchantmentTypes(mod.assembly),
+                HasDll = manifest?.hasDll ?? diskManifest?.HasDll,
+                HasPck = manifest?.hasPck ?? diskManifest?.HasPck,
+                AffectsGameplay = manifest?.affectsGameplay ?? diskManifest?.AffectsGameplay,
+                Dependencies = ReadRuntimeManifestDependencies(manifest) ?? diskManifest?.Dependencies,
+            };
+        }
+
+        public static ModSnapshot FromManifest(ModManifestInfo manifest, ModEnableInfo? enableInfo)
+        {
+            return new ModSnapshot
+            {
+                Id = manifest.Id,
+                Name = manifest.DisplayName ?? manifest.Id ?? manifest.Directory ?? "unknown",
+                Assembly = null,
+                Version = manifest.Version,
+                Directory = manifest.Directory,
+                Manifest = manifest.ManifestFileName,
+                Loaded = false,
+                Enabled = enableInfo?.IsEnabled ?? true,
+                Installed = true,
+                LoadState = null,
+                Source = enableInfo?.Source,
+                LoadOrder = enableInfo?.LoadOrder,
+                ReferencesUs = ManifestDependsOnUs(manifest),
+                HasEnchantments = false,
+                HasDll = manifest.HasDll,
+                HasPck = manifest.HasPck,
+                AffectsGameplay = manifest.AffectsGameplay,
+                Dependencies = manifest.Dependencies,
+            };
+        }
+
+        private static string? TryGetTopLevelModDirectoryName(Assembly assembly)
+        {
+            try
+            {
+                string? location = assembly.Location;
+                return string.IsNullOrWhiteSpace(location) ? null : TelemetryCollector.GetTopLevelModDirectoryName(location);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string? TryGetDirectoryName(string? path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    return null;
+                }
+
+                return Path.GetFileName(path.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    private sealed class ModManifestInfo
+    {
+        public string? Id { get; init; }
+        public string? DisplayName { get; init; }
+        public string? Version { get; init; }
+        public string? Directory { get; init; }
+        public string ManifestFileName { get; init; } = "";
+        public bool? HasDll { get; init; }
+        public bool? HasPck { get; init; }
+        public bool? AffectsGameplay { get; init; }
+        public List<object>? Dependencies { get; init; }
+    }
+
+    private sealed class ModSettingsSnapshot
+    {
+        public static readonly ModSettingsSnapshot NotFound = new();
+
+        public bool Found { get; init; }
+        public bool ModsEnabled { get; init; } = true;
+        public IReadOnlyDictionary<string, ModEnableInfo> ModsByKey { get; init; } =
+            new Dictionary<string, ModEnableInfo>(StringComparer.OrdinalIgnoreCase);
+
+        public ModEnableInfo? Find(string? id, string? directory)
+        {
+            if (!string.IsNullOrWhiteSpace(id) && ModsByKey.TryGetValue(id, out ModEnableInfo? byId))
+            {
+                return byId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                ModsByKey.TryGetValue(directory, out ModEnableInfo? byDirectory))
+            {
+                return byDirectory;
+            }
+
+            return null;
+        }
+    }
+
+    private sealed class ModEnableInfo
+    {
+        public string Id { get; init; } = "";
+        public bool IsEnabled { get; init; }
+        public string? Source { get; init; }
+        public int? LoadOrder { get; init; }
     }
 
     private sealed class TelemetryHashCache

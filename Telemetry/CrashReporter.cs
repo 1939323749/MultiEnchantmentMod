@@ -89,10 +89,12 @@ internal static class CrashReporter
             }
             catch { loadedAssemblies = Array.Empty<string>(); }
 
+            string catalogHash = TelemetryCollector.MinimalCrashCatalogHash;
+            string environmentHash = TelemetryCollector.MinimalCrashEnvironmentHash;
+            string osPlatform = GetOsPlatform();
+
             if (ensureSessionRow && !TelemetryCollector.SessionDataQueued)
             {
-                string catalogHash = TelemetryCollector.MinimalCrashCatalogHash;
-                string environmentHash = TelemetryCollector.MinimalCrashEnvironmentHash;
                 TelemetryReporter.SendStartupData(
                     TelemetryCollector.BuildMinimalCrashEnvironmentData(environmentHash),
                     new
@@ -102,7 +104,7 @@ internal static class CrashReporter
                         mod_version = TelemetryConfig.ModVersion,
                         game_version = TelemetryConfig.GameVersion,
                         api_version = Api.MultiEnchantmentApiVersion.Current,
-                        os_platform = GetOsPlatform(),
+                        os_platform = osPlatform,
                         catalog_hash = catalogHash,
                         environment_hash = environmentHash,
                     },
@@ -115,6 +117,13 @@ internal static class CrashReporter
             TelemetryReporter.SendCrash(new
             {
                 session_id = _sessionId,
+                installation_id = TelemetryConfig.InstallationId,
+                mod_version = TelemetryConfig.ModVersion,
+                game_version = TelemetryConfig.GameVersion,
+                api_version = Api.MultiEnchantmentApiVersion.Current,
+                os_platform = osPlatform,
+                catalog_hash = catalogHash,
+                environment_hash = environmentHash,
                 exception_type = ex.GetType().FullName ?? ex.GetType().Name,
                 exception_message = Truncate(ex.Message, 500),
                 stack_trace = Truncate(trace, 2000),

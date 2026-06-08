@@ -1,4 +1,5 @@
 using MegaCrit.Sts2.Core.Models;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
@@ -112,12 +113,12 @@ internal static class ExtraIconDisplayRegistry
         {
             entry.Disabled = true;
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Disabling extra-icon display provider after {entry.ConsecutiveFailures} consecutive failures (last Card={card.Id}): {ex}");
+                $"[MultiEnchantment] Disabling extra-icon display provider after {entry.ConsecutiveFailures} consecutive failures (last Card={GetSafeCardId(card)}): {ex}");
             return;
         }
 
         global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment] Extra-icon display provider failed for Card={card.Id}: {ex}");
+            $"[MultiEnchantment] Extra-icon display provider failed for Card={GetSafeCardId(card)}: {ex}");
     }
 
     private static void WarnIfNotMarkerType(Type enchantmentType)

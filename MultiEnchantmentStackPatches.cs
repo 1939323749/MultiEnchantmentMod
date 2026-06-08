@@ -10,25 +10,41 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.ValueProps;
+using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod;
 
 [HarmonyPatch]
 internal static class MultiEnchantmentStackPatches
 {
+    private static void LogNonFatalPatchFailure(string context, Exception ex)
+    {
+        MultiEnchantmentMod.Logger.Warn(
+            $"[MultiEnchantment] {context} failed. {ex.GetType().Name}: {ex.Message}");
+    }
+
     [HarmonyPatch(typeof(Glam), nameof(Glam.EnchantPlayCount))]
     [HarmonyPrefix]
     [HarmonyPriority(Priority.Low)]
     private static bool GlamEnchantPlayCountPrefix(Glam __instance, int originalPlayCount, ref int __result)
     {
-        int result = __instance.Status == EnchantmentStatus.Disabled
-            ? originalPlayCount
-            : originalPlayCount + __instance.Amount;
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Glam.EnchantPlayCount. " +
-            $"Card={__instance.Card?.Id} Original={originalPlayCount} Result={result} Disabled={__instance.Status == EnchantmentStatus.Disabled}");
-        __result = result;
-        return false;
+        try
+        {
+            bool disabled = __instance.Status == EnchantmentStatus.Disabled;
+            int result = disabled
+                ? originalPlayCount
+                : originalPlayCount + __instance.Amount;
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Glam.EnchantPlayCount. " +
+                $"Card={GetSafeCardId(__instance.Card)} Original={originalPlayCount} Result={result} Disabled={disabled}");
+            __result = result;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Glam.EnchantPlayCount prefix; falling back to base-game implementation", ex);
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(Spiral), nameof(Spiral.EnchantPlayCount))]
@@ -36,12 +52,21 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPriority(Priority.Low)]
     private static bool SpiralEnchantPlayCountPrefix(Spiral __instance, int originalPlayCount, ref int __result)
     {
-        int result = originalPlayCount + __instance.Amount;
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Spiral.EnchantPlayCount. " +
-            $"Card={__instance.Card?.Id} Original={originalPlayCount} Amount={__instance.Amount} Result={result}");
-        __result = result;
-        return false;
+        try
+        {
+            int amount = __instance.Amount;
+            int result = originalPlayCount + amount;
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Spiral.EnchantPlayCount. " +
+                $"Card={GetSafeCardId(__instance.Card)} Original={originalPlayCount} Amount={amount} Result={result}");
+            __result = result;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("Spiral.EnchantPlayCount prefix; falling back to base-game implementation", ex);
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(Slither), nameof(Slither.AfterCardDrawn))]
@@ -49,18 +74,18 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPriority(Priority.Low)]
     private static bool SlitherAfterCardDrawnPrefix(Slither __instance, PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw, ref Task __result)
     {
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Slither.AfterCardDrawn. " +
-            $"Card={card.Id} FromHandDraw={fromHandDraw} SlitherCard={__instance.Card?.Id}");
         try
         {
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Slither.AfterCardDrawn. " +
+                $"Card={GetSafeCardId(card)} FromHandDraw={fromHandDraw} SlitherCard={GetSafeCardId(__instance.Card)}");
             __result = HandleStackedSlitherAfterCardDrawn(__instance, card);
             return false;
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Slither.AfterCardDrawn failed for Card={card.Id}. " +
+                $"[MultiEnchantment] Slither.AfterCardDrawn failed for Card={GetSafeCardId(card)}. " +
                 $"Falling back to base-game implementation. Error: {ex}");
             return true;
         }
@@ -71,11 +96,11 @@ internal static class MultiEnchantmentStackPatches
     [HarmonyPriority(Priority.Low)]
     private static bool ImbuedAfterAutoPrePlayPhaseEnteredPrefix(Imbued __instance, PlayerChoiceContext choiceContext, Player player, ref Task __result)
     {
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting Imbued.AfterAutoPrePlayPhaseEntered. " +
-            $"Player={player.NetId} ImbuedCard={__instance.Card?.Id} Turn={player.PlayerCombatState?.TurnNumber}");
         try
         {
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting Imbued.AfterAutoPrePlayPhaseEntered. " +
+                $"Player={GetSafePlayerId(player)} ImbuedCard={GetSafeCardId(__instance.Card)} Turn={player.PlayerCombatState?.TurnNumber}");
             __result = HandleStackedImbuedAfterAutoPrePlayPhaseEntered(__instance, choiceContext, player);
             return false;
         }
@@ -97,11 +122,11 @@ internal static class MultiEnchantmentStackPatches
         Player player,
         ref Task __result)
     {
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting SlumberingEssence.BeforeFlush. " +
-            $"Player={player.NetId} SlumberingCard={__instance.Card?.Id}");
         try
         {
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting SlumberingEssence.BeforeFlush. " +
+                $"Player={GetSafePlayerId(player)} SlumberingCard={GetSafeCardId(__instance.Card)}");
             __result = HandleStackedSlumberingEssenceBeforeFlush(__instance, player);
             return false;
         }
