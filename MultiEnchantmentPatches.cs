@@ -1366,6 +1366,78 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    [HarmonyPatch(typeof(Hook), nameof(Hook.ModifyPowerAmountGiven))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void HookModifyPowerAmountGivenPostfix(
+        ICombatState combatState,
+        PowerModel power,
+        Creature giver,
+        Creature? target,
+        CardModel? cardSource,
+        ref decimal __result)
+    {
+        try
+        {
+            // Base-game source: Hook.ModifyPowerAmountGiven (signature stable across 0.106/0.107;
+            // only the AbstractModel listener virtuals changed between versions, which this patch
+            // deliberately does not touch). Vanilla never consults card enchantments here — the
+            // hook iterates combat listeners (creatures / powers / relics) only — so enchantment
+            // contributions are layered on top of the vanilla result.
+            if (cardSource == null)
+            {
+                return;
+            }
+
+            __result = MultiEnchantmentSupport.ApplyPowerAmountGivenContributions(
+                cardSource, power, giver, target, __result);
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.ModifyPowerAmountGiven postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
+    }
+
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterPowerAmountChanged))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void HookAfterPowerAmountChangedPostfix(
+        ref Task __result,
+        PowerModel power,
+        decimal amount,
+        Creature? applier,
+        CardModel? cardSource)
+    {
+        __result = HookAfterPowerAmountChangedPostfixAsync(__result, power, amount, applier, cardSource);
+    }
+
+    private static async Task HookAfterPowerAmountChangedPostfixAsync(
+        Task original,
+        PowerModel power,
+        decimal amount,
+        Creature? applier,
+        CardModel? cardSource)
+    {
+        await original;
+        try
+        {
+            // Base-game source: Hook.AfterPowerAmountChanged — fires once per power application
+            // with a non-zero resolved delta. Only card-sourced applications reach enchantments.
+            if (cardSource == null)
+            {
+                return;
+            }
+
+            MultiEnchantmentScopeSupport.DispatchOnCardAppliedPowerForCard(
+                cardSource,
+                new PowerAppliedContext(power, amount, applier, power.Owner));
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure($"Hook.AfterPowerAmountChanged postfix for Card={GetSafeCardId(cardSource)}", ex);
+        }
+    }
+
     [HarmonyPatch(typeof(MysticLighter), nameof(MysticLighter.ModifyDamageAdditive))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
@@ -3156,6 +3228,7 @@ internal static class MultiEnchantmentPatches
             for (int i = 0; i < cloneCount; i++)
             {
                 CardModel clone = owner.RunState.CloneCard(card);
+                MultiEnchantmentScopeSupport.DispatchOnCardCloned(card, clone);
                 results.Add(await CardPileCmd.Add(clone, PileType.Deck));
             }
         }

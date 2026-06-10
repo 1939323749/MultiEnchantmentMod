@@ -643,6 +643,96 @@ internal static class MultiEnchantmentScopeSupport
         RefreshAfterUserCallbacks(card);
     }
 
+    // === Phase 6 — power-chain and card-identity dispatchers ==================================
+
+    /// <summary>
+    /// Fires <c>OnCardAppliedPower(card, self, context)</c> on every active enchantment on
+    /// <paramref name="card"/>. Bridges <c>Hook.AfterPowerAmountChanged</c> filtered to power
+    /// applications whose <c>cardSource</c> is this card.
+    /// </summary>
+    internal static void DispatchOnCardAppliedPowerForCard(CardModel? card, PowerAppliedContext context)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
+        {
+            if (!IsActive(card, enchantment)) continue;
+            InvokeLifecycleWithContext(card, enchantment, context,
+                static entry => entry.OnCardAppliedPower != null,
+                static (entry, ctx, selfCard, self) => entry.RunOnCardAppliedPower(selfCard, self, ctx));
+        }
+
+        RefreshAfterUserCallbacks(card);
+    }
+
+    /// <summary>
+    /// Original card noted by the <c>CardModel.AfterTransformedFrom</c> postfix. Vanilla calls
+    /// <c>original.AfterTransformedFrom(); replacement.AfterTransformedTo();</c> back-to-back on
+    /// the main thread inside <c>CardCmd.Transform</c>'s per-transformation loop, so a single slot
+    /// pairs them safely. Cleared on every <c>AfterTransformedTo</c>.
+    /// </summary>
+    private static CardModel? _pendingTransformSource;
+
+    internal static void NoteTransformSource(CardModel original)
+    {
+        _pendingTransformSource = original;
+    }
+
+    /// <summary>
+    /// Fires <c>OnCardTransformed(original, self, replacement)</c> on every active enchantment on
+    /// the original card recorded by <see cref="NoteTransformSource"/>. Called from the
+    /// <c>CardModel.AfterTransformedTo</c> postfix; no-ops when no source is pending (e.g. a
+    /// subclass overrode <c>AfterTransformedFrom</c> without calling base and is not patched).
+    /// </summary>
+    internal static void DispatchOnCardTransformed(CardModel replacement)
+    {
+        CardModel? original = _pendingTransformSource;
+        _pendingTransformSource = null;
+        if (original == null || ReferenceEquals(original, replacement))
+        {
+            return;
+        }
+
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(original).ToList())
+        {
+            if (!IsActive(original, enchantment)) continue;
+            InvokeLifecycleWithContext(original, enchantment, replacement,
+                static entry => entry.OnCardTransformed != null,
+                static (entry, replacement_, selfCard, self) => entry.RunOnCardTransformed(selfCard, self, replacement_));
+        }
+
+        // Handlers typically mutate the replacement (migrate state, re-enchant). Refresh it.
+        RefreshAfterUserCallbacks(replacement);
+    }
+
+    /// <summary>
+    /// Fires <c>OnCardCloned(original, self, clone)</c> on every active enchantment on
+    /// <paramref name="original"/>. Called from gameplay clone entry points
+    /// (<c>CardModel.CreateClone</c>, rest-site Clone option) — never from UI preview clones.
+    /// The clone has already inherited all enchantments via the <c>MutableClone</c> postfix.
+    /// </summary>
+    internal static void DispatchOnCardCloned(CardModel original, CardModel clone)
+    {
+        if (ReferenceEquals(original, clone))
+        {
+            return;
+        }
+
+        foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(original).ToList())
+        {
+            if (!IsActive(original, enchantment)) continue;
+            InvokeLifecycleWithContext(original, enchantment, clone,
+                static entry => entry.OnCardCloned != null,
+                static (entry, clone_, selfCard, self) => entry.RunOnCardCloned(selfCard, self, clone_));
+        }
+
+        // Handlers typically mutate the clone (reset counters, strip transient state). Refresh it.
+        RefreshAfterUserCallbacks(clone);
+    }
+
     /// <summary>
     /// Phase 3a T3a.6: fan the OnAfterDamageReceived lifecycle out to every active enchantment
     /// on every card owned by <paramref name="player"/>. Bridges vanilla

@@ -204,6 +204,43 @@ internal static partial class MultiEnchantmentSupport
         return result;
     }
 
+    /// <summary>
+    /// Folds every active enchantment's <c>ModifyPowerAmountGiven</c> contributions over the
+    /// running power amount. Called from the <c>Hook.ModifyPowerAmountGiven</c> postfix with the
+    /// power application's <c>cardSource</c>, after vanilla's additive/multiplicative listener
+    /// pipeline has produced its result.
+    /// </summary>
+    public static decimal ApplyPowerAmountGivenContributions(
+        CardModel? card,
+        PowerModel power,
+        Creature giver,
+        Creature? target,
+        decimal amount)
+    {
+        if (card == null)
+        {
+            return amount;
+        }
+
+        PowerGivenContext? context = null;
+        decimal result = amount;
+        foreach (EnchantmentStackSnapshot snapshot in GetOrderedActiveStackSnapshots(card))
+        {
+            foreach (EnchantmentEntry entry in EnchantmentRegistry.GetEntries(snapshot.EnchantmentType))
+            {
+                if (entry.PowerAmountGivenContributions.Count == 0)
+                {
+                    continue;
+                }
+
+                context ??= new PowerGivenContext(power, giver, target, card);
+                result = entry.ModifyPowerAmountGiven(snapshot, context, result);
+            }
+        }
+
+        return result;
+    }
+
     public static int ApplyCardPlayCountContributions(CardModel? card, int playCount)
     {
         if (card == null)

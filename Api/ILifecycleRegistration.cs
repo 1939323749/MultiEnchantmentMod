@@ -52,4 +52,30 @@ public interface ILifecycleRegistration
     IEnchantmentRegistration OnBeforeBlockGained(Action<CardModel, EnchantmentModel, BlockGainContext> handler);
     IEnchantmentRegistration OnBlockGained(Action<CardModel, EnchantmentModel, BlockGainContext> handler);
     IEnchantmentRegistration OnShouldDie(Func<CardModel, EnchantmentModel, Creature, bool> handler);
+
+    /// <summary>
+    /// Fires after the enchanted card applied a power and the amount change has fully resolved
+    /// (bridge to vanilla <c>Hook.AfterPowerAmountChanged</c>, filtered to this card as
+    /// <c>cardSource</c>). Parameters: (selfCard, selfEnchantment, context).
+    /// </summary>
+    IEnchantmentRegistration OnCardAppliedPower(Action<CardModel, EnchantmentModel, PowerAppliedContext> handler);
+
+    /// <summary>
+    /// Fires after the enchanted card was transformed into another card (vanilla
+    /// <c>CardCmd.Transform</c> — events, ArchaicTooth, etc.). Parameters:
+    /// (originalCard, selfEnchantment, replacementCard). Compatible-enchantment copying for the
+    /// covered vanilla transforms has already run, so handlers see the replacement's final state;
+    /// use this to migrate custom runtime state or clean up card-keyed caches.
+    /// </summary>
+    IEnchantmentRegistration OnCardTransformed(Action<CardModel, EnchantmentModel, CardModel> handler);
+
+    /// <summary>
+    /// Fires after the enchanted card was cloned by a gameplay effect (<c>CardModel.CreateClone</c>
+    /// in combat — Juggling, Nightmare, Music Box, Dual Wield, etc. — and the rest-site Clone
+    /// option). Parameters: (originalCard, selfEnchantment, cloneCard). The clone has already
+    /// inherited all enchantments (including this one), so handlers can adjust the copy — e.g.
+    /// reset per-instance counters on the clone's own enchantment instance. UI preview clones do
+    /// not fire this hook.
+    /// </summary>
+    IEnchantmentRegistration OnCardCloned(Action<CardModel, EnchantmentModel, CardModel> handler);
 }

@@ -1564,6 +1564,10 @@ HistoryGroupHeader = "[b]战斗强化[/b]"
 | `OnAnyCardPlayed/Drawn/Exhausted/Discarded` | 战斗中**任意**卡发生事件 | 广播版（opt-in） |
 | `OnSiblingApplied(card, self, newSibling)` | 同卡新邻居挂载之后 | 联动 / 互斥 |
 | `OnSiblingRemoved(card, self, leftSibling, reason)` | 同卡邻居即将卸载（OnRemoved veto 后） | 联动收尾 |
+| `ModifyPowerAmountGiven((snapshot, ctx, current) => …)` | 宿主卡施加能力、原版监听管线结算后 | "这张卡给出的易伤 +1 层"（contribution 型，可多 mod 复合） |
+| `OnCardAppliedPower(card, self, ctx)` | 宿主卡施加的能力增量结算完成后 | 充能计数 / 连击记账（ctx 含 Power / Amount / Applier / Target） |
+| `OnCardTransformed(original, self, replacement)` | 宿主卡被变形为另一张卡之后 | 迁移自定义运行时状态、清理 card-keyed 缓存 |
+| `OnCardCloned(original, self, clone)` | 宿主卡被玩法效果克隆之后（克隆体已继承附魔） | 调整克隆体副本（重置计数 / 撕掉灵魂绑定标记）；UI 预览不触发 |
 
 ### Stack 配置升级
 

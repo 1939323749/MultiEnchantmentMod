@@ -131,6 +131,79 @@ internal static class MultiEnchantmentTransformPatches
         return MultiEnchantmentTransformApi.CopyCompatibleEnchantments(original, result);
     }
 
+    // === Transform / clone lifecycle bridges ==================================================
+    // Vanilla CardCmd.Transform calls original.AfterTransformedFrom() and
+    // replacement.AfterTransformedTo() back-to-back per transformation (verified identical in
+    // 0.106.x and 0.107.0), so the postfix pair below records the original and dispatches the
+    // OnCardTransformed lifecycle when the replacement lands. SovereignBlade is the only vanilla
+    // override of AfterTransformedFrom and does not call base, so it gets its own patch.
+
+    [HarmonyPatch(typeof(CardModel), nameof(CardModel.AfterTransformedFrom))]
+    [HarmonyPostfix]
+    private static void CardModelAfterTransformedFromPostfix(CardModel __instance)
+    {
+        try
+        {
+            MultiEnchantmentScopeSupport.NoteTransformSource(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] CardModel.AfterTransformedFrom postfix failed for Card={GetSafeCardId(__instance)}. Error: {ex}");
+        }
+    }
+
+    [HarmonyPatch(typeof(SovereignBlade), nameof(SovereignBlade.AfterTransformedFrom))]
+    [HarmonyPostfix]
+    private static void SovereignBladeAfterTransformedFromPostfix(SovereignBlade __instance)
+    {
+        try
+        {
+            MultiEnchantmentScopeSupport.NoteTransformSource(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] SovereignBlade.AfterTransformedFrom postfix failed for Card={GetSafeCardId(__instance)}. Error: {ex}");
+        }
+    }
+
+    [HarmonyPatch(typeof(CardModel), nameof(CardModel.AfterTransformedTo))]
+    [HarmonyPostfix]
+    private static void CardModelAfterTransformedToPostfix(CardModel __instance)
+    {
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchOnCardTransformed(__instance);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] CardModel.AfterTransformedTo postfix failed for Card={GetSafeCardId(__instance)}. Error: {ex}");
+        }
+    }
+
+    // CardModel.CreateClone is the gameplay clone entry point (Juggling, Nightmare, Music Box,
+    // Dual Wield, Heirloom Hammer, Burning Sticks, History Course via CreateDupe, ...). UI
+    // previews clone via CombatState.CloneCard / RunState.CloneCard directly and never reach
+    // this method, so author hooks cannot fire from a preview. Enchantment inheritance itself is
+    // handled universally by the AbstractModel.MutableClone postfix — this patch only adds the
+    // OnCardCloned notification.
+    [HarmonyPatch(typeof(CardModel), nameof(CardModel.CreateClone))]
+    [HarmonyPostfix]
+    private static void CardModelCreateClonePostfix(CardModel __instance, CardModel __result)
+    {
+        try
+        {
+            MultiEnchantmentScopeSupport.DispatchOnCardCloned(__instance, __result);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Error(
+                $"[MultiEnchantment] CardModel.CreateClone postfix failed for Card={GetSafeCardId(__instance)}. Error: {ex}");
+        }
+    }
+
     private static void LogArchaicToothReflectionFallback(Exception? ex = null)
     {
         if (_loggedArchaicToothReflectionFallback)

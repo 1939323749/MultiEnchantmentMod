@@ -31,6 +31,7 @@ internal sealed class EnchantmentEntry
     public List<EnergyCostContribution> EnergyCostContributions { get; } = new();
     public List<CardPlayCountContribution> CardPlayCountContributions { get; } = new();
     public List<HandDrawContribution> HandDrawContributions { get; } = new();
+    public List<PowerAmountGivenContribution> PowerAmountGivenContributions { get; } = new();
     public PresentationTextFormatter? FormatExtraText { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<int>?>? GetVisualSliceAmounts { get; set; }
     public Func<EnchantmentStackSnapshot, IReadOnlyList<EnchantmentVisualSlice>?>? GetVisualSlices { get; set; }
@@ -113,6 +114,14 @@ internal sealed class EnchantmentEntry
     // OnSiblingRemoved additionally carries the RemovalReason.
     public Action<CardModel, EnchantmentModel, EnchantmentModel>? OnSiblingApplied { get; set; }
     public Action<CardModel, EnchantmentModel, EnchantmentModel, RemovalReason>? OnSiblingRemoved { get; set; }
+
+    // Phase 6 — power-chain and card-identity bridges. OnCardAppliedPower bridges
+    // Hook.AfterPowerAmountChanged filtered to this card as cardSource. OnCardTransformed /
+    // OnCardCloned fire on the ORIGINAL card's enchantments with the replacement / clone as
+    // context after vanilla transform / gameplay clone flows complete.
+    public Action<CardModel, EnchantmentModel, PowerAppliedContext>? OnCardAppliedPower { get; set; }
+    public Action<CardModel, EnchantmentModel, CardModel>? OnCardTransformed { get; set; }
+    public Action<CardModel, EnchantmentModel, CardModel>? OnCardCloned { get; set; }
 
     // Stack-aware async hooks. These are invoked once per enchantment type with a full
     // EnchantmentStackSnapshot so authors can aggregate prompts, random rolls, animations, and
@@ -266,6 +275,21 @@ internal sealed class EnchantmentEntry
         return result;
     }
 
+    public decimal ModifyPowerAmountGiven(EnchantmentStackSnapshot snapshot, PowerGivenContext context, decimal currentAmount)
+    {
+        decimal result = currentAmount;
+        foreach (PowerAmountGivenContribution contribution in PowerAmountGivenContributions)
+        {
+            result = SafeInvoker.Run(
+                EnchantmentType,
+                nameof(PowerAmountGivenContributions),
+                () => contribution(snapshot, context, result),
+                fallback: result);
+        }
+
+        return result;
+    }
+
     public Task RunOnPlayStacked(StackedOnPlayContext context) =>
         OnPlayStacked == null
             ? Task.CompletedTask
@@ -360,6 +384,9 @@ internal sealed class EnchantmentEntry
         || OnAnyCardDiscarded != null
         || OnSiblingApplied != null
         || OnSiblingRemoved != null
+        || OnCardAppliedPower != null
+        || OnCardTransformed != null
+        || OnCardCloned != null
         || OnPlayStacked != null
         || BeforeCardPlayedStacked != null
         || AfterCardPlayedStacked != null
@@ -537,6 +564,27 @@ internal sealed class EnchantmentEntry
         if (OnSiblingRemoved == null) return;
         SafeInvoker.Run(EnchantmentType, nameof(OnSiblingRemoved),
             () => OnSiblingRemoved!(card, self, removedSibling, reason));
+    }
+
+    public void RunOnCardAppliedPower(CardModel card, EnchantmentModel enchantment, PowerAppliedContext context)
+    {
+        if (OnCardAppliedPower == null) return;
+        SafeInvoker.Run(EnchantmentType, nameof(OnCardAppliedPower),
+            () => OnCardAppliedPower!(card, enchantment, context));
+    }
+
+    public void RunOnCardTransformed(CardModel card, EnchantmentModel enchantment, CardModel replacement)
+    {
+        if (OnCardTransformed == null) return;
+        SafeInvoker.Run(EnchantmentType, nameof(OnCardTransformed),
+            () => OnCardTransformed!(card, enchantment, replacement));
+    }
+
+    public void RunOnCardCloned(CardModel card, EnchantmentModel enchantment, CardModel clone)
+    {
+        if (OnCardCloned == null) return;
+        SafeInvoker.Run(EnchantmentType, nameof(OnCardCloned),
+            () => OnCardCloned!(card, enchantment, clone));
     }
 
     private void RunLifecycle(

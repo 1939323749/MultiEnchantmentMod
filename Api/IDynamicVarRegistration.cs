@@ -30,4 +30,12 @@ public interface IDynamicVarRegistration
     /// contributions from all enchantments across all player combat piles are gathered once per turn.
     /// </summary>
     IEnchantmentRegistration ModifyHandDraw(HandDrawContribution contribution);
+
+    /// <summary>
+    /// Declares a contribution to the amount of any power the enchanted card gives (bridge to
+    /// vanilla <c>Hook.ModifyPowerAmountGiven</c>, applied after the vanilla listener pipeline).
+    /// Only fires when the enchanted card is the power application's <c>cardSource</c> —
+    /// e.g. "+1 Vulnerable per stack when this card applies Vulnerable".
+    /// </summary>
+    IEnchantmentRegistration ModifyPowerAmountGiven(PowerAmountGivenContribution contribution);
 }

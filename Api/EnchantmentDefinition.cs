@@ -112,6 +112,9 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.OnAnyCardDiscarded = (discarded, self, model) => InvokeOnAnyCardDiscarded(discarded, self, (TEnchantment)model);
             entry.OnSiblingApplied = (card, self, sibling) => InvokeOnSiblingApplied(card, (TEnchantment)self, sibling);
             entry.OnSiblingRemoved = (card, self, sibling, reason) => InvokeOnSiblingRemoved(card, (TEnchantment)self, sibling, reason);
+            entry.OnCardAppliedPower = (card, model, ctx) => InvokeOnCardAppliedPower(card, (TEnchantment)model, ctx);
+            entry.OnCardTransformed = (card, model, replacement) => InvokeOnCardTransformed(card, (TEnchantment)model, replacement);
+            entry.OnCardCloned = (card, model, clone) => InvokeOnCardCloned(card, (TEnchantment)model, clone);
         }
 
         foreach (CardKeyword keyword in InvokeTrackedKeywords())
@@ -134,6 +137,11 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
         foreach (CardPlayCountContribution contribution in InvokeCardPlayCountContributions())
         {
             entry.CardPlayCountContributions.Add(contribution);
+        }
+
+        foreach (PowerAmountGivenContribution contribution in InvokePowerAmountGivenContributions())
+        {
+            entry.PowerAmountGivenContributions.Add(contribution);
         }
 
         entry.HistoryDisplay = HistoryDisplay;
@@ -360,6 +368,27 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     /// Fires when another enchantment is removed from the same card.
     /// </summary>
     protected virtual void OnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) { }
+
+    /// <summary>
+    /// Fires after this enchantment's card applied a power and the amount change fully resolved
+    /// (bridge to vanilla <c>Hook.AfterPowerAmountChanged</c> filtered to the card as
+    /// <c>cardSource</c>).
+    /// </summary>
+    protected virtual void OnCardAppliedPower(CardModel card, TEnchantment enchantment, PowerAppliedContext context) { }
+
+    /// <summary>
+    /// Fires after this enchantment's card was transformed into <paramref name="replacement"/>
+    /// (vanilla <c>CardCmd.Transform</c>). Compatible-enchantment copying for the covered vanilla
+    /// transforms has already run — use this to migrate custom runtime state or clean up
+    /// card-keyed caches.
+    /// </summary>
+    protected virtual void OnCardTransformed(CardModel card, TEnchantment enchantment, CardModel replacement) { }
+
+    /// <summary>
+    /// Fires after this enchantment's card was cloned by a gameplay effect. The clone has already
+    /// inherited all enchantments, including this one. UI preview clones do not fire this hook.
+    /// </summary>
+    protected virtual void OnCardCloned(CardModel card, TEnchantment enchantment, CardModel clone) { }
     protected virtual void OnCombatStart(CardModel card, TEnchantment enchantment) { }
     protected virtual void OnCombatEnd(CardModel card, TEnchantment enchantment) { }
     protected virtual void OnTurnStart(CardModel card, TEnchantment enchantment) { }
@@ -549,6 +578,14 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             .Concat(Internal.ModifyDynamicVarScanner.ScanType(typeof(TEnchantment)));
 
     /// <summary>
+    /// Optional power-amount-given contributions. Contributions fold over the running amount from
+    /// <c>Hook.ModifyPowerAmountGiven</c> whenever this enchantment's card is the power
+    /// application's <c>cardSource</c>.
+    /// </summary>
+    protected virtual IEnumerable<PowerAmountGivenContribution> PowerAmountGivenContributions =>
+        Enumerable.Empty<PowerAmountGivenContribution>();
+
+    /// <summary>
     /// Optional combat energy-cost contributions. Contributions fold over the running combat
     /// cost from <c>Hook.ModifyEnergyCostInCombat</c>.
     /// </summary>
@@ -641,7 +678,10 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
                Overrides(nameof(OnAnyCardExhausted), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnAnyCardDiscarded), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)) ||
                Overrides(nameof(OnSiblingApplied), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel)) ||
-               Overrides(nameof(OnSiblingRemoved), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel), typeof(RemovalReason));
+               Overrides(nameof(OnSiblingRemoved), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel), typeof(RemovalReason)) ||
+               Overrides(nameof(OnCardAppliedPower), typeof(CardModel), typeof(TEnchantment), typeof(PowerAppliedContext)) ||
+               Overrides(nameof(OnCardTransformed), typeof(CardModel), typeof(TEnchantment), typeof(CardModel)) ||
+               Overrides(nameof(OnCardCloned), typeof(CardModel), typeof(TEnchantment), typeof(CardModel));
     }
 
     private bool Overrides(string methodName, params Type[] parameterTypes)
@@ -697,6 +737,10 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     internal void InvokeOnAnyCardDiscarded(CardModel discarded, CardModel self, TEnchantment enchantment) => OnAnyCardDiscarded(discarded, self, enchantment);
     internal void InvokeOnSiblingApplied(CardModel card, TEnchantment self, EnchantmentModel newSibling) => OnSiblingApplied(card, self, newSibling);
     internal void InvokeOnSiblingRemoved(CardModel card, TEnchantment self, EnchantmentModel removedSibling, RemovalReason reason) => OnSiblingRemoved(card, self, removedSibling, reason);
+    internal void InvokeOnCardAppliedPower(CardModel card, TEnchantment enchantment, PowerAppliedContext context) => OnCardAppliedPower(card, enchantment, context);
+    internal void InvokeOnCardTransformed(CardModel card, TEnchantment enchantment, CardModel replacement) => OnCardTransformed(card, enchantment, replacement);
+    internal void InvokeOnCardCloned(CardModel card, TEnchantment enchantment, CardModel clone) => OnCardCloned(card, enchantment, clone);
+    internal IEnumerable<PowerAmountGivenContribution> InvokePowerAmountGivenContributions() => PowerAmountGivenContributions;
     internal string? InvokeFormatHistoryText(string cardTitle, string enchantmentTitle) => FormatHistoryText(cardTitle, enchantmentTitle);
     internal Task InvokeOnPlayStacked(StackedOnPlayContext context) => OnPlayStacked(context);
     internal Task InvokeBeforeCardPlayedStacked(StackedBeforeCardPlayedContext context) => BeforeCardPlayedStacked(context);

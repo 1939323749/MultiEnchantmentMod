@@ -113,6 +113,9 @@ Tier C fluent builder. Methods chain and return `this`. **Author-supplied** dele
 - `OnCardRetained(Action<CardModel, EnchantmentModel>)`
 - `OnBeforeBlockGained`, `OnBlockGained` — `Action<CardModel, EnchantmentModel, BlockGainContext>`
 - `OnShouldDie(Func<CardModel, EnchantmentModel, Creature, bool>)` — return `false` to veto death.
+- `OnCardAppliedPower(Action<CardModel, EnchantmentModel, PowerAppliedContext>)` — fires after the enchanted card applied a power and the amount change fully resolved (bridge to `Hook.AfterPowerAmountChanged`, filtered to this card as `cardSource`).
+- `OnCardTransformed(Action<CardModel /*original*/, EnchantmentModel, CardModel /*replacement*/>)` — fires on the original card's enchantments after a vanilla `CardCmd.Transform`; compatible-enchantment copying for the covered transforms has already run.
+- `OnCardCloned(Action<CardModel /*original*/, EnchantmentModel, CardModel /*clone*/>)` — fires on the original card's enchantments after a gameplay clone (`CardModel.CreateClone` in combat, rest-site Clone option). The clone has already inherited every enchantment; UI preview clones never fire this hook.
 - `WithScope(EnchantmentScope)`
 - `LingerForTurns(int turns)`
 - `MaxActivations(int n, ActivationTrigger? t = null)`
@@ -133,6 +136,7 @@ Tier C fluent builder. Methods chain and return `this`. **Author-supplied** dele
 - `ModifyDynamicVar(string varKey, Func<EnchantmentStackSnapshot, decimal, decimal> contribution)`
 - `ModifyEnergyCostInCombat(EnergyCostContribution contribution)`
 - `ModifyCardPlayCount(CardPlayCountContribution contribution)`
+- `ModifyPowerAmountGiven(PowerAmountGivenContribution contribution)` — folds over the running amount of any power the enchanted card gives (bridge to `Hook.ModifyPowerAmountGiven`, applied after the vanilla listener pipeline). Contribution-only — composes across registrations like the other `Modify*` channels.
 - `OnPlayStacked(StackedOnPlayHandler)`, `BeforeCardPlayedStacked`, `AfterCardPlayedStacked`, `AfterSiblingAppliedStacked`, `AfterCardDrawnStacked`, `AfterAnyCardDrawnStacked`, `BeforeFlushStacked`, `AfterDamageGivenStacked` — stack-aware async hooks invoked once per enchantment type with an `EnchantmentStackSnapshot`.
 - `IDisposable Commit()`
 
@@ -327,6 +331,15 @@ Payload to `OnAfterDamageReceived`.
 
 ### `sealed record BlockGainContext(Creature Creature, decimal Amount, CardModel? Source)`
 Payload to `OnBeforeBlockGained` / `OnBlockGained`.
+
+### `sealed record PowerGivenContext(PowerModel Power, Creature Giver, Creature? Target, CardModel Card)`
+Payload to `PowerAmountGivenContribution`. `Card` is the power application's `cardSource` — the card carrying the contributing enchantment. `Target` is null for untargeted previews.
+
+### `sealed record PowerAppliedContext(PowerModel Power, decimal Amount, Creature? Applier, Creature Target)`
+Payload to `OnCardAppliedPower`. `Amount` is the resolved delta (never zero — vanilla skips the hook for no-ops); `Target` equals `Power.Owner`.
+
+### `delegate decimal PowerAmountGivenContribution(EnchantmentStackSnapshot snapshot, PowerGivenContext context, decimal currentAmount)`
+Fold-style contribution to the amount of a power the enchanted card gives. Runs after vanilla's additive/multiplicative listener pipeline; multiple registrations compose in registration order.
 
 ### `sealed record DynamicVarContribution(string VarKey, Func<EnchantmentStackSnapshot, decimal, decimal> Contribution)`
 Returned by the registry; authors build them implicitly via `IEnchantmentRegistration.ModifyDynamicVar` or the `[ModifyDynamicVar]` attribute.

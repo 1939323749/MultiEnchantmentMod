@@ -921,6 +921,49 @@ MultiEnchantmentApi.SetScopeOverride(card, enchantment, null); // 回到注册�
 
 参见 [Sample 24 — PerInstanceScope](../MultiEnchantmentMod.Samples/Samples/24_PerInstanceScope.cs)。
 
+## 增量钩子（缺口完善第二轮：Power 链与卡牌身份）
+
+以下钩子全部为**纯加法**——已有附魔无需修改即可继续运行。
+
+### Power 链桥接：`ModifyPowerAmountGiven` + `OnCardAppliedPower`
+
+原版 `Hook.ModifyPowerAmountGiven` 只遍历战斗监听者（生物 / 能力 / 遗物），**从不咨询卡牌附魔**——"这张卡施加的易伤 +1 层"过去只能自己写 Harmony patch。现在：
+
+```csharp
+// Contribution 型（可被多个 mod 各自追加，不占 Definition slot）：
+MultiEnchantmentApi.Register<MyEnchant>()
+    .ModifyPowerAmountGiven((snapshot, ctx, current) =>
+        ctx.Power.Type == PowerType.Debuff ? current + snapshot.ActiveTotalAmount : current)
+    .Commit();
+
+// 通知型（Definition slot；施加完成、增量结算后触发）：
+protected override void OnCardAppliedPower(CardModel card, MyEnchant e, PowerAppliedContext ctx)
+{
+    // ctx.Power / ctx.Amount（最终增量，恒非 0）/ ctx.Applier / ctx.Target
+}
+```
+
+- Contribution 在原版 additive → multiplicative 监听管线**之后**折叠，遗物效果先生效，多个附魔贡献按顺序复合。
+- 只有当宿主卡是该次能力施加的 `cardSource` 时才触发——队友/遗物直接施加的能力不会进入本卡的贡献链。
+- 双方向中只桥接了 **Given**（卡牌给出方向）；Received（生物接收方向）属于生物级事件，不在卡牌附魔的职责面内。
+- 受 `IsActive` 守门；patch 目标签名在 0.106.x 与 0.107.0 完全一致。
+- **显示注意**：卡面上的数字（如"施加 2 层易伤"里的 2）走 dynamic var 管线，**不会**反映 `ModifyPowerAmountGiven` 的贡献。如果加成绑定某个具体变量且要在卡面同步显示，用 `ModifyDynamicVar("vulnerable", ...)`（显示与实际同时生效，二选一、不要两个都注册否则双重计数）；`ModifyPowerAmountGiven` 适合"所有减益 +1 层"这类不依赖变量名、按能力类型/目标过滤的场景，可配合 `FormatExtraText` 在附魔文本里说明。
+
+### 变形 / 克隆事件：`OnCardTransformed` / `OnCardCloned`
+
+```csharp
+.OnCardTransformed<MyEnchant>((original, self, replacement) => { /* 宿主变形了 */ })
+.OnCardCloned<MyEnchant>((original, self, clone) => { /* 宿主被复制了 */ })
+```
+
+- 两者都在**原卡的附魔**上触发，参数依次是（原卡、自身、新卡）。
+- `OnCardTransformed` 桥接原版 `CardCmd.Transform`（事件变形、ArchaicTooth 等）。触发时兼容附魔已复制到新卡，handler 只需迁移自定义运行时状态（如以 CardModel 为 key 的字典缓存）。
+- `OnCardCloned` 覆盖战斗内 `CardModel.CreateClone`（杂耍、梦魇、音乐盒、双持……）与休息处 Clone 选项。触发时克隆体已继承全部附魔（含自身），handler 可对克隆体上的副本做调整（重置计数、撕掉"灵魂绑定"标记等）。
+- **UI 预览克隆不会触发** `OnCardCloned`——升级/附魔预览走的是 `CombatState.CloneCard` / `RunState.CloneCard` 直调路径，不经过 `CreateClone`。
+- 牌组层的遗物复制（多莉的镜子、蛋类遗物等）目前只做附魔继承（一直如此），暂不触发 `OnCardCloned`，见 ROADMAP。
+
+参见 [Sample 33 — PowerChainHooks](../MultiEnchantmentMod.Samples/Samples/33_PowerChainHooks.cs) 与 [Sample 34 — TransformCloneHooks](../MultiEnchantmentMod.Samples/Samples/34_TransformCloneHooks.cs)。
+
 ## 在 lifecycle handler 里调用 mutating API（安全准则）
 
 ### TL;DR

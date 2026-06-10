@@ -386,6 +386,33 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration OnCardAppliedPower(Action<CardModel, EnchantmentModel, PowerAppliedContext> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardAppliedPower, nameof(OnCardAppliedPower));
+        _entry.OnCardAppliedPower = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardTransformed(Action<CardModel, EnchantmentModel, CardModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardTransformed, nameof(OnCardTransformed));
+        _entry.OnCardTransformed = handler;
+        return this;
+    }
+
+    public IEnchantmentRegistration OnCardCloned(Action<CardModel, EnchantmentModel, CardModel> handler)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(handler);
+        EnsureUnset(_entry.OnCardCloned, nameof(OnCardCloned));
+        _entry.OnCardCloned = handler;
+        return this;
+    }
+
     public IEnchantmentRegistration TrackKeyword(CardKeyword keyword, Func<EnchantmentStackSnapshot, int> amountFn)
     {
         EnsureNotCommitted();
@@ -466,6 +493,14 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         EnsureNotCommitted();
         ArgumentNullException.ThrowIfNull(contribution);
         _entry.HandDrawContributions.Add(contribution);
+        return this;
+    }
+
+    public IEnchantmentRegistration ModifyPowerAmountGiven(PowerAmountGivenContribution contribution)
+    {
+        EnsureNotCommitted();
+        ArgumentNullException.ThrowIfNull(contribution);
+        _entry.PowerAmountGivenContributions.Add(contribution);
         return this;
     }
 

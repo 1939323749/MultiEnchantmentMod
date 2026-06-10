@@ -378,6 +378,33 @@ public static class EnchantmentRegistrationExtensions
         return registration.OnShouldDie((card, enchantment, creature) => handler(card, (TEnchantment)enchantment, creature));
     }
 
+    public static IEnchantmentRegistration OnCardAppliedPower<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment, PowerAppliedContext> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCardAppliedPower((card, enchantment, ctx) => action(card, (TEnchantment)enchantment, ctx));
+    }
+
+    public static IEnchantmentRegistration OnCardTransformed<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment, CardModel> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCardTransformed((card, enchantment, replacement) => action(card, (TEnchantment)enchantment, replacement));
+    }
+
+    public static IEnchantmentRegistration OnCardCloned<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Action<CardModel, TEnchantment, CardModel> action)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return registration.OnCardCloned((card, enchantment, clone) => action(card, (TEnchantment)enchantment, clone));
+    }
+
     public static IEnchantmentRegistration VisualSlicesWithStatus<TEnchantment>(
         this IEnchantmentRegistration registration,
         Func<EnchantmentStackSnapshot, TEnchantment, IReadOnlyList<EnchantmentVisualSlice>?> compute)
@@ -435,6 +462,16 @@ public static class EnchantmentRegistrationExtensions
         ArgumentNullException.ThrowIfNull(contribution);
         return registration.ModifyHandDraw(
             (snapshot, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, current));
+    }
+
+    public static IEnchantmentRegistration ModifyPowerAmountGiven<TEnchantment>(
+        this IEnchantmentRegistration registration,
+        Func<EnchantmentStackSnapshot, TEnchantment, PowerGivenContext, decimal, decimal> contribution)
+        where TEnchantment : EnchantmentModel
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        return registration.ModifyPowerAmountGiven(
+            (snapshot, context, current) => contribution(snapshot, (TEnchantment)snapshot.AnchorInstance, context, current));
     }
 
     public static IEnchantmentRegistration OnPlayStacked<TEnchantment>(

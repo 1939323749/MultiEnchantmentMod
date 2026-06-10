@@ -62,6 +62,7 @@ public partial class SampleRegistration : Node
         SampleHandStatusSharpenRegistration.Install();
         SampleLibraryMarkerRegistration.Install();
         SampleRightSideMarkerRegistration.Install();
-        Logger.Info($"[{ModId}] Installed 13 fluent/display sample registration(s).");
+        SampleSoulbindMarkRegistration.Install();
+        Logger.Info($"[{ModId}] Installed 14 fluent/display sample registration(s).");
     }
 }
