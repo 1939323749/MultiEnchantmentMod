@@ -200,7 +200,9 @@ internal static partial class MultiEnchantmentSupport
             enchantment.StatusChanged -= handler;
         }
 
-        foreach (Control tab in state.ExtraTabs)
+        // Snapshot: QueueFreeSafely can re-enter our NCard patches via tree-exit notifications,
+        // which mutate ExtraTabs mid-enumeration (seen in the wild as InvalidOperationException).
+        foreach (Control tab in state.ExtraTabs.ToArray())
         {
             if (GodotObject.IsInstanceValid(tab))
             {

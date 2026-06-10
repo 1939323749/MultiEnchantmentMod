@@ -527,7 +527,7 @@ internal static partial class MultiEnchantmentSupport
             // art, since EnchantmentModel.Icon is non-virtual); then a supplied Enchantment's icon;
             // then the type's canonical model icon (resolved from ModelDb — never constructed).
             EnchantmentModel? iconSource = display.Enchantment ?? TryResolveDefaultEnchantment(enchantmentType);
-            Texture2D? icon = display.Icon ?? iconSource?.Icon;
+            Texture2D? icon = display.Icon ?? (iconSource == null ? null : SafeGetIcon(iconSource));
             if (icon == null)
             {
                 LogDisplayOnlyExtraIconFailure(enchantmentType,
@@ -618,9 +618,16 @@ internal static partial class MultiEnchantmentSupport
                 continue;
             }
 
+            // ShownExtraIcon.Icon is public API with a non-null contract; an entry whose
+            // texture failed to load (SafeGetIcon) has no art to expose, so skip it here.
+            if (visualState.Icon is not { } shownIcon)
+            {
+                continue;
+            }
+
             (shown ??= new List<ShownExtraIcon>()).Add(new ShownExtraIcon(
                 markerType,
-                visualState.Icon,
+                shownIcon,
                 visualState.DisplayAmount,
                 visualState.ShowAmount,
                 visualState.Status,
@@ -633,7 +640,7 @@ internal static partial class MultiEnchantmentSupport
         return (IReadOnlyList<ShownExtraIcon>?)shown ?? Array.Empty<ShownExtraIcon>();
     }
 
-    private static Texture2D ResolveVisualSliceIcon(
+    private static Texture2D? ResolveVisualSliceIcon(
         EnchantmentModel anchor,
         EnchantmentStackSnapshot snapshot,
         EnchantmentVisualSlice? visualSlice)
@@ -646,7 +653,7 @@ internal static partial class MultiEnchantmentSupport
         Type? iconType = visualSlice?.IconEnchantmentType;
         if (iconType == null)
         {
-            return anchor.Icon;
+            return SafeGetIcon(anchor);
         }
 
         if (!typeof(EnchantmentModel).IsAssignableFrom(iconType))
@@ -655,15 +662,15 @@ internal static partial class MultiEnchantmentSupport
                 anchor.GetType(),
                 iconType,
                 $"{iconType.FullName ?? iconType.Name} is not an {nameof(EnchantmentModel)} subclass.");
-            return anchor.Icon;
+            return SafeGetIcon(anchor);
         }
 
         EnchantmentModel? liveIconSource = snapshot.Card == null
             ? null
             : GetEnchantments(snapshot.Card).FirstOrDefault(enchantment => enchantment.GetType() == iconType);
-        if (liveIconSource != null)
+        if (liveIconSource != null && SafeGetIcon(liveIconSource) is { } liveIcon)
         {
-            return liveIconSource.Icon;
+            return liveIcon;
         }
 
         if (TryCreateDefaultVisualSliceIcon(iconType, out Texture2D defaultIcon, out string? failureReason))
@@ -672,7 +679,31 @@ internal static partial class MultiEnchantmentSupport
         }
 
         LogVisualSliceIconResolutionFailure(anchor.GetType(), iconType, failureReason);
-        return anchor.Icon;
+        return SafeGetIcon(anchor);
+    }
+
+    // EnchantmentModel.Icon is non-virtual and resolves through AssetCache, which throws
+    // AssetLoadException when a third-party mod ships a missing/corrupt texture path. A broken
+    // icon must degrade to "badge without art", never crash the visual pipeline (seen in the
+    // wild at combat end via CaptureEnchantVfxSnapshot). Logged once per enchantment type.
+    private static Texture2D? SafeGetIcon(EnchantmentModel model)
+    {
+        try
+        {
+            return model.Icon;
+        }
+        catch (Exception ex)
+        {
+            Type enchantmentType = model.GetType();
+            if (VisualSliceIconResolutionWarnings.TryAdd((enchantmentType, enchantmentType), 0))
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    $"[MultiEnchantment] Failed to load icon texture for {enchantmentType.FullName ?? enchantmentType.Name}: " +
+                    $"{ex.Message} The enchantment badge will render without art.");
+            }
+
+            return null;
+        }
     }
 
     private static bool TryCreateDefaultVisualSliceIcon(

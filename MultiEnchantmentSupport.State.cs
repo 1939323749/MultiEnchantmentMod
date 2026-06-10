@@ -144,7 +144,7 @@ internal static partial class MultiEnchantmentSupport
     }
 
     internal sealed record EnchantmentVisualState(
-        Texture2D Icon,
+        Texture2D? Icon,
         int DisplayAmount,
         bool ShowAmount,
         EnchantmentStatus Status,
