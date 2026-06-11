@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
@@ -342,18 +343,27 @@ internal static class TelemetryCollector
                     ascension = runState.AscensionLevel;
                     roomType = runState.CurrentRoom?.RoomType.ToString();
 
-                    // Get first player's character name
+                    // Get the LOCAL player's character (falls back to the first
+                    // player when the local one can't be identified).
                     var players = combatState?.Players;
                     if (players != null)
                     {
+                        string? firstName = null;
                         foreach (var player in players)
                         {
-                            characterName = player.Character?.Id.ToString();
-                            if (!string.IsNullOrWhiteSpace(characterName))
+                            string? name = player.Character?.Id.ToString();
+                            if (string.IsNullOrWhiteSpace(name)) continue;
+                            if (IsLocalPlayer(player))
                             {
-                                _runCharacterName ??= characterName;
+                                characterName = name;
+                                break;
                             }
-                            break;
+                            firstName ??= name;
+                        }
+                        characterName ??= firstName;
+                        if (!string.IsNullOrWhiteSpace(characterName))
+                        {
+                            _runCharacterName ??= characterName;
                         }
                     }
                 }
@@ -372,6 +382,7 @@ internal static class TelemetryCollector
             try { relicIds = CollectRelicIds(combatState); } catch { }
             try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
             var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, combatState));
+            var (teamCharacters, localPlayerSlot) = CollectTeamContext(runState, combatState);
 
             TelemetryReporter.SendCombat(new
             {
@@ -394,6 +405,8 @@ internal static class TelemetryCollector
                 ascension,
                 is_multiplayer = multiplayer.IsMultiplayer,
                 player_count = multiplayer.PlayerCount,
+                team = teamCharacters,
+                local_player_slot = localPlayerSlot,
 
                 // Game state snapshot (null when no enchantment activity → omitted by serializer)
                 deck_card_ids = deckCardIds,
@@ -449,6 +462,11 @@ internal static class TelemetryCollector
         try
         {
             IRunState? summaryRunState = runState ?? _currentRunState;
+            // Guard BEFORE EnsureRun: the multiplayer victory flow calls OnEnded(true)
+            // and then GuaranteeKillAllPlayers(), which kills everyone and fires a
+            // second OnEnded(false). If EnsureRun ran first and the identity key
+            // drifted, it would restart run state and emit a bogus "death" row.
+            if (_runEndedSent && summaryRunState != null && IsCurrentRun(summaryRunState)) return;
             EnsureRun(summaryRunState);
             if (_runId == null || _runEndedSent) return;
 
@@ -476,6 +494,20 @@ internal static class TelemetryCollector
     }
 
     // ── Note methods (called from framework code) ────────────────────────
+
+    private static bool IsCurrentRun(IRunState runState)
+    {
+        if (ReferenceEquals(_currentRunState, runState)) return true;
+        try
+        {
+            return string.Equals(
+                _runIdentityKey, BuildRunIdentityKey(runState), StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static void EnsureRun(IRunState? runState)
     {
@@ -538,6 +570,7 @@ internal static class TelemetryCollector
         }
 
         var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, null));
+        var (teamCharacters, localPlayerSlot) = CollectTeamContext(runState, null);
 
         TelemetryReporter.SendRun(new
         {
@@ -555,6 +588,8 @@ internal static class TelemetryCollector
             combat_count = combatCount,
             is_multiplayer = multiplayer.IsMultiplayer,
             player_count = multiplayer.PlayerCount,
+            team = teamCharacters,
+            local_player_slot = localPlayerSlot,
             game_version = TelemetryConfig.GameVersion,
             mod_version = TelemetryConfig.ModVersion,
             api_version = MultiEnchantmentApiVersion.Current,
@@ -673,10 +708,10 @@ internal static class TelemetryCollector
             var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, null));
             try
             {
-                object? characterObj = GetPropertyOrFieldValue(player, "Character");
-                object? id = GetPropertyOrFieldValue(characterObj, "Id");
-                character = id?.ToString() ?? characterObj?.ToString();
-                if (!string.IsNullOrWhiteSpace(character))
+                character = GetPlayerCharacterName(player);
+                // Only cache as the run's character when the acting player is local —
+                // in multiplayer this hook can fire for remote players' rewards.
+                if (!string.IsNullOrWhiteSpace(character) && IsLocalPlayer(player))
                 {
                     _runCharacterName ??= character;
                 }
@@ -2576,41 +2611,146 @@ internal static class TelemetryCollector
     private static string? GetCharacterName(IRunState? runState) =>
         _runCharacterName ?? TryGetCharacterNameFromRunState(runState);
 
+    /// <summary>
+    /// Resolves the LOCAL player's character. In multiplayer every client holds an
+    /// identically-ordered Players list (the host's lobby order), so taking the first
+    /// entry would report the slot-0 character on every client regardless of what each
+    /// player actually picked. Falls back to the first player with a character when the
+    /// local player cannot be identified.
+    /// </summary>
     private static string? TryGetCharacterNameFromRunState(IRunState? runState)
     {
         object? players = GetPropertyOrFieldValue(runState, "Players");
+        string? firstName = null;
         if (players is IEnumerable enumerable)
         {
             foreach (object player in enumerable)
             {
-                object? character = GetPropertyOrFieldValue(player, "Character");
-                object? id = GetPropertyOrFieldValue(character, "Id");
-                string? name = id?.ToString() ?? character?.ToString();
-                if (!string.IsNullOrWhiteSpace(name))
+                string? name = GetPlayerCharacterName(player);
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (IsLocalPlayer(player))
                 {
                     return name;
                 }
+                firstName ??= name;
             }
         }
 
+        if (firstName != null) return firstName;
+
         object? localPlayer = GetPropertyOrFieldValue(runState, "Player")
             ?? GetPropertyOrFieldValue(runState, "LocalPlayer");
-        object? localCharacter = GetPropertyOrFieldValue(localPlayer, "Character");
-        object? localId = GetPropertyOrFieldValue(localCharacter, "Id");
-        return localId?.ToString() ?? localCharacter?.ToString();
+        return GetPlayerCharacterName(localPlayer);
+    }
+
+    private static string? GetPlayerCharacterName(object? player)
+    {
+        object? character = GetPropertyOrFieldValue(player, "Character");
+        object? id = GetPropertyOrFieldValue(character, "Id");
+        return id?.ToString() ?? character?.ToString();
+    }
+
+    private static ulong? TryGetLocalNetId()
+    {
+        try { return LocalContext.NetId; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// True when the player's NetId matches <see cref="LocalContext.NetId"/>. When the
+    /// local NetId is unavailable (indeterminate context) this returns true so callers
+    /// degrade to first-player behavior instead of dropping data.
+    /// </summary>
+    private static bool IsLocalPlayer(object? player)
+    {
+        if (player == null) return false;
+
+        ulong? localNetId = TryGetLocalNetId();
+        if (!localNetId.HasValue) return true;
+
+        object? netId = GetPropertyOrFieldValue(player, "NetId");
+        if (netId is ulong typed) return typed == localNetId.Value;
+        return netId != null &&
+               string.Equals(netId.ToString(), localNetId.Value.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// All players' characters in slot order plus the local player's slot index.
+    /// Returns (null, null) for singleplayer so the extra columns stay empty there.
+    /// </summary>
+    private static (List<string>? Team, int? LocalSlot) CollectTeamContext(
+        IRunState? runState, ICombatState? combatState)
+    {
+        try
+        {
+            object? players = combatState != null
+                ? combatState.Players
+                : GetPropertyOrFieldValue(runState, "Players");
+            if (players is not IEnumerable enumerable) return (null, null);
+
+            ulong? localNetId = TryGetLocalNetId();
+            var team = new List<string>();
+            int? localSlot = null;
+            int slot = 0;
+            foreach (object player in enumerable)
+            {
+                team.Add(GetPlayerCharacterName(player) ?? "unknown");
+                if (localSlot == null && localNetId.HasValue)
+                {
+                    object? netId = GetPropertyOrFieldValue(player, "NetId");
+                    bool match = netId is ulong typed
+                        ? typed == localNetId.Value
+                        : netId != null && string.Equals(
+                            netId.ToString(), localNetId.Value.ToString(), StringComparison.Ordinal);
+                    if (match) localSlot = slot;
+                }
+                slot++;
+            }
+
+            return team.Count > 1 ? (team, localSlot) : (null, null);
+        }
+        catch
+        {
+            return (null, null);
+        }
     }
 
     // ── Game state snapshot helpers ─────────────────────────────────────
 
     /// <summary>
-    /// Collects deck card IDs from the first active player's deck.
+    /// Orders players so the local player comes first; remaining players keep their
+    /// original order. Used so per-player snapshots describe the local player in
+    /// multiplayer instead of whoever sits in slot 0.
+    /// </summary>
+    private static IEnumerable<T> LocalPlayerFirst<T>(IEnumerable<T> players) where T : class
+    {
+        T? local = null;
+        var rest = new List<T>();
+        foreach (T player in players)
+        {
+            if (local == null && IsLocalPlayer(player))
+            {
+                local = player;
+            }
+            else
+            {
+                rest.Add(player);
+            }
+        }
+
+        if (local != null) yield return local;
+        foreach (T player in rest) yield return player;
+    }
+
+    /// <summary>
+    /// Collects deck card IDs from the local player's deck (falling back to the first).
     /// Returns card IDs only (e.g. ["CARD.STRIKE", "CARD.DEFEND", ...]).
     /// </summary>
     private static List<string>? CollectDeckCardIds(ICombatState? combatState)
     {
         if (combatState == null) return null;
 
-        foreach (var player in combatState.Players)
+        foreach (var player in LocalPlayerFirst(combatState.Players))
         {
             // player.Deck.Cards gives the persistent deck (not combat copies)
             object? deck = GetPropertyOrFieldValue(player, "Deck");
@@ -2634,20 +2774,20 @@ internal static class TelemetryCollector
                     .Distinct()
                     .ToList();
             }
-            break; // first player only
+            break; // preferred (local-first) player only
         }
         return null;
     }
 
     /// <summary>
-    /// Collects relic IDs from the first active player via reflection.
-    /// STS2 Player may expose Relics, OwnedRelics, or a similar property.
+    /// Collects relic IDs from the local player (falling back to the first) via
+    /// reflection. STS2 Player may expose Relics, OwnedRelics, or a similar property.
     /// </summary>
     private static List<string>? CollectRelicIds(ICombatState? combatState)
     {
         if (combatState == null) return null;
 
-        foreach (var player in combatState.Players)
+        foreach (var player in LocalPlayerFirst(combatState.Players))
         {
             // Try common relic property names
             foreach (string propName in new[] { "Relics", "OwnedRelics", "RelicModels" })
@@ -2689,7 +2829,7 @@ internal static class TelemetryCollector
                     if (ids.Count > 0) return ids;
                 }
             }
-            break; // first player only
+            break; // preferred (local-first) player only
         }
         return null;
     }

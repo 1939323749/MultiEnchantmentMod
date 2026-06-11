@@ -14,7 +14,16 @@ internal static partial class TelemetryConfig
     // SupabaseUrl and AnonKey are generated at build time into TelemetrySecrets.g.cs
     // from .env.props (local) or -p: MSBuild properties (CI). See .env.props.template.
 
-    internal static bool IsEnabled { get; private set; }
+    /// <summary>
+    /// Master telemetry switch: requires the manifest opt-in AND the game's own
+    /// "Upload Data" privacy preference. The vanilla mod metrics hook
+    /// (ModManager.CallMetricsHooks) is gated on that preference; our Harmony
+    /// patches bypass that path, so it must be checked explicitly here.
+    /// </summary>
+    internal static bool IsEnabled => _manifestEnabled && GameUploadPreferenceAllows();
+
+    private static bool _manifestEnabled;
+
     internal static string ModVersion { get; private set; } = "unknown";
     internal static string GameVersion { get; private set; } = "unknown";
     internal static string InstallationId { get; private set; } = "unknown";
@@ -23,14 +32,14 @@ internal static partial class TelemetryConfig
     {
         if (SupabaseUrl.Contains("REPLACE_ME"))
         {
-            IsEnabled = false;
+            _manifestEnabled = false;
             return;
         }
 
         try
         {
             ReadManifest();
-            if (!IsEnabled)
+            if (!_manifestEnabled)
             {
                 return;
             }
@@ -40,7 +49,21 @@ internal static partial class TelemetryConfig
         }
         catch
         {
-            IsEnabled = false;
+            _manifestEnabled = false;
+        }
+    }
+
+    private static bool GameUploadPreferenceAllows()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Saves.SaveManager.Instance?.PrefsSave?.UploadData ?? true;
+        }
+        catch
+        {
+            // Save system not ready yet (early startup) — don't block telemetry
+            // that is gated again at actual send time.
+            return true;
         }
     }
 
@@ -54,7 +77,7 @@ internal static partial class TelemetryConfig
         string manifestPath = GetManifestPath();
         if (!File.Exists(manifestPath))
         {
-            IsEnabled = false;
+            _manifestEnabled = false;
             return;
         }
 
@@ -71,11 +94,11 @@ internal static partial class TelemetryConfig
         if (root.TryGetProperty("telemetry", out JsonElement telemetryEl) &&
             telemetryEl.ValueKind == JsonValueKind.False)
         {
-            IsEnabled = false;
+            _manifestEnabled = false;
         }
         else
         {
-            IsEnabled = true;
+            _manifestEnabled = true;
         }
     }
 
