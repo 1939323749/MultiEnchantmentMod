@@ -134,5 +134,8 @@
 
   "SAMPLE_ALTERNATING_BADGES.title": "甜圈与八体",
   "SAMPLE_ALTERNATING_BADGES.description": "在你的奇数回合打出时获得1点能量，在偶数回合打出时抽一张牌。",
-  "SAMPLE_ALTERNATING_BADGES.extraCardText": "在两个徽章状态和图标之间交替。"
+  "SAMPLE_ALTERNATING_BADGES.extraCardText": "在两个徽章状态和图标之间交替。",
+  "SAMPLE_CURSE_MARK.title": "诅咒印记",
+  "SAMPLE_CURSE_MARK.description": "参考示例（隐形附魔，Invisible = true）。完整的玩法附魔，但卡面不显示任何徽章——只能通过描述文字和效果察觉。伤害 +2 × 叠层量。",
+  "SAMPLE_CURSE_MARK.extraCardText": "[gold]伤害[/gold] 每层 +2。（隐形附魔）"
 }

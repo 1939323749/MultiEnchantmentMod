@@ -28,4 +28,13 @@ public interface IPresentationRegistration
     IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode);
     IEnchantmentRegistration HistoryDisplay(HistoryDisplayMode mode, string groupHeader);
     IEnchantmentRegistration HistoryText(HistoryTextFormatter formatter);
+
+    /// <summary>
+    /// Marks this enchantment as invisible: no badge icon on the card, never occupies the
+    /// vanilla primary slot. Gameplay, extra card text, hover tips, glow, counting, and
+    /// persistence are unchanged. Default-implemented as a no-op so pre-existing third-party
+    /// implementations of this interface keep compiling; only the built-in registration
+    /// builder honors it.
+    /// </summary>
+    IEnchantmentRegistration Invisible(bool invisible = true) => (IEnchantmentRegistration)this;
 }

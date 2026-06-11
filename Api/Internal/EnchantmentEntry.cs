@@ -43,6 +43,12 @@ internal sealed class EnchantmentEntry
     public HistoryTextFormatter? HistoryTextFormatter { get; set; }
 
     /// <summary>
+    /// True when this enchantment renders no badge icon. See
+    /// <see cref="EnchantmentAttribute.Invisible"/> for the full semantics.
+    /// </summary>
+    public bool Invisible { get; set; }
+
+    /// <summary>
     /// When non-null, <see cref="MultiEnchantmentScopeSupport"/> will call this predicate,
     /// set <c>enchantment.Status = Normal</c> when it returns <c>true</c>, and set
     /// <c>enchantment.Status = Disabled</c> when it returns <c>false</c>. Set by

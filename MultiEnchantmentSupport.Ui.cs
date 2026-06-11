@@ -1608,7 +1608,7 @@ internal static partial class MultiEnchantmentSupport
             return true;
         }
 
-        if (HasDisplayOnlyExtraIconVisuals(model))
+        if (HasDisplayOnlyMarkerVisuals(model))
         {
             return true;
         }

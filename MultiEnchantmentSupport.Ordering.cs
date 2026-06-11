@@ -419,6 +419,14 @@ internal static partial class MultiEnchantmentSupport
                 continue;
             }
 
+            // Invisible enchantments render no badge: skip before building visual slices so
+            // they consume no badge slot. The type stays claimed in handledTypes so a same-type
+            // display-only marker still follows the normal live-suppression rules.
+            if (EnchantmentRegistry.IsInvisible(enchantment.GetType()))
+            {
+                continue;
+            }
+
             EnchantmentStackSnapshot snapshot = MultiEnchantmentStackSupport.GetSnapshot(enchantment);
             IReadOnlyList<EnchantmentVisualSlice>? customVisualSlices = MultiEnchantmentStackSupport.GetValidCustomVisualSlices(snapshot, enchantment);
             int sliceIndex = 0;
@@ -436,28 +444,28 @@ internal static partial class MultiEnchantmentSupport
                         enchantment.ShowAmount,
                         slice.Status,
                         EnchantmentRegistry.GetPresentationStyle(enchantment.GetType()),
-                        MarkerType: enchantment is ExtraIconEnchantmentModel ? enchantment.GetType() : null,
-                        StoredMarker: enchantment as ExtraIconEnchantmentModel,
+                        MarkerType: enchantment is MarkerEnchantmentModel ? enchantment.GetType() : null,
+                        StoredMarker: enchantment as MarkerEnchantmentModel,
                         IconSource: enchantment)));
                 sliceIndex++;
             }
         }
 
-        AddDisplayOnlyExtraIconEntries(card, entries, handledTypes);
+        AddDisplayOnlyMarkerEntries(card, entries, handledTypes);
         return entries;
     }
 
-    private static void AddDisplayOnlyExtraIconEntries(
+    private static void AddDisplayOnlyMarkerEntries(
         CardModel? card,
         List<OrderedVisualEntry> entries,
         HashSet<Type> handledTypes)
     {
-        if (card == null || !ExtraIconDisplayRegistry.HasProviders)
+        if (card == null || !MarkerDisplayRegistry.HasProviders)
         {
             return;
         }
 
-        foreach ((ExtraIconDisplay display, Texture2D icon, EnchantmentStatus status, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
+        foreach ((MarkerDisplay display, Texture2D icon, EnchantmentStatus status, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
         {
             entries.Add(new OrderedVisualEntry(
                 CreateDisplayOnlyVisualId(display.EnchantmentType),
@@ -478,11 +486,11 @@ internal static partial class MultiEnchantmentSupport
     // ShouldDisplay predicate, live-enchantment suppression, and icon-source resolution. Mutates
     // <paramref name="handledTypes"/> just like the visual path (claims the type unless the display
     // opts into ShowWithLiveEnchantment).
-    private static IEnumerable<(ExtraIconDisplay Display, Texture2D Icon, EnchantmentStatus Status, EnchantmentModel? Source)> EnumerateShowingDisplayOnlyMarkers(
+    private static IEnumerable<(MarkerDisplay Display, Texture2D Icon, EnchantmentStatus Status, EnchantmentModel? Source)> EnumerateShowingDisplayOnlyMarkers(
         CardModel card,
         HashSet<Type> handledTypes)
     {
-        IReadOnlyList<ExtraIconDisplay> displays = ExtraIconDisplayRegistry.GetDisplays(card);
+        IReadOnlyList<MarkerDisplay> displays = MarkerDisplayRegistry.GetDisplays(card);
         if (displays.Count == 0)
         {
             yield break;
@@ -490,7 +498,7 @@ internal static partial class MultiEnchantmentSupport
 
         bool isCombatCard = card.CombatState != null;
         bool isPreviewCard = card.IsEnchantmentPreview;
-        foreach (ExtraIconDisplay display in displays)
+        foreach (MarkerDisplay display in displays)
         {
             Type enchantmentType = display.EnchantmentType;
             if (display.ShouldDisplay != null)
@@ -499,13 +507,13 @@ internal static partial class MultiEnchantmentSupport
                 try
                 {
                     bool hasLiveEnchantment = GetEnchantments(card).Any(enchantment => enchantment.GetType() == enchantmentType);
-                    ExtraIconDisplayContext context = new(card, hasLiveEnchantment, isCombatCard, isPreviewCard);
+                    MarkerDisplayContext context = new(card, hasLiveEnchantment, isCombatCard, isPreviewCard);
                     shouldDisplay = display.ShouldDisplay(context);
                 }
                 catch (Exception ex)
                 {
                     MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment] Extra-icon display predicate failed for {enchantmentType.FullName}: {ex}");
+                        $"[MultiEnchantment] Marker display predicate failed for {enchantmentType.FullName}: {ex}");
                     continue;
                 }
 
@@ -523,15 +531,15 @@ internal static partial class MultiEnchantmentSupport
                 continue;
             }
 
-            // Icon priority: an explicit ExtraIconDisplay.Icon wins (the only way to use arbitrary
+            // Icon priority: an explicit MarkerDisplay.Icon wins (the only way to use arbitrary
             // art, since EnchantmentModel.Icon is non-virtual); then a supplied Enchantment's icon;
             // then the type's canonical model icon (resolved from ModelDb — never constructed).
             EnchantmentModel? iconSource = display.Enchantment ?? TryResolveDefaultEnchantment(enchantmentType);
             Texture2D? icon = display.Icon ?? (iconSource == null ? null : SafeGetIcon(iconSource));
             if (icon == null)
             {
-                LogDisplayOnlyExtraIconFailure(enchantmentType,
-                    "no icon resolved — set ExtraIconDisplay.Icon to a texture, supply ExtraIconDisplay.Enchantment, " +
+                LogDisplayOnlyMarkerFailure(enchantmentType,
+                    "no icon resolved — set MarkerDisplay.Icon to a texture, supply MarkerDisplay.Enchantment, " +
                     "or ship a texture at the model's icon path (EnchantmentModel.Icon is non-virtual and cannot be overridden).");
                 continue;
             }
@@ -549,7 +557,7 @@ internal static partial class MultiEnchantmentSupport
     // avoiding duplicates.
     internal static IEnumerable<IHoverTip> GetDisplayOnlyMarkerHoverTips(CardModel? card)
     {
-        if (card == null || !ExtraIconDisplayRegistry.HasProviders)
+        if (card == null || !MarkerDisplayRegistry.HasProviders)
         {
             return Array.Empty<IHoverTip>();
         }
@@ -561,7 +569,7 @@ internal static partial class MultiEnchantmentSupport
         }
 
         List<IHoverTip>? tips = null;
-        foreach ((ExtraIconDisplay _, Texture2D _, EnchantmentStatus _, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
+        foreach ((MarkerDisplay _, Texture2D _, EnchantmentStatus _, EnchantmentModel? source) in EnumerateShowingDisplayOnlyMarkers(card, handledTypes))
         {
             if (source == null)
             {
@@ -577,10 +585,10 @@ internal static partial class MultiEnchantmentSupport
         return (IEnumerable<IHoverTip>?)tips ?? Array.Empty<IHoverTip>();
     }
 
-    // The extra-icon marker types that currently render on a card after provider evaluation,
+    // The marker types that currently render on a card after provider evaluation,
     // live-enchantment suppression, HideWhenDisabled filtering, and DisplayPriority ordering.
-    // Includes both stored ExtraIconEnchantmentModel instances and display-only provider markers.
-    internal static IReadOnlyList<Type> GetShownExtraIconTypes(CardModel? card)
+    // Includes both stored MarkerEnchantmentModel instances and display-only provider markers.
+    internal static IReadOnlyList<Type> GetShownMarkerTypes(CardModel? card)
     {
         if (card == null)
         {
@@ -599,17 +607,17 @@ internal static partial class MultiEnchantmentSupport
         return (IReadOnlyList<Type>?)shown ?? Array.Empty<Type>();
     }
 
-    // Full snapshots for extra-icon markers currently visible on the icon row. This intentionally
+    // Full snapshots for markers currently visible on the icon row. This intentionally
     // builds from GetOrderedVisualEntries rather than provider output so callers see the same final
     // visibility/order/style/amount resolution as the UI.
-    internal static IReadOnlyList<ShownExtraIcon> GetShownExtraIconDetails(CardModel? card)
+    internal static IReadOnlyList<ShownMarker> GetShownMarkerDetails(CardModel? card)
     {
         if (card == null)
         {
-            return Array.Empty<ShownExtraIcon>();
+            return Array.Empty<ShownMarker>();
         }
 
-        List<ShownExtraIcon>? shown = null;
+        List<ShownMarker>? shown = null;
         foreach (OrderedVisualEntry entry in GetOrderedVisualEntries(card))
         {
             EnchantmentVisualState visualState = entry.VisualState;
@@ -618,14 +626,14 @@ internal static partial class MultiEnchantmentSupport
                 continue;
             }
 
-            // ShownExtraIcon.Icon is public API with a non-null contract; an entry whose
+            // ShownMarker.Icon is public API with a non-null contract; an entry whose
             // texture failed to load (SafeGetIcon) has no art to expose, so skip it here.
             if (visualState.Icon is not { } shownIcon)
             {
                 continue;
             }
 
-            (shown ??= new List<ShownExtraIcon>()).Add(new ShownExtraIcon(
+            (shown ??= new List<ShownMarker>()).Add(new ShownMarker(
                 markerType,
                 shownIcon,
                 visualState.DisplayAmount,
@@ -637,7 +645,7 @@ internal static partial class MultiEnchantmentSupport
                 visualState.IconSource));
         }
 
-        return (IReadOnlyList<ShownExtraIcon>?)shown ?? Array.Empty<ShownExtraIcon>();
+        return (IReadOnlyList<ShownMarker>?)shown ?? Array.Empty<ShownMarker>();
     }
 
     private static Texture2D? ResolveVisualSliceIcon(
@@ -788,10 +796,10 @@ internal static partial class MultiEnchantmentSupport
             .ToList();
     }
 
-    private static bool HasDisplayOnlyExtraIconVisuals(CardModel? card)
+    private static bool HasDisplayOnlyMarkerVisuals(CardModel? card)
     {
         return card != null &&
-               ExtraIconDisplayRegistry.HasProviders &&
+               MarkerDisplayRegistry.HasProviders &&
                GetOrderedVisualEntries(card).Any(static entry => entry.VisualState.IsDisplayOnly);
     }
 
@@ -810,7 +818,7 @@ internal static partial class MultiEnchantmentSupport
             }
             catch (Exception ex)
             {
-                LogDisplayOnlyExtraIconFailure(type, ex.ToString());
+                LogDisplayOnlyMarkerFailure(type, ex.ToString());
                 return null;
             }
         });
@@ -828,19 +836,19 @@ internal static partial class MultiEnchantmentSupport
     private static ModelId CreateDisplayOnlyVisualId(Type enchantmentType)
     {
         return new ModelId(
-            "multi_enchantment_extra_icon",
+            "multi_enchantment_marker",
             enchantmentType.AssemblyQualifiedName ?? enchantmentType.FullName ?? enchantmentType.Name);
     }
 
-    private static void LogDisplayOnlyExtraIconFailure(Type enchantmentType, string reason)
+    private static void LogDisplayOnlyMarkerFailure(Type enchantmentType, string reason)
     {
-        if (!VisualSliceIconResolutionWarnings.TryAdd((typeof(ExtraIconDisplay), enchantmentType), 0))
+        if (!VisualSliceIconResolutionWarnings.TryAdd((typeof(MarkerDisplay), enchantmentType), 0))
         {
             return;
         }
 
         MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment] Failed to create display-only extra icon for {enchantmentType.FullName ?? enchantmentType.Name}. " +
+            $"[MultiEnchantment] Failed to create display-only marker for {enchantmentType.FullName ?? enchantmentType.Name}. " +
             $"Error: {reason}");
     }
 

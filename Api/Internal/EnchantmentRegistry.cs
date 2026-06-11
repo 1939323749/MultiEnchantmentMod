@@ -424,6 +424,31 @@ internal static class EnchantmentRegistry
     }
 
     /// <summary>
+    /// True when any registration entry for the given enchantment type marks it invisible
+    /// (no badge icon, never occupies the vanilla primary slot).
+    /// </summary>
+    internal static bool IsInvisible(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].Invisible)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns the custom group header registered for the given enchantment type, or <c>null</c>.
     /// </summary>
     internal static string? GetHistoryGroupHeader(Type enchantmentType)
@@ -498,15 +523,15 @@ internal static class EnchantmentRegistry
 
     private static HistoryDisplayMode GetDefaultHistoryDisplayMode(Type enchantmentType)
     {
-        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
+        return typeof(MarkerEnchantmentModel).IsAssignableFrom(enchantmentType)
             ? HistoryDisplayMode.Hidden
             : HistoryDisplayMode.Auto;
     }
 
     internal static EnchantmentPresentationStyle GetDefaultPresentationStyle(Type enchantmentType)
     {
-        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
-            ? ExtraIconPresentation.Default
+        return typeof(MarkerEnchantmentModel).IsAssignableFrom(enchantmentType)
+            ? MarkerPresentation.Default
             : new EnchantmentPresentationStyle();
     }
 

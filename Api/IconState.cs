@@ -8,15 +8,15 @@ namespace MultiEnchantmentMod.Api;
 
 /// <summary>
 /// Small helper for projecting card / relic / ability / enchantment state into a display-only
-/// extra icon.
+/// marker.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Drive it from lifecycle callbacks such as <c>OnCardDrawn(CardModel, TEnchantment)</c> or vanilla
 /// overrides such as <c>Task AfterCardDrawn(PlayerChoiceContext, CardModel, bool)</c>. Keep the
 /// authoritative gameplay state on the real card / model; this helper stores only the temporary UI
-/// projection per <see cref="CardModel"/> object and refreshes that card's extra icons after each
-/// mutation. Use a stored <see cref="ExtraIconEnchantmentModel"/> instead when the marker itself must
+/// projection per <see cref="CardModel"/> object and refreshes that card's markers after each
+/// mutation. Use a stored <see cref="MarkerEnchantmentModel"/> instead when the marker itself must
 /// survive save/load as real card state. Calling <see cref="Register"/> is optional — the first
 /// mutation auto-registers the display provider.
 /// </para>
@@ -34,7 +34,7 @@ namespace MultiEnchantmentMod.Api;
 /// </para>
 /// <para>
 /// Use one <see cref="IconState{TMarker}"/> instance per marker type: the render path deduplicates
-/// extra icons by <typeparamref name="TMarker"/>, so two states sharing the same marker type on the
+/// markers by <typeparamref name="TMarker"/>, so two states sharing the same marker type on the
 /// same card suppress one another. The same dedup also suppresses this projection when the card
 /// already carries a live or stored enchantment of <typeparamref name="TMarker"/> — set
 /// <c>showWithLiveEnchantment</c> (ctor) or <see cref="IconStateOverride.ShowWithLiveEnchantment"/>
@@ -47,7 +47,7 @@ namespace MultiEnchantmentMod.Api;
 /// </para>
 /// </remarks>
 public sealed class IconState<TMarker> : IDisposable
-    where TMarker : ExtraIconEnchantmentModel
+    where TMarker : MarkerEnchantmentModel
 {
     private sealed class Entry
     {
@@ -57,14 +57,14 @@ public sealed class IconState<TMarker> : IDisposable
 
     // Guards every read/write of _states (including the table swap in Clear/Dispose). Individual
     // ConditionalWeakTable operations are internally synchronized, but the read-modify-write in Add
-    // is not, so all mutations funnel through this lock. RefreshExtraIcons is always invoked OUTSIDE
+    // is not, so all mutations funnel through this lock. RefreshMarkers is always invoked OUTSIDE
     // the lock to avoid holding it across UI work / provider re-entry.
     private readonly object _sync = new();
     private ConditionalWeakTable<CardModel, Entry> _states = new();
     private readonly Texture2D? _icon;
     private readonly EnchantmentModel? _enchantment;
     private readonly EnchantmentPresentationStyle? _presentationStyle;
-    private readonly ExtraIconDisplayPredicate? _shouldDisplay;
+    private readonly MarkerDisplayPredicate? _shouldDisplay;
     private readonly bool _showAmount;
     private readonly bool _showWithLiveEnchantment;
     private IDisposable? _registration;
@@ -74,7 +74,7 @@ public sealed class IconState<TMarker> : IDisposable
         Texture2D? icon = null,
         EnchantmentModel? enchantment = null,
         EnchantmentPresentationStyle? presentationStyle = null,
-        ExtraIconDisplayPredicate? shouldDisplay = null,
+        MarkerDisplayPredicate? shouldDisplay = null,
         bool showAmount = false,
         bool showWithLiveEnchantment = false)
     {
@@ -93,7 +93,7 @@ public sealed class IconState<TMarker> : IDisposable
     public bool IsRegistered => _registration != null;
 
     /// <summary>
-    /// Registers this state as a display-only extra-icon provider. Optional — the first mutation
+    /// Registers this state as a display-only marker provider. Optional — the first mutation
     /// (<see cref="Set"/>/<see cref="Add"/>/<see cref="Show"/>) auto-registers — but you can call it
     /// early to register at a deterministic point. Safe to call more than once. Throws once the state
     /// has been disposed.
@@ -133,7 +133,7 @@ public sealed class IconState<TMarker> : IDisposable
     private void EnsureRegisteredLocked()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _registration ??= MultiEnchantmentApi.RegisterExtraIconDisplayProvider(GetDisplays);
+        _registration ??= MultiEnchantmentApi.RegisterMarkerDisplayProvider(GetDisplays);
     }
 
     /// <summary>
@@ -155,7 +155,7 @@ public sealed class IconState<TMarker> : IDisposable
 
         if (changed && refresh)
         {
-            MultiEnchantmentApi.RefreshExtraIcons(card);
+            MultiEnchantmentApi.RefreshMarkers(card);
         }
     }
 
@@ -177,7 +177,7 @@ public sealed class IconState<TMarker> : IDisposable
 
         if (changed && refresh)
         {
-            MultiEnchantmentApi.RefreshExtraIcons(card);
+            MultiEnchantmentApi.RefreshMarkers(card);
         }
     }
 
@@ -206,7 +206,7 @@ public sealed class IconState<TMarker> : IDisposable
 
         if (changed && refresh)
         {
-            MultiEnchantmentApi.RefreshExtraIcons(card);
+            MultiEnchantmentApi.RefreshMarkers(card);
         }
     }
 
@@ -223,7 +223,7 @@ public sealed class IconState<TMarker> : IDisposable
 
         if (removed && refresh)
         {
-            MultiEnchantmentApi.RefreshExtraIcons(card);
+            MultiEnchantmentApi.RefreshMarkers(card);
         }
 
         return removed;
@@ -246,7 +246,7 @@ public sealed class IconState<TMarker> : IDisposable
         {
             foreach (CardModel card in tracked)
             {
-                MultiEnchantmentApi.RefreshExtraIcons(card);
+                MultiEnchantmentApi.RefreshMarkers(card);
             }
         }
     }
@@ -314,7 +314,7 @@ public sealed class IconState<TMarker> : IDisposable
 
         foreach (CardModel card in tracked)
         {
-            MultiEnchantmentApi.RefreshExtraIcons(card);
+            MultiEnchantmentApi.RefreshMarkers(card);
         }
     }
 
@@ -350,7 +350,7 @@ public sealed class IconState<TMarker> : IDisposable
         return true;
     }
 
-    private IEnumerable<ExtraIconDisplay> GetDisplays(CardModel card)
+    private IEnumerable<MarkerDisplay> GetDisplays(CardModel card)
     {
         int amount;
         IconStateOverride? overrides;
@@ -365,7 +365,7 @@ public sealed class IconState<TMarker> : IDisposable
             overrides = entry.Override;
         }
 
-        yield return new ExtraIconDisplay
+        yield return new MarkerDisplay
         {
             EnchantmentType = typeof(TMarker),
             Icon = overrides?.Icon ?? _icon,

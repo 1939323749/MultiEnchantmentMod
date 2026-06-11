@@ -151,7 +151,7 @@ internal static partial class MultiEnchantmentSupport
         EnchantmentPresentationStyle PresentationStyle,
         bool IsDisplayOnly = false,
         Type? MarkerType = null,
-        ExtraIconEnchantmentModel? StoredMarker = null,
+        MarkerEnchantmentModel? StoredMarker = null,
         EnchantmentModel? IconSource = null);
 
     private readonly record struct EnchantmentSlotLayout(

@@ -35,7 +35,7 @@
 ## 工具链与质量
 
 - **Analyzer 扩展**：现有诊断只覆盖 Definition 冲突、兼容性 attribute、`ModifyDynamicVar` 签名三类。候选新诊断：在 stacked hook 中同步调用 `Enchant` 而非 `EnchantAsync`、fluent 链忘记 `.Commit()`、同一附魔同时覆写 vanilla 数值虚方法又注册同名贡献通道（双重计数）。
-- **文档英文化**：docs 下除 extra-icon-wiki 外全是中文，NexusMods 国际用户无法阅读 v2 API wiki。
+- **文档英文化**：docs 下除 marker-wiki 外全是中文，NexusMods 国际用户无法阅读 v2 API wiki。
 - **遥测反哺**：用 Supabase 数据（`deck_at_enchantment` 视图、run journey、crash_version_snapshot）做定期报表：附魔组合使用率（指导缺口优先级）、旧存档 key 迁移日志出现频率（决定 v4 移除时机）、按游戏版本切片的崩溃趋势。
 - **仓库清理**：`dll_backup_2026-06-05/`、`.ilspy_tmp_thequeen/`、Samples/Analyzers 的 `obj/` 产物清理或补 `.gitignore`。
 

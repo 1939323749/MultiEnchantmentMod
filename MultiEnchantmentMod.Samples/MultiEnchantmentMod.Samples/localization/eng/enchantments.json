@@ -136,6 +136,8 @@
   "SAMPLE_ALTERNATING_BADGES.extraCardText": "Alternates between two badge states and icons.",
 
   "SAMPLE_LIBRARY_MARKER.title": "Library Marker",
-  "SAMPLE_LIBRARY_MARKER.description": "Reference sample (display-only extra icon). Shows a marker icon from card UI refreshes, including card-library and preview cards without live enchantment instances."
-
+  "SAMPLE_LIBRARY_MARKER.description": "Reference sample (display-only marker). Shows a marker icon from card UI refreshes, including card-library and preview cards without live enchantment instances.",
+  "SAMPLE_CURSE_MARK.title": "Curse Mark",
+  "SAMPLE_CURSE_MARK.description": "Reference sample (invisible enchantment, Invisible = true). A full gameplay enchantment that renders no badge — only its description line and effects betray it. Damage +2 per stack.",
+  "SAMPLE_CURSE_MARK.extraCardText": "[gold]Damage[/gold] +2 per stack. (invisible enchantment)"
 }

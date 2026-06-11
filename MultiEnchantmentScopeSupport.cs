@@ -1054,7 +1054,7 @@ internal static class MultiEnchantmentScopeSupport
 
     /// <summary>
     /// Evaluates active-status predicates for every enchantment on <paramref name="card"/>, including
-    /// extra-icon markers. This is a <em>visual</em> status sync (it only flips <c>Status</c> for a
+    /// markers. This is a <em>visual</em> status sync (it only flips <c>Status</c> for a
     /// type that registered a <c>WhenActive</c>/<c>ShouldBeActive</c> predicate, which in turn drives
     /// <see cref="EnchantmentPresentationStyle.HideWhenDisabled"/>) — not a gameplay lifecycle hook —
     /// so markers must participate or a registered marker's HideWhenDisabled would never fire.

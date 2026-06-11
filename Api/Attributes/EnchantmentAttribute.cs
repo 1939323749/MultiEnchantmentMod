@@ -41,6 +41,16 @@ public sealed class EnchantmentAttribute : Attribute
     public ActivationTrigger Activation { get; init; } = ActivationTrigger.OnPlay;
 
     /// <summary>
+    /// When <c>true</c> this enchantment renders no badge icon on the card: it never occupies
+    /// the vanilla primary slot (so the base game's badge / enchant VFX / history icon stay
+    /// silent) and is skipped by this mod's badge pipeline. Everything else is unchanged —
+    /// gameplay hooks, extra card text, hover tips, glow, counting, and persistence all behave
+    /// exactly like a normal enchantment. The card betrays the enchantment only through its
+    /// description line and its effects.
+    /// </summary>
+    public bool Invisible { get; init; }
+
+    /// <summary>
     /// Controls how this enchantment appears in the per-floor battle history tooltip.
     /// Defaults to <see cref="HistoryDisplayMode.Auto"/>.
     /// </summary>

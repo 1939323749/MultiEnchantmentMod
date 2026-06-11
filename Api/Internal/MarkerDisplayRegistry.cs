@@ -3,7 +3,7 @@ using static MultiEnchantmentMod.SafeLog;
 
 namespace MultiEnchantmentMod.Api.Internal;
 
-internal static class ExtraIconDisplayRegistry
+internal static class MarkerDisplayRegistry
 {
     // A provider that throws this many times in a row is assumed broken and is disabled so it stops
     // running (and spamming the log) on every card's visual refresh. A later successful call resets
@@ -24,7 +24,7 @@ internal static class ExtraIconDisplayRegistry
     /// <summary>True when at least one display provider is registered.</summary>
     public static bool HasProviders => _providerCount > 0;
 
-    public static IDisposable RegisterProvider(ExtraIconDisplayProvider provider)
+    public static IDisposable RegisterProvider(MarkerDisplayProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
 
@@ -41,11 +41,11 @@ internal static class ExtraIconDisplayRegistry
         return new ProviderHandle(entry);
     }
 
-    public static IReadOnlyList<ExtraIconDisplay> GetDisplays(CardModel card)
+    public static IReadOnlyList<MarkerDisplay> GetDisplays(CardModel card)
     {
         if (_providerCount == 0)
         {
-            return Array.Empty<ExtraIconDisplay>();
+            return Array.Empty<MarkerDisplay>();
         }
 
         ProviderEntry[] providers;
@@ -56,10 +56,10 @@ internal static class ExtraIconDisplayRegistry
 
         if (providers.Length == 0)
         {
-            return Array.Empty<ExtraIconDisplay>();
+            return Array.Empty<MarkerDisplay>();
         }
 
-        List<ExtraIconDisplay>? displays = null;
+        List<MarkerDisplay>? displays = null;
         foreach (ProviderEntry entry in providers)
         {
             if (entry.Disabled)
@@ -67,7 +67,7 @@ internal static class ExtraIconDisplayRegistry
                 continue;
             }
 
-            IEnumerable<ExtraIconDisplay>? provided;
+            IEnumerable<MarkerDisplay>? provided;
             try
             {
                 provided = entry.Provider(card);
@@ -84,7 +84,7 @@ internal static class ExtraIconDisplayRegistry
                 continue;
             }
 
-            foreach (ExtraIconDisplay display in provided)
+            foreach (MarkerDisplay display in provided)
             {
                 if (display == null)
                 {
@@ -94,16 +94,16 @@ internal static class ExtraIconDisplayRegistry
                 if (!typeof(EnchantmentModel).IsAssignableFrom(display.EnchantmentType))
                 {
                     global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment] Ignoring extra-icon display for non-enchantment type {display.EnchantmentType.FullName}.");
+                        $"[MultiEnchantment] Ignoring marker display for non-enchantment type {display.EnchantmentType.FullName}.");
                     continue;
                 }
 
                 WarnIfNotMarkerType(display.EnchantmentType);
-                (displays ??= new List<ExtraIconDisplay>()).Add(display);
+                (displays ??= new List<MarkerDisplay>()).Add(display);
             }
         }
 
-        return (IReadOnlyList<ExtraIconDisplay>?)displays ?? Array.Empty<ExtraIconDisplay>();
+        return (IReadOnlyList<MarkerDisplay>?)displays ?? Array.Empty<MarkerDisplay>();
     }
 
     private static void NoteProviderFailure(ProviderEntry entry, CardModel card, Exception ex)
@@ -113,17 +113,17 @@ internal static class ExtraIconDisplayRegistry
         {
             entry.Disabled = true;
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Error(
-                $"[MultiEnchantment] Disabling extra-icon display provider after {entry.ConsecutiveFailures} consecutive failures (last Card={GetSafeCardId(card)}): {ex}");
+                $"[MultiEnchantment] Disabling marker display provider after {entry.ConsecutiveFailures} consecutive failures (last Card={GetSafeCardId(card)}): {ex}");
             return;
         }
 
         global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-            $"[MultiEnchantment] Extra-icon display provider failed for Card={GetSafeCardId(card)}: {ex}");
+            $"[MultiEnchantment] Marker display provider failed for Card={GetSafeCardId(card)}: {ex}");
     }
 
     private static void WarnIfNotMarkerType(Type enchantmentType)
     {
-        if (typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType))
+        if (typeof(MarkerEnchantmentModel).IsAssignableFrom(enchantmentType))
         {
             return;
         }
@@ -137,20 +137,20 @@ internal static class ExtraIconDisplayRegistry
         if (firstTime)
         {
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] Extra-icon display type {enchantmentType.FullName} is not an {nameof(ExtraIconEnchantmentModel)}. " +
-                "Marker presentation defaults (no badge backing, hidden-when-disabled, no amount) are intended for ExtraIconEnchantmentModel subclasses; " +
+                $"[MultiEnchantment] Marker display type {enchantmentType.FullName} is not an {nameof(MarkerEnchantmentModel)}. " +
+                "Marker presentation defaults (no badge backing, hidden-when-disabled, no amount) are intended for MarkerEnchantmentModel subclasses; " +
                 "displaying a gameplay enchantment type as a static icon may behave unexpectedly when a live instance of that type also exists.");
         }
     }
 
     private sealed class ProviderEntry
     {
-        public ProviderEntry(ExtraIconDisplayProvider provider)
+        public ProviderEntry(MarkerDisplayProvider provider)
         {
             Provider = provider;
         }
 
-        public ExtraIconDisplayProvider Provider { get; }
+        public MarkerDisplayProvider Provider { get; }
 
         // Mutated only from GetDisplays / NoteProviderFailure on the (single-threaded) UI refresh
         // path; registration/disposal only add/remove the entry, never touch these fields.

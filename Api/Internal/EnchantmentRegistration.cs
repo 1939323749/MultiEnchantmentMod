@@ -601,6 +601,13 @@ internal sealed class EnchantmentRegistration<TEnchantment> : IEnchantmentRegist
         return this;
     }
 
+    public IEnchantmentRegistration Invisible(bool invisible = true)
+    {
+        EnsureNotCommitted();
+        _entry.Invisible = invisible;
+        return this;
+    }
+
     public IDisposable Commit()
     {
         EnsureNotCommitted();

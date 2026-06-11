@@ -27,7 +27,7 @@ namespace MultiEnchantmentMod.Api;
 /// }
 /// </code>
 /// </remarks>
-public static class MultiEnchantmentApi
+public static partial class MultiEnchantmentApi
 {
     private static readonly List<BeforeCardEnchantedHandler> BeforeCardEnchantedHandlers = new();
     private static readonly List<AfterCardEnchantedHandler> AfterCardEnchantedHandlers = new();
@@ -205,26 +205,26 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
-    /// Registers a provider for display-only extra icons. Providers run when card UI refreshes,
+    /// Registers a provider for display-only markers. Providers run when card UI refreshes,
     /// including card-library / preview cards that do not have live combat enchantment instances.
     /// </summary>
-    public static IDisposable RegisterExtraIconDisplayProvider(ExtraIconDisplayProvider provider)
+    public static IDisposable RegisterMarkerDisplayProvider(MarkerDisplayProvider provider)
     {
-        return ExtraIconDisplayRegistry.RegisterProvider(provider);
+        return MarkerDisplayRegistry.RegisterProvider(provider);
     }
 
     /// <summary>
-    /// Convenience overload for static extra icons keyed by a card predicate.
+    /// Convenience overload for static markers keyed by a card predicate.
     /// </summary>
-    public static IDisposable RegisterExtraIcon<TEnchantment>(
+    public static IDisposable RegisterMarker<TEnchantment>(
         Func<CardModel, bool> appliesTo,
         EnchantmentPresentationStyle? presentationStyle = null,
-        ExtraIconDisplayPredicate? shouldDisplay = null)
-        where TEnchantment : ExtraIconEnchantmentModel, new()
+        MarkerDisplayPredicate? shouldDisplay = null)
+        where TEnchantment : MarkerEnchantmentModel, new()
     {
-        return RegisterExtraIcon<TEnchantment>(
+        return RegisterMarker<TEnchantment>(
             appliesTo,
-            new ExtraIconRegistrationOptions
+            new MarkerRegistrationOptions
             {
                 PresentationStyle = presentationStyle,
                 ShouldDisplay = shouldDisplay,
@@ -238,16 +238,16 @@ public static class MultiEnchantmentApi
     /// how a marker gets its image. Pass <c>null</c> to fall back to
     /// <typeparamref name="TEnchantment"/>'s canonical model icon.
     /// </summary>
-    public static IDisposable RegisterExtraIcon<TEnchantment>(
+    public static IDisposable RegisterMarker<TEnchantment>(
         Func<CardModel, bool> appliesTo,
         Godot.Texture2D? icon,
         EnchantmentPresentationStyle? presentationStyle = null,
-        ExtraIconDisplayPredicate? shouldDisplay = null)
-        where TEnchantment : ExtraIconEnchantmentModel, new()
+        MarkerDisplayPredicate? shouldDisplay = null)
+        where TEnchantment : MarkerEnchantmentModel, new()
     {
-        return RegisterExtraIcon<TEnchantment>(
+        return RegisterMarker<TEnchantment>(
             appliesTo,
-            new ExtraIconRegistrationOptions
+            new MarkerRegistrationOptions
             {
                 Icon = icon,
                 PresentationStyle = presentationStyle,
@@ -256,24 +256,24 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
-    /// Convenience overload for static extra icons that need the common provider-only knobs
-    /// (<see cref="ExtraIconRegistrationOptions.ShowAmount"/>,
-    /// <see cref="ExtraIconRegistrationOptions.Amount"/>, or
-    /// <see cref="ExtraIconRegistrationOptions.ShowWithLiveEnchantment"/>) without writing a full
-    /// <see cref="ExtraIconDisplayProvider"/>.
+    /// Convenience overload for static markers that need the common provider-only knobs
+    /// (<see cref="MarkerRegistrationOptions.ShowAmount"/>,
+    /// <see cref="MarkerRegistrationOptions.Amount"/>, or
+    /// <see cref="MarkerRegistrationOptions.ShowWithLiveEnchantment"/>) without writing a full
+    /// <see cref="MarkerDisplayProvider"/>.
     /// </summary>
-    public static IDisposable RegisterExtraIcon<TEnchantment>(
+    public static IDisposable RegisterMarker<TEnchantment>(
         Func<CardModel, bool> appliesTo,
-        ExtraIconRegistrationOptions? options)
-        where TEnchantment : ExtraIconEnchantmentModel, new()
+        MarkerRegistrationOptions? options)
+        where TEnchantment : MarkerEnchantmentModel, new()
     {
         ArgumentNullException.ThrowIfNull(appliesTo);
-        options ??= new ExtraIconRegistrationOptions();
-        return RegisterExtraIconDisplayProvider(card =>
+        options ??= new MarkerRegistrationOptions();
+        return RegisterMarkerDisplayProvider(card =>
             appliesTo(card)
                 ? new[]
                 {
-                    new ExtraIconDisplay
+                    new MarkerDisplay
                     {
                         EnchantmentType = typeof(TEnchantment),
                         Icon = options.Icon,
@@ -284,11 +284,11 @@ public static class MultiEnchantmentApi
                         ShowWithLiveEnchantment = options.ShowWithLiveEnchantment,
                     },
                 }
-                : Array.Empty<ExtraIconDisplay>());
+                : Array.Empty<MarkerDisplay>());
     }
 
     /// <summary>
-    /// Forces <paramref name="card"/> to re-evaluate its extra icons immediately — re-runs every
+    /// Forces <paramref name="card"/> to re-evaluate its markers immediately — re-runs every
     /// display provider for the card and redraws its badges. Call this after you change state a
     /// provider's predicate reads, or after disposing a provider, so a card already on screen (for
     /// example in the compendium, which does not refresh on its own) updates now instead of on the
@@ -300,24 +300,24 @@ public static class MultiEnchantmentApi
     /// call this to make it visible now. Stored marker instances already refresh on
     /// <see cref="RemoveEnchantment"/> / <see cref="NotifyPropsChanged"/>.
     /// </remarks>
-    public static void RefreshExtraIcons(CardModel? card)
+    public static void RefreshMarkers(CardModel? card)
     {
         if (card == null)
         {
             return;
         }
 
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshExtraIcons(card);
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshMarkers(card);
     }
 
     /// <summary>
-    /// Forces every currently-rendered card to re-evaluate its extra icons. Use after changing a
+    /// Forces every currently-rendered card to re-evaluate its markers. Use after changing a
     /// global condition many providers read; prefer the per-card overload when you know which card
     /// changed.
     /// </summary>
-    public static void RefreshExtraIcons()
+    public static void RefreshMarkers()
     {
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshAllExtraIcons();
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.RefreshAllMarkers();
     }
 
     /// <summary>
@@ -430,42 +430,42 @@ public static class MultiEnchantmentApi
 
     /// <summary>
     /// All gameplay enchantment instances on <paramref name="card"/>, in application order, excluding
-    /// <see cref="ExtraIconEnchantmentModel"/> markers. Returns an empty list when there are none.
+    /// <see cref="MarkerEnchantmentModel"/> markers. Returns an empty list when there are none.
     /// (For markers use <see cref="GetMarkers"/>; for the full mixed list pass
-    /// <c>includeExtraIcons: true</c> to the other overload.)
+    /// <c>includeMarkers: true</c> to the other overload.)
     /// </summary>
     public static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card) =>
-        GetEnchantments(card, includeExtraIcons: false);
+        GetEnchantments(card, includeMarkers: false);
 
     /// <summary>
     /// All enchantment instances on <paramref name="card"/>, in application order. Pass
-    /// <paramref name="includeExtraIcons"/> = <c>true</c> to include
-    /// <see cref="ExtraIconEnchantmentModel"/> markers in the list.
+    /// <paramref name="includeMarkers"/> = <c>true</c> to include
+    /// <see cref="MarkerEnchantmentModel"/> markers in the list.
     /// </summary>
-    public static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card, bool includeExtraIcons)
+    public static IReadOnlyList<EnchantmentModel> GetEnchantments(CardModel? card, bool includeMarkers)
     {
-        IEnumerable<EnchantmentModel> source = includeExtraIcons
+        IEnumerable<EnchantmentModel> source = includeMarkers
             ? global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantments(card)
             : global::MultiEnchantmentMod.MultiEnchantmentSupport.GetGameplayEnchantments(card);
         return source.ToList();
     }
 
     /// <summary>
-    /// All stored <see cref="ExtraIconEnchantmentModel"/> markers currently attached to
+    /// All stored <see cref="MarkerEnchantmentModel"/> markers currently attached to
     /// <paramref name="card"/>, in application order. Inspect each element's runtime type (and its
     /// <c>Amount</c>/<c>Props</c>) to learn <em>which</em> markers the card carries. Returns an empty
     /// list when there are none.
     /// </summary>
     /// <remarks>
     /// This reports markers that exist as real enchantment instances on the card — i.e. an
-    /// <see cref="ExtraIconEnchantmentModel"/> subclass applied through the normal enchant pipeline
+    /// <see cref="MarkerEnchantmentModel"/> subclass applied through the normal enchant pipeline
     /// (<see cref="Enchant"/>). Markers shown only via a registered display provider — including both
-    /// <c>RegisterExtraIcon&lt;T&gt;</c> overloads and <see cref="RegisterExtraIconDisplayProvider"/> —
+    /// <c>RegisterMarker&lt;T&gt;</c> overloads and <see cref="RegisterMarkerDisplayProvider"/> —
     /// are recomputed from their <c>appliesTo</c> predicate at render time and are <em>not</em> card
     /// instance state, so they never appear here. To test a display-provider marker, re-evaluate that
     /// predicate yourself.
     /// </remarks>
-    public static IReadOnlyList<ExtraIconEnchantmentModel> GetMarkers(CardModel? card) =>
+    public static IReadOnlyList<MarkerEnchantmentModel> GetMarkers(CardModel? card) =>
         global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card);
 
     /// <summary>
@@ -474,40 +474,40 @@ public static class MultiEnchantmentApi
     /// already know the marker type and want its live instance to read <c>Amount</c>/<c>Props</c>.
     /// </summary>
     public static TMarker? GetMarker<TMarker>(CardModel? card)
-        where TMarker : ExtraIconEnchantmentModel =>
+        where TMarker : MarkerEnchantmentModel =>
         global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card).OfType<TMarker>().FirstOrDefault();
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="card"/> carries at least one stored
-    /// <see cref="ExtraIconEnchantmentModel"/> marker. Equivalent to <c>GetMarkers(card).Count &gt; 0</c>.
+    /// <see cref="MarkerEnchantmentModel"/> marker. Equivalent to <c>GetMarkers(card).Count &gt; 0</c>.
     /// </summary>
     public static bool HasAnyMarker(CardModel? card) =>
         global::MultiEnchantmentMod.MultiEnchantmentSupport.GetMarkers(card).Count > 0;
 
     /// <summary>
-    /// The extra-icon marker types currently <em>visible</em> on <paramref name="card"/>, in the
-    /// same order as the icon row. Includes stored <see cref="ExtraIconEnchantmentModel"/> instances
+    /// The marker types currently <em>visible</em> on <paramref name="card"/>, in the
+    /// same order as the icon row. Includes stored <see cref="MarkerEnchantmentModel"/> instances
     /// and display-only markers from registered providers after <c>ShouldDisplay</c>,
     /// live-enchantment suppression, <c>HideWhenDisabled</c>, and display-priority ordering.
-    /// Use <see cref="GetShownExtraIconDetails"/> when you also need amount/style/status details.
+    /// Use <see cref="GetShownMarkerDetails"/> when you also need amount/style/status details.
     /// </summary>
-    public static IReadOnlyList<Type> GetShownExtraIcons(CardModel? card) =>
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconTypes(card);
+    public static IReadOnlyList<Type> GetShownMarkers(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownMarkerTypes(card);
 
     /// <summary>
-    /// Detailed snapshots for extra-icon markers currently <em>visible</em> on
+    /// Detailed snapshots for markers currently <em>visible</em> on
     /// <paramref name="card"/>, in the same order as the icon row. This is the rich counterpart to
-    /// <see cref="GetShownExtraIcons"/>: it exposes the resolved icon, amount label, status,
+    /// <see cref="GetShownMarkers"/>: it exposes the resolved icon, amount label, status,
     /// presentation style, and whether each marker came from stored card state or a display provider.
     /// </summary>
-    public static IReadOnlyList<ShownExtraIcon> GetShownExtraIconDetails(CardModel? card) =>
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconDetails(card);
+    public static IReadOnlyList<ShownMarker> GetShownMarkerDetails(CardModel? card) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownMarkerDetails(card);
 
     /// <summary>
     /// Returns <c>true</c> when the icon row currently shows a marker assignable to
-    /// <paramref name="markerType"/> on <paramref name="card"/>. See <see cref="GetShownExtraIcons"/>.
+    /// <paramref name="markerType"/> on <paramref name="card"/>. See <see cref="GetShownMarkers"/>.
     /// </summary>
-    public static bool IsExtraIconShown(CardModel? card, Type markerType)
+    public static bool IsMarkerShown(CardModel? card, Type markerType)
     {
         ArgumentNullException.ThrowIfNull(markerType);
         if (!typeof(EnchantmentModel).IsAssignableFrom(markerType))
@@ -517,7 +517,7 @@ public static class MultiEnchantmentApi
                 nameof(markerType));
         }
 
-        IReadOnlyList<Type> shown = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownExtraIconTypes(card);
+        IReadOnlyList<Type> shown = global::MultiEnchantmentMod.MultiEnchantmentSupport.GetShownMarkerTypes(card);
         for (int i = 0; i < shown.Count; i++)
         {
             if (markerType.IsAssignableFrom(shown[i]))
@@ -530,40 +530,40 @@ public static class MultiEnchantmentApi
     }
 
     /// <summary>
-    /// Generic form of <see cref="IsExtraIconShown(CardModel?,Type)"/> for a known marker type.
+    /// Generic form of <see cref="IsMarkerShown(CardModel?,Type)"/> for a known marker type.
     /// </summary>
-    public static bool IsExtraIconShown<TMarker>(CardModel? card)
-        where TMarker : ExtraIconEnchantmentModel =>
-        IsExtraIconShown(card, typeof(TMarker));
+    public static bool IsMarkerShown<TMarker>(CardModel? card)
+        where TMarker : MarkerEnchantmentModel =>
+        IsMarkerShown(card, typeof(TMarker));
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="card"/> carries any gameplay enchantment,
-    /// excluding <see cref="ExtraIconEnchantmentModel"/> marker icons by default.
+    /// excluding <see cref="MarkerEnchantmentModel"/> marker icons by default.
     /// </summary>
     public static bool HasAnyEnchantment(CardModel? card) =>
-        HasAnyEnchantment(card, includeExtraIcons: false);
+        HasAnyEnchantment(card, includeMarkers: false);
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="card"/> carries any enchantment. Pass
-    /// <paramref name="includeExtraIcons"/> = <c>true</c> to count lightweight marker icons too.
+    /// <paramref name="includeMarkers"/> = <c>true</c> to count lightweight marker icons too.
     /// </summary>
-    public static bool HasAnyEnchantment(CardModel? card, bool includeExtraIcons) =>
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.HasAnyEnchantments(card, includeExtraIcons);
+    public static bool HasAnyEnchantment(CardModel? card, bool includeMarkers) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.HasAnyEnchantments(card, includeMarkers);
 
     /// <summary>
     /// Total number of gameplay enchantment instances on <paramref name="card"/>, excluding
-    /// <see cref="ExtraIconEnchantmentModel"/> marker icons by default. Counts instances, not
+    /// <see cref="MarkerEnchantmentModel"/> marker icons by default. Counts instances, not
     /// distinct types.
     /// </summary>
     public static int GetEnchantmentCount(CardModel? card) =>
-        GetEnchantmentCount(card, includeExtraIcons: false);
+        GetEnchantmentCount(card, includeMarkers: false);
 
     /// <summary>
     /// Total number of enchantment instances on <paramref name="card"/>. Pass
-    /// <paramref name="includeExtraIcons"/> = <c>true</c> to count lightweight marker icons too.
+    /// <paramref name="includeMarkers"/> = <c>true</c> to count lightweight marker icons too.
     /// </summary>
-    public static int GetEnchantmentCount(CardModel? card, bool includeExtraIcons) =>
-        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantmentTotalCount(card, includeExtraIcons);
+    public static int GetEnchantmentCount(CardModel? card, bool includeMarkers) =>
+        global::MultiEnchantmentMod.MultiEnchantmentSupport.GetEnchantmentTotalCount(card, includeMarkers);
 
     /// <summary>
     /// Number of instances assignable to <typeparamref name="TEnchantment"/> on
@@ -833,7 +833,7 @@ public static class MultiEnchantmentApi
         "ModifyEnergyCostInCombat",
         "ModifyCardPlayCount",
         "ModifyDynamicVar",
-        "ExtraIcon",
+        "Marker",
         "IconState",
         "EventBus",
         "BatchQuery",
@@ -1117,7 +1117,7 @@ public static class MultiEnchantmentApi
         foreach (CardModel card in cards)
         {
             bool removedAny = false;
-            foreach (EnchantmentModel enchantment in GetEnchantments(card, includeExtraIcons: true)
+            foreach (EnchantmentModel enchantment in GetEnchantments(card, includeMarkers: true)
                          .Where(e => enchantmentType.IsInstanceOfType(e))
                          .ToList())
             {

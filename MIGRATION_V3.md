@@ -2,6 +2,40 @@
 
 API 版本号为 2。下游 mod 应使用 `MultiEnchantmentApi.RequireApiVersion(2)` 检查运行时兼容性。
 
+## v2.4.1 框架改进
+
+### 术语统一："extra icon" → "marker"（原地改名）
+
+所有 `*ExtraIcon*` 公开名称已统一改名为 `Marker*`。引用旧名的代码改名后重新编译即可；
+**存档不受影响**（存储型 marker 按各 mod 自己的 `ModelId` 持久化，只改了框架基类与方法名）。
+
+| 旧名称 | 新名称 |
+|---|---|
+| `ExtraIconEnchantmentModel` | `MarkerEnchantmentModel` |
+| `ExtraIconDisplay` | `MarkerDisplay` |
+| `ExtraIconDisplayContext` | `MarkerDisplayContext` |
+| `ExtraIconDisplayProvider` / `ExtraIconDisplayPredicate` | `MarkerDisplayProvider` / `MarkerDisplayPredicate` |
+| `ExtraIconPresentation` | `MarkerPresentation` |
+| `ExtraIconRegistrationOptions` | `MarkerRegistrationOptions` |
+| `ShownExtraIcon` | `ShownMarker` |
+| `RegisterExtraIcon<T>`（×3 重载） | `RegisterMarker<T>` |
+| `RegisterExtraIconDisplayProvider` | `RegisterMarkerDisplayProvider` |
+| `RefreshExtraIcons(card)` / `RefreshExtraIcons()` | `RefreshMarkers(card)` / `RefreshMarkers()` |
+| `GetShownExtraIcons` / `GetShownExtraIconDetails` | `GetShownMarkers` / `GetShownMarkerDetails` |
+| `IsExtraIconShown` | `IsMarkerShown` |
+| 参数 `includeExtraIcons` | `includeMarkers` |
+| 能力查询字符串 `"ExtraIcon"` | `"Marker"` |
+
+### 隐形附魔（Invisible Enchantment）
+`[Enchantment(Invisible = true)]`（或 fluent `.Invisible()`）：完整玩法附魔，但不画徽章、
+不占原版主槽、应用时无附魔闪光。描述文字、hover、发光、计数、存档、联机同步全部正常。
+查询：`MultiEnchantmentApi.IsInvisibleEnchantment(type)`。示例见 Samples/35。
+
+### 存储型 marker 友好增删改查
+`GetOrAddMarker<T>` / `SetMarker<T>` / `AddMarkerAmount<T>` / `ModifyMarker<T>` / `RemoveMarker<T>`，
+以及实例自我修改 `marker.SetAmount` / `marker.AddAmount` / `marker.NotifyChanged()` ——
+自动从 ModelDb 解析实例、自动通知变更并刷新图标行。marker 类型必须注册进 ModelDb。
+
 ## v2.2 框架改进（本批次）
 
 ### 注册决议规则正式契约化

@@ -14,7 +14,7 @@ public sealed record IconStateOverride
 {
     /// <summary>
     /// Custom texture for this card, overriding the state's default icon. As with
-    /// <see cref="ExtraIconDisplay.Icon"/>, this is the only way to use arbitrary art
+    /// <see cref="MarkerDisplay.Icon"/>, this is the only way to use arbitrary art
     /// (<c>EnchantmentModel.Icon</c> is non-virtual).
     /// </summary>
     public Texture2D? Icon { get; init; }

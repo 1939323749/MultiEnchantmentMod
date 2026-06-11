@@ -6,10 +6,10 @@ using MegaCrit.Sts2.Core.Models;
 namespace MultiEnchantmentMod.Api;
 
 /// <summary>
-/// Describes an extra icon that should be shown for matching card UI instances even when no live
+/// Describes an marker that should be shown for matching card UI instances even when no live
 /// enchantment instance exists on the card.
 /// </summary>
-public sealed record ExtraIconDisplay
+public sealed record MarkerDisplay
 {
     public required Type EnchantmentType { get; init; }
 
@@ -27,11 +27,11 @@ public sealed record ExtraIconDisplay
 
     public EnchantmentPresentationStyle? PresentationStyle { get; init; }
 
-    public ExtraIconDisplayPredicate? ShouldDisplay { get; init; }
+    public MarkerDisplayPredicate? ShouldDisplay { get; init; }
 
     /// <summary>
     /// When <c>true</c>, the icon renders an amount label using <see cref="Amount"/>. Defaults to
-    /// <c>false</c>: marker icons are normally amount-less. (<see cref="ExtraIconEnchantmentModel"/>
+    /// <c>false</c>: marker icons are normally amount-less. (<see cref="MarkerEnchantmentModel"/>
     /// hard-disables its own <c>ShowAmount</c>, so this is the only way a display-only marker shows
     /// a number.)
     /// </summary>
@@ -49,4 +49,4 @@ public sealed record ExtraIconDisplay
     public bool ShowWithLiveEnchantment { get; init; }
 }
 
-public delegate IEnumerable<ExtraIconDisplay> ExtraIconDisplayProvider(CardModel card);
+public delegate IEnumerable<MarkerDisplay> MarkerDisplayProvider(CardModel card);

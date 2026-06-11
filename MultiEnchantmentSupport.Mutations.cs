@@ -1143,8 +1143,13 @@ internal static partial class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         card.AssertMutable();
-        if (!IsGameplayEnchantment(enchantment))
+        if (!IsGameplayEnchantment(enchantment) ||
+            Api.Internal.EnchantmentRegistry.IsInvisible(enchantment.GetType()))
         {
+            // Markers never own the vanilla slot. Invisible enchantments also skip it so the
+            // base game's badge / enchant VFX / history icon never see them — their gameplay
+            // lifecycle is dispatched inside AttachAdditionalEnchantmentState like any other
+            // additional enchantment.
             return AttachAdditionalEnchantmentState(
                 choiceContext,
                 card,
@@ -1195,8 +1200,11 @@ internal static partial class MultiEnchantmentSupport
     {
         enchantment.AssertMutable();
         card.AssertMutable();
-        if (!IsGameplayEnchantment(enchantment))
+        if (!IsGameplayEnchantment(enchantment) ||
+            Api.Internal.EnchantmentRegistry.IsInvisible(enchantment.GetType()))
         {
+            // Same slot steering as the sync path: markers and invisible enchantments never
+            // own the vanilla primary slot.
             return await AttachAdditionalEnchantmentStateAsync(
                 choiceContext,
                 card,

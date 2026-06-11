@@ -37,15 +37,15 @@ public sealed class SampleRightSideBadgeDefinition : EnchantmentDefinition<Sampl
     };
 }
 
-// ── Part 2 — a display-only extra icon pinned to the right. Markers default to no backing
-//   (ExtraIconPresentation.Default), so nothing is mirrored — RightAligned only decides which
+// ── Part 2 — a display-only marker pinned to the right. Markers default to no backing
+//   (MarkerPresentation.Default), so nothing is mirrored — RightAligned only decides which
 //   column the icon lands in. Targeting StrikeIronclad (which sample 31 already marks on the left)
 //   demonstrates the two independent columns coexisting on one card.
 //
 //   Display providers can't be expressed as attributes alone, so Install() is called explicitly
 //   from SampleRegistration.Initialize.
 
-public sealed class SampleRightSideMarker : ExtraIconEnchantmentModel
+public sealed class SampleRightSideMarker : MarkerEnchantmentModel
 {
 }
 
@@ -57,9 +57,9 @@ public static class SampleRightSideMarkerRegistration
     {
         // Borrow an existing enchantment's texture from ModelDb (never `new` a model). A real mod
         // would pass its own GD.Load<CompressedTexture2D>("res://...png").
-        _registration ??= MultiEnchantmentApi.RegisterExtraIcon<SampleRightSideMarker>(
+        _registration ??= MultiEnchantmentApi.RegisterMarker<SampleRightSideMarker>(
             appliesTo: card => card is StrikeIronclad,
-            presentationStyle: ExtraIconPresentation.Default with { RightAligned = true },
+            presentationStyle: MarkerPresentation.Default with { RightAligned = true },
             icon: ModelDb.Enchantment<Sharp>().Icon);
     }
 

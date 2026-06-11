@@ -2739,7 +2739,7 @@ internal static class MultiEnchantmentPatches
     [HarmonyPostfix]
     private static void CardVisualsPostfix(NCard __instance)
     {
-        // Display-only extra icons must also work on card-library / encyclopedia cards that have
+        // Display-only markers must also work on card-library / encyclopedia cards that have
         // no live enchantment instance. Sync after the full visual pass so the marker is present
         // even if vanilla skipped UpdateEnchantmentVisuals for an unenchanted card.
         try
@@ -3057,6 +3057,20 @@ internal static class MultiEnchantmentPatches
     {
         try
         {
+            // Invisible enchantments play no enchant shimmer: suppress the VFX when the primary
+            // slot is empty (vanilla _Ready would NRE on card.Enchantment.Icon — reachable now
+            // that invisible enchantments never occupy the slot) or when the enchantment that
+            // triggered this VFX is invisible. Vanilla callers all null-check Create's result.
+            if (__result != null &&
+                (card.Enchantment == null ||
+                 (MultiEnchantmentSupport.GetMostRecentlyAppliedEnchantment(card) is { } lastApplied &&
+                  Api.Internal.EnchantmentRegistry.IsInvisible(lastApplied.GetType()))))
+            {
+                __result.QueueFreeSafely();
+                __result = null;
+                return;
+            }
+
             // Snapshot the visible enchantment stack at VFX creation time so the animation does not
             // depend on later UI refreshes or card-node state during _Ready.
             MultiEnchantmentSupport.CaptureEnchantVfxSnapshot(__result, card);

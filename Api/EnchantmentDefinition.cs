@@ -280,7 +280,7 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     {
         get
         {
-            if (typeof(ExtraIconEnchantmentModel).IsAssignableFrom(typeof(TEnchantment)))
+            if (typeof(MarkerEnchantmentModel).IsAssignableFrom(typeof(TEnchantment)))
             {
                 return HistoryDisplayMode.Hidden;
             }
@@ -310,8 +310,8 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
     /// and icon scale.
     /// </summary>
     public virtual EnchantmentPresentationStyle PresentationStyle =>
-        typeof(ExtraIconEnchantmentModel).IsAssignableFrom(typeof(TEnchantment))
-            ? ExtraIconPresentation.Default
+        typeof(MarkerEnchantmentModel).IsAssignableFrom(typeof(TEnchantment))
+            ? MarkerPresentation.Default
             : new EnchantmentPresentationStyle();
 
     /// <summary>

@@ -191,17 +191,17 @@ internal static partial class MultiEnchantmentSupport
 
     internal static bool IsGameplayEnchantment(EnchantmentModel enchantment)
     {
-        return enchantment is not ExtraIconEnchantmentModel;
+        return enchantment is not MarkerEnchantmentModel;
     }
 
     /// <summary>
-    /// Picks the enumeration source for a type-keyed query: extra-icon marker types see markers,
+    /// Picks the enumeration source for a type-keyed query: marker types see markers,
     /// gameplay types exclude them. Keeps <see cref="HasEnchantment{T}"/>, <see cref="GetEnchantment"/>
     /// and the stack-support count/amount APIs reporting the same presence for a given type.
     /// </summary>
     internal static IEnumerable<EnchantmentModel> GetEnchantmentsForType(CardModel? card, Type enchantmentType)
     {
-        return typeof(ExtraIconEnchantmentModel).IsAssignableFrom(enchantmentType)
+        return typeof(MarkerEnchantmentModel).IsAssignableFrom(enchantmentType)
             ? GetEnchantments(card)
             : GetGameplayEnchantments(card);
     }
@@ -249,27 +249,27 @@ internal static partial class MultiEnchantmentSupport
     }
 
     /// <summary>
-    /// All stored <see cref="ExtraIconEnchantmentModel"/> marker instances currently attached to
+    /// All stored <see cref="MarkerEnchantmentModel"/> marker instances currently attached to
     /// <paramref name="card"/>, in application order. Display-only markers (provider/predicate based)
     /// are computed at render time and are not card instance state, so they are not returned here.
     /// </summary>
-    public static IReadOnlyList<ExtraIconEnchantmentModel> GetMarkers(CardModel? card)
+    public static IReadOnlyList<MarkerEnchantmentModel> GetMarkers(CardModel? card)
     {
         if (card == null)
         {
-            return Array.Empty<ExtraIconEnchantmentModel>();
+            return Array.Empty<MarkerEnchantmentModel>();
         }
 
-        List<ExtraIconEnchantmentModel>? markers = null;
+        List<MarkerEnchantmentModel>? markers = null;
         foreach (EnchantmentModel enchantment in GetEnchantments(card))
         {
-            if (enchantment is ExtraIconEnchantmentModel marker)
+            if (enchantment is MarkerEnchantmentModel marker)
             {
-                (markers ??= new List<ExtraIconEnchantmentModel>()).Add(marker);
+                (markers ??= new List<MarkerEnchantmentModel>()).Add(marker);
             }
         }
 
-        return markers ?? (IReadOnlyList<ExtraIconEnchantmentModel>)Array.Empty<ExtraIconEnchantmentModel>();
+        return markers ?? (IReadOnlyList<MarkerEnchantmentModel>)Array.Empty<MarkerEnchantmentModel>();
     }
 
     public static bool ShouldGlowGold(CardModel card)
@@ -289,14 +289,14 @@ internal static partial class MultiEnchantmentSupport
         return GetGameplayEnchantments(card).Any(static enchantment => enchantment.ShouldStartAtBottomOfDrawPile);
     }
 
-    public static bool HasAnyEnchantments(CardModel? card, bool includeExtraIcons = false)
+    public static bool HasAnyEnchantments(CardModel? card, bool includeMarkers = false)
     {
         if (card == null)
         {
             return false;
         }
 
-        if (card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeExtraIcons))
+        if (card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeMarkers))
         {
             return true;
         }
@@ -304,7 +304,7 @@ internal static partial class MultiEnchantmentSupport
         IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(card);
         for (int i = 0; i < extras.Count; i++)
         {
-            if (ShouldCountEnchantment(extras[i], includeExtraIcons))
+            if (ShouldCountEnchantment(extras[i], includeMarkers))
             {
                 return true;
             }
@@ -317,18 +317,18 @@ internal static partial class MultiEnchantmentSupport
     /// Total number of enchantments on <paramref name="card"/> — the primary slot (if present) plus
     /// every extra enchantment instance. Counts instances, not distinct types. Allocation-free.
     /// </summary>
-    public static int GetEnchantmentTotalCount(CardModel? card, bool includeExtraIcons = false)
+    public static int GetEnchantmentTotalCount(CardModel? card, bool includeMarkers = false)
     {
         if (card == null)
         {
             return 0;
         }
 
-        int count = card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeExtraIcons) ? 1 : 0;
+        int count = card.Enchantment != null && ShouldCountEnchantment(card.Enchantment, includeMarkers) ? 1 : 0;
         IReadOnlyList<EnchantmentModel> extras = GetAdditionalEnchantments(card);
         for (int i = 0; i < extras.Count; i++)
         {
-            if (ShouldCountEnchantment(extras[i], includeExtraIcons))
+            if (ShouldCountEnchantment(extras[i], includeMarkers))
             {
                 count++;
             }
@@ -337,9 +337,9 @@ internal static partial class MultiEnchantmentSupport
         return count;
     }
 
-    private static bool ShouldCountEnchantment(EnchantmentModel enchantment, bool includeExtraIcons)
+    private static bool ShouldCountEnchantment(EnchantmentModel enchantment, bool includeMarkers)
     {
-        return includeExtraIcons || IsGameplayEnchantment(enchantment);
+        return includeMarkers || IsGameplayEnchantment(enchantment);
     }
 
     /// <summary>
@@ -433,18 +433,18 @@ internal static partial class MultiEnchantmentSupport
     }
 
     /// <summary>
-    /// Re-evaluates and redraws extra-icon visuals for <paramref name="card"/> immediately (re-runs
+    /// Re-evaluates and redraws marker visuals for <paramref name="card"/> immediately (re-runs
     /// display providers + badge sync), reusing the same refresh path enchantment changes use. Lets
     /// provider edits / disposals take effect on an already-rendered card without waiting for the
     /// next vanilla visual pass.
     /// </summary>
-    internal static void RefreshExtraIcons(CardModel card)
+    internal static void RefreshMarkers(CardModel card)
     {
         TriggerEnchantmentChanged(card);
     }
 
-    /// <summary>Refreshes extra-icon visuals on every currently-rendered card.</summary>
-    internal static void RefreshAllExtraIcons()
+    /// <summary>Refreshes marker visuals on every currently-rendered card.</summary>
+    internal static void RefreshAllMarkers()
     {
         foreach (CardModel card in CardUiStates
             .Select(static entry => entry.Key.Model)

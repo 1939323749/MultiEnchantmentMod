@@ -443,6 +443,11 @@ internal static class AssemblyScanner
                 registration.HistoryDisplay(attribute.HistoryDisplay);
             }
 
+            if (attribute.Invisible)
+            {
+                registration.Invisible();
+            }
+
             registration.Commit();
             return true;
         }
