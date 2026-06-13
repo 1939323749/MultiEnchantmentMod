@@ -1,6 +1,6 @@
 # MultiEnchantmentMod 线路图
 
-> 更新于 2026-06-11。已完成项会移到文末"已完成"。优先级依据：API 缺口分析（对比游戏 Hook 全集与已桥接面）+ 第三方 issue（[API Gap 模板](.github/ISSUE_TEMPLATE/api-gap.yml)）反馈。
+> 更新于 2026-06-13。已完成项会移到文末"已完成"。优先级依据：API 缺口分析（对比游戏 Hook 全集与已桥接面）+ 第三方 issue（[API Gap 模板](.github/ISSUE_TEMPLATE/api-gap.yml)）反馈。
 > 约束提醒：所有公开 API 变更必须**纯加法**（新增重载/新接口方法），不得原地改签名（下游 mod 会 MissingMethodException）。
 
 ## API 缺口（按价值排序）
@@ -26,6 +26,12 @@
 ### 7. Power Received 方向
 本轮只桥接了 Given（卡牌给出）。Received（生物接收）是生物级事件，若有"宿主卡的拥有者受到能力时…"类需求再设计。
 
+### 8. 隐形附魔挂 marker 角标（缝合 v2.4.1 两特性）
+隐形附魔（玩法附魔、不画徽章）与 marker（数据标签徽章）目前是两套体系。常见诉求"隐形附魔想在卡上显示一个自定义角标"需作者手写 `IconState` 桥接。可加声明式辅助（如注册侧 `.WithMarkerIcon(texture, style)` 或属性 `[Enchantment(Invisible = true, MarkerIcon = "res://...")]`），让隐形附魔直接投影一个 marker 图标。纯加法，样例好写。
+
+### 9. marker CRUD 的 amount 归零自动移除选项
+`AddMarkerAmount` 当前归零不自动移除（计数器语义）。部分"用完即消失"的标记希望 amount ≤ 0 时自动 `RemoveMarker`。可加重载 `AddMarkerAmount<T>(card, delta, removeAtZero: true)` 或独立 `DecrementMarker<T>`。低优先，等真实需求。
+
 ## 多人模式
 
 - **玩家上下文注入**：Hook 层不区分"我的卡 / 队友的卡"，回调缺玩家身份信息，"队友合作"类附魔写不出来。小步方案：给现有广播钩子 context 增加 owner/player 字段（加字段二进制安全）。
@@ -36,8 +42,7 @@
 
 - **Analyzer 扩展**：现有诊断只覆盖 Definition 冲突、兼容性 attribute、`ModifyDynamicVar` 签名三类。候选新诊断：在 stacked hook 中同步调用 `Enchant` 而非 `EnchantAsync`、fluent 链忘记 `.Commit()`、同一附魔同时覆写 vanilla 数值虚方法又注册同名贡献通道（双重计数）。
 - **文档英文化**：docs 下除 marker-wiki 外全是中文，NexusMods 国际用户无法阅读 v2 API wiki。
-- **遥测反哺**：用 Supabase 数据（`deck_at_enchantment` 视图、run journey、crash_version_snapshot）做定期报表：附魔组合使用率（指导缺口优先级）、旧存档 key 迁移日志出现频率（决定 v4 移除时机）、按游戏版本切片的崩溃趋势。
-- **仓库清理**：`dll_backup_2026-06-05/`、`.ilspy_tmp_thequeen/`、Samples/Analyzers 的 `obj/` 产物清理或补 `.gitignore`。
+- **遥测反哺**：用 Supabase 数据（`deck_at_enchantment` 视图、run journey、crash_version_snapshot）做定期报表：附魔组合使用率（指导缺口优先级）、旧存档 key 迁移日志出现频率（决定 v4 移除时机）、按游戏版本切片的崩溃趋势。新增维度：联机角色组合（v2.4.1 起 `team` / `local_player_slot` 已入库，可分析"联机是否倾向选不同角色"——此前因 character 取 Players[0] 而不可分析）。
 
 ## 存档格式
 
@@ -45,5 +50,7 @@
 
 ## 已完成
 
+- **2026-06-13（v2.4.1）**：隐形附魔（`[Enchantment(Invisible = true)]` / fluent `.Invisible()`）——完整玩法附魔但不画徽章、不占原版主槽（复用 marker 路由）、应用时无附魔闪光（`NCardEnchantVfx.Create` 补丁加空主槽守卫，顺带修了槽位绕行触发的 NRE 隐患），描述文字 / hover / 发光 / 计数 / 存档 / 联机同步均不变；查询 `IsInvisibleEnchantment`。术语统一 "extra icon" → "marker"（`*ExtraIcon*` 全部原地改名为 `Marker*`，存档不受影响，对照表见 MIGRATION_V3）。存储型 marker 友好 CRUD（`GetOrAddMarker` / `SetMarker` / `AddMarkerAmount` / `ModifyMarker` / `RemoveMarker` + 实例自我修改 `SetAmount` / `AddAmount` / `NotifyChanged`）。样例 35。
+- **2026-06-11（联机遥测修复，v2.4.1）**：修复联机 character 取 `Players[0]`（各客户端列表同序 = host 顺序）导致的"全部相同角色"假象——改为本地玩家优先（`LocalContext.NetId` 匹配），新增 `team` / `local_player_slot` 上报字段，遥测尊重游戏 `PrefsSave.UploadData` 隐私设置。
 - **2026-06-11（缺口完善第二轮）**：Power 链桥接（`ModifyPowerAmountGiven` contribution + `OnCardAppliedPower` 通知；patch `Hook.ModifyPowerAmountGiven` / `Hook.AfterPowerAmountChanged`，签名 0.106.x / 0.107.0 双版本一致）；变形/克隆生命周期钩子（`OnCardTransformed` 桥接 `CardCmd.Transform` 的 `AfterTransformedFrom/To` 配对，含 SovereignBlade 覆写补丁；`OnCardCloned` 桥接 `CardModel.CreateClone` + 休息处 Clone 选项，UI 预览不触发）。样例 33 / 34。
 - **缺口完善第一轮（v2.x）**：广播钩子 `OnAnyCard*`、邻居事件 `OnSiblingApplied/Removed`、`ModifyDynamicVar` / `ModifyEnergyCostInCombat` / `ModifyCardPlayCount` / `ModifyHandDraw`、`MaxActivations` + `StackOverflowPolicy`、`ScopeRuntimeStateView`、单实例 scope 覆盖。
