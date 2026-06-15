@@ -193,13 +193,22 @@ internal static class MultiEnchantmentPatches
                 }
 
                 // Vanilla CanEnchant only inspects card.Enchantment (the primary slot) — it cannot
-                // see the mod's extra enchantments. So a DisallowDuplicate type that already exists
-                // ONLY as an extra (with no primary) slips past vanilla's "same exists" check.
-                // Tighten here: if the type already exists anywhere on the card and the stack policy
-                // doesn't permit merging, reject. Stack-allowing types (MergeAmount /
-                // DuplicateInstance / ExistenceStack) skip this branch because CanStackOnto is true.
-                if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) &&
-                    !MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType()))
+                // see the mod's extra enchantments, so a type that exists ONLY as an extra (with no
+                // primary) slips past vanilla's "same exists" check. Restore strict vanilla
+                // "no same-type already present" semantics here for ALL stack policies: once the card
+                // holds this type anywhere, CanEnchant reports false.
+                //
+                // This is the gate that external re-firing relics depend on. FresnelLens / Kifuda
+                // call EnchantmentModel.CanEnchant from multiple lifecycle hooks (card-reward-shown +
+                // card-added-to-deck; merchant-results re-modified on every shop purchase) and expect
+                // a false once they've already enchanted the card. If we relax for stackable types,
+                // they re-clone and re-merge on every hook — e.g. Nimble stacking +2 per shop
+                // purchase (the duplicate-enchantment bug this fix restores the guard against).
+                //
+                // Do NOT relax for MergeAmount / DuplicateInstance / ExistenceStack: deliberate mod
+                // stacking goes through ApplyEnchantment's isStackingExisting path, which bypasses
+                // CanEnchant entirely, so tightening here cannot block a legitimate merge.
+                if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()))
                 {
                     __result = false;
                     MultiEnchantmentMod.Logger.Info(
@@ -229,15 +238,20 @@ internal static class MultiEnchantmentPatches
             if (!vanillaPrimarySlotRejection) return;
 
             // All other vanilla checks pass. The remaining vanilla failure is that the primary
-            // enchantment slot is already occupied. Re-enable when this is either a new extra
-            // enchantment type or a supported same-type stack.
-            bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()) ||
-                MultiEnchantmentStackSupport.CanStackOnto(card, __instance.GetType());
+            // enchantment slot is already occupied by a DIFFERENT enchantment. Re-enable only when
+            // THIS type is not yet on the card (CanApply) — the mod's core "stack a second distinct
+            // enchantment onto an already-enchanted card" feature.
+            //
+            // Do NOT re-allow an already-present same type just because its policy is stackable: that
+            // is the FresnelLens / Kifuda re-fire path that produced duplicate Nimble stacks, and a
+            // deliberate same-type merge already bypasses CanEnchant via ApplyEnchantment's
+            // isStackingExisting branch — so it never reaches this gate.
+            bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
             if (relaxed)
             {
                 __result = true;
                 MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CanEnchant postfix re-allowed via stack policy. " +
+                    $"[MultiEnchantment] CanEnchant postfix re-allowed for distinct extra enchantment. " +
                     $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)}");
             }
         }
