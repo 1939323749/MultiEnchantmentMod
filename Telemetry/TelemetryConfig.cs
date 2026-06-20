@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using MegaCrit.Sts2.Core.Debug;
@@ -11,8 +12,9 @@ namespace MultiEnchantmentMod.Telemetry;
 
 internal static partial class TelemetryConfig
 {
-    // SupabaseUrl and AnonKey are generated at build time into TelemetrySecrets.g.cs
-    // from .env.props (local) or -p: MSBuild properties (CI). See .env.props.template.
+    // PostHogHost and PostHogProjectKey are generated at build time into
+    // TelemetrySecrets.g.cs from .env.props (local) or -p: MSBuild properties (CI).
+    // See .env.props.template.
 
     /// <summary>
     /// Master telemetry switch: requires the manifest opt-in AND the game's own
@@ -28,9 +30,25 @@ internal static partial class TelemetryConfig
     internal static string GameVersion { get; private set; } = "unknown";
     internal static string InstallationId { get; private set; } = "unknown";
 
+    /// <summary>card_reward carries no enchantment signal; disabled to cut volume.</summary>
+    internal static readonly bool CardRewardEnabled = false;
+
+    /// <summary>
+    /// Percent of installations whose non-crash streams are uploaded. Deterministic
+    /// per-installation bucketing keeps a stable cohort across sessions so run/session
+    /// data stays internally consistent. Crashes (mod_crash) are never sampled.
+    /// </summary>
+    internal const int SampleCohortPercent = 100; // TEMP: smoke test (revert to 20 before release)
+
+    /// <summary>
+    /// True when this installation is in the sampled-in cohort. Computed once in
+    /// <see cref="Initialize"/>. Installations with an unknown id are excluded.
+    /// </summary>
+    internal static bool IsSampledIn { get; private set; }
+
     internal static void Initialize()
     {
-        if (SupabaseUrl.Contains("REPLACE_ME"))
+        if (PostHogProjectKey.Contains("REPLACE_ME"))
         {
             _manifestEnabled = false;
             return;
@@ -46,6 +64,7 @@ internal static partial class TelemetryConfig
 
             ReadGameVersion();
             ReadInstallationId();
+            ComputeSampleCohort();
         }
         catch
         {
@@ -283,12 +302,13 @@ internal static partial class TelemetryConfig
     {
         try
         {
-            string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MultiEnchantmentMod");
-            Directory.CreateDirectory(dir);
+            string? path = TryGetDataFilePath("telemetry_installation_id.txt");
+            if (path == null)
+            {
+                InstallationId = "unknown";
+                return;
+            }
 
-            string path = Path.Combine(dir, "telemetry_installation_id.txt");
             if (File.Exists(path))
             {
                 string existing = File.ReadAllText(path, Encoding.UTF8).Trim();
@@ -305,6 +325,54 @@ internal static partial class TelemetryConfig
         catch
         {
             InstallationId = "unknown";
+        }
+    }
+
+    /// <summary>
+    /// Deterministically buckets this installation into [0,100) from a SHA256 of its
+    /// id and marks it sampled-in when the bucket is below <see cref="SampleCohortPercent"/>.
+    /// Stable across launches (the id is persisted), so a given install is always in or
+    /// always out. Unknown ids are treated as sampled-out.
+    /// </summary>
+    private static void ComputeSampleCohort()
+    {
+        IsSampledIn = false;
+        try
+        {
+            if (string.Equals(InstallationId, "unknown", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(InstallationId));
+            ulong bucket = BitConverter.ToUInt64(hash, 0) % 100UL;
+            IsSampledIn = bucket < (ulong)SampleCohortPercent;
+        }
+        catch
+        {
+            IsSampledIn = false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves a writable path for a per-installation data file under
+    /// <c>%LocalAppData%/MultiEnchantmentMod/</c>, creating the directory if needed.
+    /// Returns <c>null</c> when the location can't be resolved or created so callers
+    /// can degrade gracefully instead of throwing.
+    /// </summary>
+    internal static string? TryGetDataFilePath(string fileName)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MultiEnchantmentMod");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, fileName);
+        }
+        catch
+        {
+            return null;
         }
     }
 }

@@ -33,11 +33,11 @@ internal static class TelemetryCollector
     private static IRunState? _currentRunState;
     private static string? _runId;
     private static string? _runIdentityKey;
-    private static string? _runInstanceId;
     private static string? _runSeed;
     private static string? _runCharacterName;
     private static int _runIndex;
     private static int _runCombatCount;
+    private static bool _runDeckCardIdsSent;
     private static bool _runStartedInCurrentSession;
     private static bool _runEndedSent;
     private static bool _pendingLossCombatForRunSummary;
@@ -96,7 +96,8 @@ internal static class TelemetryCollector
 
     internal static void SendSessionDataOnce()
     {
-        if (_sessionSent || _sessionSendStarted || !TelemetryConfig.IsEnabled) return;
+        if (_sessionSent || _sessionSendStarted || !TelemetryConfig.IsEnabled
+            || !TelemetryConfig.IsSampledIn) return;
         _sessionSendStarted = true;
 
         TelemetryReporter.EnqueueBackgroundWork(SendSessionDataOnceAsync);
@@ -161,50 +162,14 @@ internal static class TelemetryCollector
             TelemetryHashCache cache = ReadHashCache();
             bool uploadEnvironment = !string.Equals(cache.EnvironmentHash, environmentHash, StringComparison.Ordinal);
             bool uploadCatalog = !string.Equals(cache.CatalogHash, catalogHash, StringComparison.Ordinal);
-            string locale = SafeGetLocale();
-
-            List<object>? refCards = null, refRelics = null, refPowers = null;
-            string? refCardsHash = null, refRelicsHash = null, refPowersHash = null;
-            try
-            {
-                refCards = CollectCardCatalog();
-                refCardsHash = ComputeReferenceCatalogHash("cards", TelemetryConfig.GameVersion, locale, refCards);
-            }
-            catch (Exception ex) { DiagLog($"CollectCardCatalog FAILED: {ex}"); }
-            try
-            {
-                refRelics = CollectRelicCatalog();
-                refRelicsHash = ComputeReferenceCatalogHash("relics", TelemetryConfig.GameVersion, locale, refRelics);
-            }
-            catch (Exception ex) { DiagLog($"CollectRelicCatalog FAILED: {ex}"); }
-            try
-            {
-                refPowers = CollectPowerCatalog();
-                refPowersHash = ComputeReferenceCatalogHash("powers", TelemetryConfig.GameVersion, locale, refPowers);
-            }
-            catch (Exception ex) { DiagLog($"CollectPowerCatalog FAILED: {ex}"); }
-            DiagLog($"Ref counts: cards={refCards?.Count}, relics={refRelics?.Count}, powers={refPowers?.Count}");
-
-            bool uploadRefCards = refCardsHash != null &&
-                !string.Equals(cache.ReferenceCardsHash, refCardsHash, StringComparison.Ordinal);
-            bool uploadRefRelics = refRelicsHash != null &&
-                !string.Equals(cache.ReferenceRelicsHash, refRelicsHash, StringComparison.Ordinal);
-            bool uploadRefPowers = refPowersHash != null &&
-                !string.Equals(cache.ReferencePowersHash, refPowersHash, StringComparison.Ordinal);
 
             return SendStartupDataAndUpdateCacheAsync(
                 uploadEnvironment ? environmentData : null,
                 sessionData,
                 uploadCatalog ? catalogData : null,
-                uploadRefCards ? refCards : null,
-                uploadRefRelics ? refRelics : null,
-                uploadRefPowers ? refPowers : null,
                 cache,
                 environmentHash,
-                catalogHash,
-                refCardsHash,
-                refRelicsHash,
-                refPowersHash);
+                catalogHash);
         }
         catch (Exception ex)
         {
@@ -218,19 +183,13 @@ internal static class TelemetryCollector
         object? environmentData,
         object sessionData,
         object? catalogData,
-        List<object>? refCards,
-        List<object>? refRelics,
-        List<object>? refPowers,
         TelemetryHashCache cache,
         string environmentHash,
-        string catalogHash,
-        string? refCardsHash,
-        string? refRelicsHash,
-        string? refPowersHash)
+        string catalogHash)
     {
         TelemetryReporter.StartupUploadResult result =
             await TelemetryReporter.SendStartupDataAsync(
-                environmentData, sessionData, catalogData, refCards, refRelics, refPowers);
+                environmentData, sessionData, catalogData);
 
         if (result.SessionUploaded)
         {
@@ -251,24 +210,6 @@ internal static class TelemetryCollector
         if (catalogData == null || result.ModCatalogUploaded)
         {
             cache.CatalogHash = catalogHash;
-            changed = true;
-        }
-
-        if (refCardsHash != null && (refCards == null || result.RefCardsUploaded))
-        {
-            cache.ReferenceCardsHash = refCardsHash;
-            changed = true;
-        }
-
-        if (refRelicsHash != null && (refRelics == null || result.RefRelicsUploaded))
-        {
-            cache.ReferenceRelicsHash = refRelicsHash;
-            changed = true;
-        }
-
-        if (refPowersHash != null && (refPowers == null || result.RefPowersUploaded))
-        {
-            cache.ReferencePowersHash = refPowersHash;
             changed = true;
         }
 
@@ -310,12 +251,40 @@ internal static class TelemetryCollector
 
     internal static void SendCombatData(bool combatWon, IRunState? runState, ICombatState? combatState)
     {
-        if (!TelemetryConfig.IsEnabled || _sessionId == null) return;
+        if (!TelemetryConfig.IsEnabled || !TelemetryConfig.IsSampledIn || _sessionId == null) return;
 
         try
         {
             EnsureRun(runState);
+
+            // Run-level bookkeeping runs for EVERY combat, including ones skipped
+            // below, so run summaries keep an accurate combat_count.
+            if (_runId != null)
+            {
+                _runCombatCount++;
+            }
+            if (!combatWon)
+            {
+                _pendingLossCombatForRunSummary = false;
+                _pendingLossRunIdentityKey = null;
+            }
+
             var safeInvokerFailures = SafeInvoker.GetFailureSnapshot();
+
+            // This is an enchantment mod: a combat with no NEW enchant activity this
+            // fight (no applications, removals, deserialization failures, or invoker
+            // errors) carries no analytical signal — and those fights dominate the
+            // volume. Skip the upload. Playing already-enchanted cards alone no longer
+            // triggers a send (that was the bulk of the volume). Run outcomes are still
+            // captured by the run summary, and combat_count above already counted this fight.
+            if (_totalApplications == 0
+                && _totalRemovals == 0
+                && _deserializationFailureCount == 0
+                && safeInvokerFailures.Count == 0)
+            {
+                return;
+            }
+
             var allEnchantApplicationsSnapshot = EnchantApplications.ToList();
             var enchantmentApplicationsSnapshot = allEnchantApplicationsSnapshot.Count <= 100
                 ? allEnchantApplicationsSnapshot
@@ -378,7 +347,12 @@ internal static class TelemetryCollector
             List<string>? deckCardIds = null;
             List<string>? relicIds = null;
             string? roomName = null;
-            try { deckCardIds = CollectDeckCardIds(combatState); } catch { }
+            // Deck composition is uploaded once per run (on the first combat we send),
+            // not on every fight — it barely changes between combats.
+            if (!_runDeckCardIdsSent)
+            {
+                try { deckCardIds = CollectDeckCardIds(combatState); } catch { }
+            }
             try { relicIds = CollectRelicIds(combatState); } catch { }
             try { roomName = runState?.CurrentRoom?.ToString(); } catch { }
             var multiplayer = MergeMultiplayerContext(GetMultiplayerContext(runState, combatState));
@@ -389,7 +363,6 @@ internal static class TelemetryCollector
                 session_id = _sessionId,
                 installation_id = TelemetryConfig.InstallationId,
                 run_id = _runId,
-                run_instance_id = _runInstanceId,
                 run_index = _runIndex > 0 ? _runIndex : (int?)null,
                 run_seed = _runSeed,
                 run_key = _runIdentityKey,
@@ -441,15 +414,9 @@ internal static class TelemetryCollector
                 event_bus_publish_count = _eventBusPublishCount,
             });
 
-            if (_runId != null)
+            if (deckCardIds != null)
             {
-                _runCombatCount++;
-            }
-
-            if (!combatWon)
-            {
-                _pendingLossCombatForRunSummary = false;
-                _pendingLossRunIdentityKey = null;
+                _runDeckCardIdsSent = true;
             }
         }
         catch { /* telemetry must never crash the game */ }
@@ -457,7 +424,7 @@ internal static class TelemetryCollector
 
     internal static void SendRunData(IRunState? runState, bool isVictory, bool isAbandoned)
     {
-        if (!TelemetryConfig.IsEnabled || _sessionId == null) return;
+        if (!TelemetryConfig.IsEnabled || !TelemetryConfig.IsSampledIn || _sessionId == null) return;
 
         try
         {
@@ -536,11 +503,11 @@ internal static class TelemetryCollector
         _currentRunState = runState;
         _runIdentityKey = identityKey;
         _runId = Guid.NewGuid().ToString("D");
-        _runInstanceId = _runId;
         _runSeed = GetRunSeed(runState);
         _runCharacterName = TryGetCharacterNameFromRunState(runState);
         _runIndex++;
         _runCombatCount = 0;
+        _runDeckCardIdsSent = false;
         _runStartedInCurrentSession = IsEarlyRunFloor(runState);
         _runEndedSent = false;
         _pendingLossCombatForRunSummary = false;
@@ -577,7 +544,6 @@ internal static class TelemetryCollector
             session_id = _sessionId,
             installation_id = TelemetryConfig.InstallationId,
             run_id = _runId,
-            run_instance_id = _runInstanceId,
             run_index = _runIndex > 0 ? _runIndex : (int?)null,
             run_seed = _runSeed,
             run_key = _runIdentityKey,
@@ -628,17 +594,6 @@ internal static class TelemetryCollector
                 EnchantmentTitleCache.TryAdd(key, enchantTitle);
             }
 
-            // Existing enchantments on the card — type names only (titles are in the catalog).
-            List<string> existingTypes;
-            try
-            {
-                existingTypes = MultiEnchantmentApi.GetEnchantments(card)
-                    .Where(e => e != enchantment)
-                    .Select(static e => e.GetType().Name)
-                    .ToList();
-            }
-            catch { existingTypes = new List<string>(); }
-
             EnchantApplications.Add(new EnchantApplicationRecord
             {
                 Card = new WeakReference<CardModel>(card),
@@ -647,7 +602,6 @@ internal static class TelemetryCollector
                 Amount = amount,
                 Assembly = assemblyName,
                 Source = source,
-                ExistingTypes = existingTypes,
             });
 
             // Track max enchantments on a single card.
@@ -690,6 +644,7 @@ internal static class TelemetryCollector
         bool rerolled = false,
         bool alternativeUsed = false)
     {
+        if (!TelemetryConfig.CardRewardEnabled) return;
         if (!TelemetryConfig.IsEnabled || _sessionId == null || offeredCardIds.Count == 0) return;
 
         try
@@ -723,7 +678,6 @@ internal static class TelemetryCollector
                 session_id = _sessionId,
                 installation_id = TelemetryConfig.InstallationId,
                 run_id = _runId,
-                run_instance_id = _runInstanceId,
                 run_index = _runIndex > 0 ? _runIndex : (int?)null,
                 run_seed = _runSeed,
                 run_key = _runIdentityKey,
@@ -740,10 +694,6 @@ internal static class TelemetryCollector
                 reward_type = reward?.GetType().Name,
                 offered_card_ids = offeredCardIds.ToList(),
                 selected_card_ids = selectedCardIds.ToList(),
-                offered_count = offeredCardIds.Count,
-                offered_distinct_count = offeredCardIds.Distinct().Count(),
-                selected_count = selectedCardIds.Count,
-                selected_distinct_count = selectedCardIds.Distinct().Count(),
                 skipped,
                 rerolled,
                 alternative_used = alternativeUsed,
@@ -801,14 +751,60 @@ internal static class TelemetryCollector
         });
     }
 
+    // Persisted across launches so reference catalogs (cards/relics/powers) and the
+    // mod/environment snapshots upload only when their content hash actually changes
+    // — not once per game launch. Without an on-disk cache the hashes start empty
+    // every process, so the full card catalog is re-POSTed every session; that is the
+    // dominant load on the telemetry backend.
+    private const string HashCacheFileName = "telemetry_catalog_cache.json";
+
     private static TelemetryHashCache ReadHashCache()
     {
-        return _runtimeHashCache ??= new TelemetryHashCache();
+        if (_runtimeHashCache != null)
+        {
+            return _runtimeHashCache;
+        }
+
+        try
+        {
+            string? path = TelemetryConfig.TryGetDataFilePath(HashCacheFileName);
+            if (path != null && File.Exists(path))
+            {
+                string json = File.ReadAllText(path, Encoding.UTF8);
+                var loaded = JsonSerializer.Deserialize<TelemetryHashCache>(json, HashJsonOptions);
+                if (loaded != null)
+                {
+                    return _runtimeHashCache = loaded;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"ReadHashCache failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return _runtimeHashCache = new TelemetryHashCache();
     }
 
     private static void WriteHashCache(TelemetryHashCache cache)
     {
         _runtimeHashCache = cache;
+
+        try
+        {
+            string? path = TelemetryConfig.TryGetDataFilePath(HashCacheFileName);
+            if (path == null)
+            {
+                return;
+            }
+
+            string json = JsonSerializer.Serialize(cache, HashJsonOptions);
+            File.WriteAllText(path, json, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"WriteHashCache failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     // ── Data collection helpers ──────────────────────────────────────────
@@ -1287,328 +1283,6 @@ internal static class TelemetryCollector
 
     // ── Game reference tables (wiki-style, one row per entity) ────────
 
-    /// <summary>
-    /// Scans all loaded assemblies for concrete <c>CardModel</c> subclasses,
-    /// creates a canonical instance via <c>ModelDb.Card&lt;T&gt;()</c>, and reads
-    /// localized title/description/type/rarity/cost.
-    /// Column names match the <c>ref_cards</c> table for direct PostgREST upsert.
-    /// </summary>
-    private static ContentSourceInfo GetContentSourceInfo(Type type)
-    {
-        Assembly asm = type.Assembly;
-        string asmName = asm.GetName().Name ?? "unknown";
-        string ourAsmName = typeof(TelemetryCollector).Assembly.GetName().Name ?? "";
-        bool isGameNamespace = type.Namespace?.StartsWith("MegaCrit.Sts2", StringComparison.Ordinal) ?? false;
-        bool isThirdParty = !isGameNamespace && !IsFrameworkOrGameAssembly(asmName, ourAsmName);
-
-        return new ContentSourceInfo
-        {
-            TypeName = type.Name,
-            FullName = type.FullName ?? type.Name,
-            Assembly = asmName,
-            AssemblyVersion = GetModVersion(asm),
-            IsThirdParty = isThirdParty,
-        };
-    }
-
-    private static List<object> CollectCardCatalog()
-    {
-        var result = new List<object>();
-        var seen = new HashSet<string>();
-        string locale = SafeGetLocale();
-        string gameVersion = TelemetryConfig.GameVersion;
-        DateTimeOffset collectedAt = DateTimeOffset.UtcNow;
-
-        // Try multiple approaches to find ModelDb.Card<T>()
-        MethodInfo? modelDbCard = null;
-        try
-        {
-            modelDbCard = typeof(ModelDb).GetMethod("Card", Type.EmptyTypes);
-        }
-        catch (AmbiguousMatchException)
-        {
-            // Multiple overloads — find the generic one explicitly
-            modelDbCard = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(m => m.Name == "Card" && m.IsGenericMethodDefinition
-                    && m.GetGenericArguments().Length == 1
-                    && m.GetParameters().Length == 0);
-        }
-        DiagLog($"CollectCardCatalog: ModelDb.Card method found={modelDbCard != null}");
-
-        int cardTypeCount = 0;
-        int failCount = 0;
-
-        foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try { types = asm.GetTypes(); }
-            catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(static t => t != null).ToArray()!; }
-            catch { continue; }
-
-            foreach (Type type in types)
-            {
-                if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters) continue;
-                if (!typeof(CardModel).IsAssignableFrom(type)) continue;
-
-                cardTypeCount++;
-                string typeKey = type.FullName ?? type.Name;
-                if (!seen.Add(typeKey)) continue;
-
-                try
-                {
-                    CardModel? card = null;
-                    if (modelDbCard != null)
-                    {
-                        try { card = (CardModel?)modelDbCard.MakeGenericMethod(type).Invoke(null, null); }
-                        catch (Exception ex)
-                        {
-                            if (failCount < 3) DiagLog($"  ModelDb.Card<{type.Name}> failed: {ex.InnerException?.Message ?? ex.Message}");
-                        }
-                    }
-                    if (card == null)
-                    {
-                        try { card = (CardModel?)Activator.CreateInstance(type); }
-                        catch (Exception ex)
-                        {
-                            if (failCount < 3) DiagLog($"  Activator.CreateInstance({type.Name}) failed: {ex.InnerException?.Message ?? ex.Message}");
-                            failCount++;
-                            continue;
-                        }
-                    }
-                    if (card == null) { failCount++; continue; }
-
-                    ContentSourceInfo source = GetContentSourceInfo(type);
-                    string? title = ReadPlainTextMember(card, "Title");
-                    string? description = Truncate(ReadPlainTextMember(card, "Description"), 300);
-                    int energyCost = ReadCatalogEnergyCost(card, type);
-
-                    result.Add(new
-                    {
-                        card_id = card.Id.ToString(),
-                        title,
-                        description,
-                        card_type = card.Type.ToString(),
-                        rarity = card.Rarity.ToString(),
-                        energy_cost = energyCost,
-                        type_name = source.TypeName,
-                        full_name = source.FullName,
-                        assembly = source.Assembly,
-                        assembly_version = source.AssemblyVersion,
-                        is_third_party = source.IsThirdParty,
-                        game_version = gameVersion,
-                        locale,
-                        updated_at = collectedAt,
-                    });
-                }
-                catch (Exception ex)
-                {
-                    if (failCount < 3) DiagLog($"  Card {type.Name} outer catch: {ex.Message}");
-                    failCount++;
-                }
-            }
-        }
-        List<object> deduped = DeduplicateRowsByKeys(result, "card_id", "locale");
-        DiagLog($"CollectCardCatalog done: types={cardTypeCount} success={result.Count} deduped={deduped.Count} fail={failCount}");
-        return deduped;
-    }
-
-    /// <summary>
-    /// Scans for concrete <c>RelicModel</c> subclasses and reads localized metadata.
-    /// Column names match the <c>ref_relics</c> table for direct PostgREST upsert.
-    /// </summary>
-    private static List<object> CollectRelicCatalog()
-    {
-        var result = new List<object>();
-        var seen = new HashSet<string>();
-        string locale = SafeGetLocale();
-        string gameVersion = TelemetryConfig.GameVersion;
-        DateTimeOffset collectedAt = DateTimeOffset.UtcNow;
-        // Use compile-time reference — runtime string search fails because
-        // sts2.dll throws ReflectionTypeLoadException and loses loadable types.
-        Type relicBaseType = typeof(RelicModel);
-        DiagLog($"CollectRelicCatalog: relicBaseType={relicBaseType.FullName}");
-
-        MethodInfo? modelDbRelic = null;
-        try { modelDbRelic = typeof(ModelDb).GetMethod("Relic", Type.EmptyTypes); }
-        catch (AmbiguousMatchException)
-        {
-            modelDbRelic = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(m => m.Name == "Relic" && m.IsGenericMethodDefinition
-                    && m.GetGenericArguments().Length == 1
-                    && m.GetParameters().Length == 0);
-        }
-        DiagLog($"CollectRelicCatalog: ModelDb.Relic method found={modelDbRelic != null}");
-
-        foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try { types = asm.GetTypes(); }
-            catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(static t => t != null).ToArray()!; }
-            catch { continue; }
-
-            foreach (Type type in types)
-            {
-                if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters) continue;
-                if (!relicBaseType.IsAssignableFrom(type)) continue;
-
-                string typeKey = type.FullName ?? type.Name;
-                if (!seen.Add(typeKey)) continue;
-
-                try
-                {
-                    object? relic = null;
-                    if (modelDbRelic != null)
-                    {
-                        try { relic = modelDbRelic.MakeGenericMethod(type).Invoke(null, null); }
-                        catch { }
-                    }
-                    if (relic == null)
-                    {
-                        try { relic = Activator.CreateInstance(type); }
-                        catch { continue; }
-                    }
-                    if (relic == null) continue;
-
-                    string? id = GetPropertyOrFieldValue(relic, "Id")?.ToString();
-                    string? title = ReadSafeFormattedOrRawText(relic, "Title");
-                    string? description = Truncate(
-                        ReadPlainTextMember(relic, "DynamicDescription", "Description", "EventDescription"),
-                        300);
-                    string? rarity = GetPropertyOrFieldValue(relic, "Rarity")?.ToString();
-
-                    if (string.IsNullOrEmpty(id)) continue;
-                    ContentSourceInfo source = GetContentSourceInfo(type);
-
-                    result.Add(new
-                    {
-                        relic_id = id,
-                        title,
-                        description,
-                        rarity,
-                        type_name = source.TypeName,
-                        full_name = source.FullName,
-                        assembly = source.Assembly,
-                        assembly_version = source.AssemblyVersion,
-                        is_third_party = source.IsThirdParty,
-                        game_version = gameVersion,
-                        locale,
-                        updated_at = collectedAt,
-                    });
-                }
-                catch { /* skip */ }
-            }
-        }
-        return DeduplicateRowsByKeys(result, "relic_id", "locale");
-    }
-
-    /// <summary>
-    /// Scans for concrete power/buff model types. STS2 powers may be
-    /// <c>PowerModel</c>, <c>BuffModel</c>, or similar. Best-effort via reflection.
-    /// Column names match the <c>ref_powers</c> table for direct PostgREST upsert.
-    /// </summary>
-    private static List<object> CollectPowerCatalog()
-    {
-        var result = new List<object>();
-        var seen = new HashSet<string>();
-        string locale = SafeGetLocale();
-        string gameVersion = TelemetryConfig.GameVersion;
-        DateTimeOffset collectedAt = DateTimeOffset.UtcNow;
-
-        // Use compile-time reference — PowerModel is in MegaCrit.Sts2.Core.Models
-        Type powerBaseType = typeof(PowerModel);
-        DiagLog($"CollectPowerCatalog: powerBaseType={powerBaseType.FullName}");
-
-        MethodInfo? modelDbPower = null;
-        try { modelDbPower = typeof(ModelDb).GetMethod("Power", Type.EmptyTypes); }
-        catch (AmbiguousMatchException)
-        {
-            modelDbPower = typeof(ModelDb).GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(m => m.Name == "Power" && m.IsGenericMethodDefinition
-                    && m.GetGenericArguments().Length == 1
-                    && m.GetParameters().Length == 0);
-        }
-        DiagLog($"CollectPowerCatalog: ModelDb.Power method found={modelDbPower != null}");
-
-        int powerTypeCount = 0;
-        int failCount = 0;
-
-        foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type[] types;
-            try { types = asm.GetTypes(); }
-            catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(static t => t != null).ToArray()!; }
-            catch { continue; }
-
-            foreach (Type type in types)
-            {
-                if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters) continue;
-                if (!powerBaseType.IsAssignableFrom(type)) continue;
-
-                powerTypeCount++;
-                string typeKey = type.FullName ?? type.Name;
-                if (!seen.Add(typeKey)) continue;
-
-                try
-                {
-                    PowerModel? power = null;
-                    if (modelDbPower != null)
-                    {
-                        try { power = (PowerModel?)modelDbPower.MakeGenericMethod(type).Invoke(null, null); }
-                        catch (Exception ex)
-                        {
-                            if (failCount < 3) DiagLog($"  ModelDb.Power<{type.Name}> failed: {ex.InnerException?.Message ?? ex.Message}");
-                        }
-                    }
-                    if (power == null)
-                    {
-                        try { power = (PowerModel?)Activator.CreateInstance(type); }
-                        catch (Exception ex)
-                        {
-                            if (failCount < 3) DiagLog($"  Activator.CreateInstance({type.Name}) failed: {ex.InnerException?.Message ?? ex.Message}");
-                            failCount++;
-                            continue;
-                        }
-                    }
-                    if (power == null) { failCount++; continue; }
-
-                    string? id = power.Id.ToString();
-                    string? title = ReadSafeFormattedOrRawText(power, "Title");
-                    string? description = Truncate(
-                        ReadPowerDescription(power),
-                        300);
-
-                    if (string.IsNullOrEmpty(id)) id = type.Name;
-                    ContentSourceInfo source = GetContentSourceInfo(type);
-
-                    result.Add(new
-                    {
-                        power_id = id,
-                        title,
-                        description,
-                        type_name = source.TypeName,
-                        full_name = source.FullName,
-                        assembly = source.Assembly,
-                        assembly_version = source.AssemblyVersion,
-                        is_third_party = source.IsThirdParty,
-                        power_type = power.Type.ToString(),
-                        stack_type = power.StackType.ToString(),
-                        instance_type = power.InstanceType.ToString(),
-                        game_version = gameVersion,
-                        locale,
-                        updated_at = collectedAt,
-                    });
-                }
-                catch (Exception ex)
-                {
-                    if (failCount < 3) DiagLog($"  Power {type.Name} outer catch: {ex.Message}");
-                    failCount++;
-                }
-            }
-        }
-        List<object> deduped = DeduplicateRowsByKeys(result, "power_id", "locale");
-        DiagLog($"CollectPowerCatalog done: types={powerTypeCount} success={result.Count} deduped={deduped.Count} fail={failCount}");
-        return deduped;
-    }
 
     private static bool ContainsThirdPartyEnchantmentTypes(Assembly asm)
     {
@@ -2858,62 +2532,8 @@ internal static class TelemetryCollector
         catch { return null; }
     }
 
-    private static List<object> DeduplicateRowsByKeys(IEnumerable<object> rows, params string[] keyNames)
-    {
-        var merged = new Dictionary<string, object>(StringComparer.Ordinal);
-        foreach (object row in rows)
-        {
-            string? key = BuildRowKey(row, keyNames);
-            if (key == null)
-            {
-                continue;
-            }
 
-            if (!merged.TryGetValue(key, out object? existing) ||
-                CountPopulatedMembers(row) >= CountPopulatedMembers(existing))
-            {
-                merged[key] = row;
-            }
-        }
 
-        return merged.Values.ToList();
-    }
-
-    private static string? BuildRowKey(object row, IReadOnlyList<string> keyNames)
-    {
-        var parts = new string[keyNames.Count];
-        for (int i = 0; i < keyNames.Count; i++)
-        {
-            object? value = GetPropertyOrFieldValue(row, keyNames[i]);
-            if (value == null)
-            {
-                return null;
-            }
-
-            parts[i] = value.ToString() ?? "";
-        }
-
-        return string.Join('\u001f', parts);
-    }
-
-    private static int CountPopulatedMembers(object row)
-    {
-        int count = 0;
-        foreach (PropertyInfo property in row.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-        {
-            if (property.GetIndexParameters().Length != 0) continue;
-
-            object? value;
-            try { value = property.GetValue(row); }
-            catch { continue; }
-
-            if (value is null) continue;
-            if (value is string s && string.IsNullOrWhiteSpace(s)) continue;
-            count++;
-        }
-
-        return count;
-    }
 
     private static int? TryReadIntMember(object? target, string name)
     {
@@ -2988,15 +2608,6 @@ internal static class TelemetryCollector
         return null;
     }
 
-    private static string? ReadPowerDescription(PowerModel power)
-    {
-        return ReadPlainTextMember(
-            power,
-            "SmartDescription",
-            "RemoteDescription",
-            "Description",
-            "EventDescription");
-    }
 
     private static string? ExtractPlainText(object? value)
     {
@@ -3077,98 +2688,14 @@ internal static class TelemetryCollector
         }
     }
 
-    private static int ReadCatalogEnergyCost(CardModel card, Type type)
-    {
-        try
-        {
-            if (card.Keywords.Contains(CardKeyword.Unplayable))
-            {
-                return -2;
-            }
-        }
-        catch { /* best-effort */ }
 
-        try
-        {
-            CardEnergyCost cost = card.EnergyCost;
-            return cost.CostsX ? -1 : cost.Canonical;
-        }
-        catch (Exception ex)
-        {
-            DiagLog($"  EnergyCost read failed for {type.Name}: {ex.GetType().Name}: {ex.Message}");
-        }
-
-        try
-        {
-            bool costsX = ReadBoolMember(card, "HasEnergyCostX") ?? false;
-            if (costsX)
-            {
-                return -1;
-            }
-
-            int? canonical = TryReadIntMember(card, "CanonicalEnergyCost");
-            if (canonical.HasValue)
-            {
-                return canonical.Value;
-            }
-        }
-        catch { /* best-effort reflection fallback */ }
-
-        return 0;
-    }
-
-    private static bool? ReadBoolMember(object? target, string name)
-    {
-        object? value = GetPropertyOrFieldValue(target, name);
-        if (value is bool b) return b;
-        if (value != null && bool.TryParse(value.ToString(), out bool parsed)) return parsed;
-        return null;
-    }
 
     private static List<object> StableSortForHash(IEnumerable<object> values) =>
         values
             .OrderBy(static value => JsonSerializer.Serialize(value, HashJsonOptions), StringComparer.Ordinal)
             .ToList();
 
-    private static string ComputeReferenceCatalogHash(
-        string catalogName,
-        string gameVersion,
-        string locale,
-        IEnumerable<object>? rows)
-    {
-        List<IReadOnlyDictionary<string, object?>> stableRows = (rows ?? Enumerable.Empty<object>())
-            .Select(static row => RemoveVolatileReferenceFields(row))
-            .OrderBy(static row => JsonSerializer.Serialize(row, HashJsonOptions), StringComparer.Ordinal)
-            .ToList();
 
-        return ComputeStableHash(new
-        {
-            catalog = catalogName,
-            game_version = gameVersion,
-            locale,
-            rows = stableRows,
-        });
-    }
-
-    private static IReadOnlyDictionary<string, object?> RemoveVolatileReferenceFields(object row)
-    {
-        var values = new SortedDictionary<string, object?>(StringComparer.Ordinal);
-        foreach (PropertyInfo property in row.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-        {
-            if (property.GetIndexParameters().Length != 0) continue;
-
-            string name = JsonNamingPolicy.SnakeCaseLower.ConvertName(property.Name);
-            if (string.Equals(name, "updated_at", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            try { values[name] = property.GetValue(row); }
-            catch { /* best-effort hash input */ }
-        }
-
-        return values;
-    }
 
     private static string ComputeStableHash(object value)
     {
@@ -3200,7 +2727,6 @@ internal static class TelemetryCollector
         public int Amount { get; init; }
         public string Assembly { get; init; } = "";
         public string Source { get; init; } = "unknown";
-        public List<string> ExistingTypes { get; init; } = new();
     }
 
     private sealed class ApplicationSourceScope : IDisposable
@@ -3228,14 +2754,6 @@ internal static class TelemetryCollector
         public string Error { get; init; } = "";
     }
 
-    private sealed class ContentSourceInfo
-    {
-        public string TypeName { get; init; } = "";
-        public string FullName { get; init; } = "";
-        public string Assembly { get; init; } = "";
-        public string AssemblyVersion { get; init; } = "";
-        public bool IsThirdParty { get; init; }
-    }
 
     private sealed class ModSnapshot
     {

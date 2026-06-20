@@ -221,6 +221,11 @@ flowchart TD
 #### C. merged stack metadata
 - 每个附魔自己的 `Props` 中还会写入 `MultiEnchantmentMergedStackAmounts` `MultiEnchantmentStackSupport.cs:258` `MultiEnchantmentStackSupport.cs:275`
 
+#### D. EnchantmentStatus（联机确定性）
+- 每个附魔的运行时 `Status`（`Normal`/`Disabled`）写入其 `Props.ints` 的 `MultiEnchantmentEnchantmentStatus`（仅 `Disabled` 写入，`Normal` 不占字节）：`MultiEnchantmentScopeSupport.WriteEnchantmentStatusToSerializableProps`
+- 原因：原版 `SerializableEnchantment` 不携带 `Status`（`EnchantmentModel` 无任何 `[SavedProperty]`）。STS2 联机是确定性 lockstep + checksum，`NetFullCombatState` 把 `card.Keywords` 纳入校验；当某附魔用 `[EnchantmentKeyword]` + `KeywordSourceAmount`（基于 `ActiveInstanceCount`）派生一个进 checksum 的关键字时，本地 live 卡与反序列化重建的远程卡若 `Status` 不一致，关键字就会分叉 → `StateDivergence` 崩溃。往返 `Status` 让两端一致。
+- **行为说明（v2.4.3 起）**：因为 `Status` 现在随序列化往返，一个**被命令式 `Status = Disabled`、且未注册 `WhenActive`/`ShouldBeActive` 谓词**的牌组常驻附魔，会**跨存档读档保持 `Disabled`**（旧版因 `Status` 不序列化而在读档时归零为 `Normal`）。带谓词的附魔不受影响——读档后 `RefreshActiveStatus` 会按谓词确定性重算。原版四个「每场一次」附魔（Swift/Sown/Vigorous/Glam）只 disable 战斗版克隆卡、不回写牌组版，故不受影响。
+
 ### 5.2 读档
 
 读档入口：

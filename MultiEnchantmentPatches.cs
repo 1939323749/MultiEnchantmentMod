@@ -1753,6 +1753,10 @@ internal static class MultiEnchantmentPatches
             // receiving side / loaded save can rehydrate them. See WriteScopeStateToSerializableProps
             // for why the Scope kind itself is NOT serialized.
             MultiEnchantmentScopeSupport.WriteScopeStateToSerializableProps(__instance, ref __result);
+            // Capture runtime EnchantmentStatus (Normal/Disabled). Unlike the above it is not scope
+            // state — it lives on the EnchantmentModel and is otherwise dropped on deserialize,
+            // which desyncs status-driven card keywords across multiplayer peers. See the method.
+            MultiEnchantmentScopeSupport.WriteEnchantmentStatusToSerializableProps(__instance, ref __result);
         }
         catch (Exception ex)
         {
@@ -1767,6 +1771,9 @@ internal static class MultiEnchantmentPatches
         try
         {
             MultiEnchantmentStackSupport.RestoreSerializedProps(save, __result);
+            // Re-apply the persisted status before the card-level restore re-derives keywords off
+            // ActiveInstanceCount, so a packet/save-rebuilt enchantment matches the live owner's.
+            MultiEnchantmentScopeSupport.RestoreEnchantmentStatusFromSerializableProps(save, __result);
         }
         catch (Exception ex)
         {

@@ -118,10 +118,7 @@ internal static class CrashReporter
                         catalog_hash = catalogHash,
                         environment_hash = environmentHash,
                     },
-                    TelemetryCollector.BuildMinimalCrashCatalogData(catalogHash),
-                    null,
-                    null,
-                    null);
+                    TelemetryCollector.BuildMinimalCrashCatalogData(catalogHash));
             }
 
             TelemetryReporter.SendCrash(new

@@ -3,9 +3,11 @@
 > 本文档系统性地记录了 Slay the Spire 2 中所有钩子（Hooks），覆盖卡牌、能力、遗物、战斗、生物、药水、房间等全部游戏系统。  
 > 所有示例名称和效果描述均来自游戏本地化文件（中文）。
 
-> **当前校准：** 本文档已按本仓库当前目标游戏 DLL（0.106.1 系列，2026-05-30 本地安装）复核关键签名。0.106.x 之后，许多 `Hook` 静态方法的战斗状态参数公开为 `ICombatState`；下文示例里的 `CombatState` 若出现在卡牌/生物实例属性上，表示运行时具体状态对象。写 Harmony patch 时必须匹配 `Hook` 的 `ICombatState` 签名。
+> **当前校准：** 本文档已按本仓库当前目标游戏 DLL（**v0.107.1**，commit `59260271`，2026-06-18 本地安装）复核关键签名。许多 `Hook` 静态方法的战斗状态参数公开为 `ICombatState`；下文示例里的 `CombatState` 若出现在卡牌/生物实例属性上，表示运行时具体状态对象。写 Harmony patch 时必须匹配 `Hook` 的 `ICombatState` 签名。代码块内的 `// Hook.cs:NNNN` / `// AbstractModel.cs:NNN` 行号注释为旧版反编译行号，可能已偏移，仅作定位提示，勿当作 v0.107.1 精确行号。
 
-> **0.106.x 迁移重点：** `Hook.BeforeSideTurnStart` / `Hook.AfterSideTurnStart` 现在带 `IReadOnlyList<Creature> participants`；`Hook.BeforeTurnEnd` / `Hook.AfterTurnEnd` 现在带 `IEnumerable<Creature> participants`，并分发到 `AbstractModel.BeforeSideTurnEnd*` / `AfterSideTurnEnd*`。`EnchantmentModel.EnchantBlockAdditive` / `EnchantBlockMultiplicative` 的 `ValueProp` 参数已移除。
+> **0.107.x 迁移重点（自 0.106.x 起仍生效）：** `Hook.BeforeSideTurnStart` / `Hook.AfterSideTurnStart` 带 `IReadOnlyList<Creature> participants`；`Hook.BeforeTurnEnd` / `Hook.AfterTurnEnd` 带 `IEnumerable<Creature> participants`，并分发到 `AbstractModel.BeforeSideTurnEnd*` / `AfterSideTurnEnd*`。`EnchantmentModel.EnchantBlockAdditive` / `EnchantBlockMultiplicative` 的 `ValueProp` 参数已移除。
+>
+> **v0.107.1 签名更正：** HP 损失修改已统一为单一静态入口 `Hook.ModifyHpLost(..., HpLossHookPhase phases, ...)`——**不存在** `Hook.ModifyHpLostBeforeOsty` / `Hook.ModifyHpLostAfterOsty` 静态分发器（`BeforeOsty`/`AfterOsty` 仅作为 `AbstractModel` 虚方法存在）。`Hook.ModifyOrbValue` 与 `AbstractModel.ModifyOrbValue` 无 `Player` 参数（按 `OrbModel orb` 区分）。`Hook.ModifyOrbPassiveTriggerCount`（单数）带 `out List<AbstractModel> modifyingModels`，对应虚方法为 `ModifyOrbPassiveTriggerCounts`（复数）。`ShouldGainGold` 与 `AfterCardRetained` 已被移除（金币无 Should 守卫，仅 `ShouldGainStars`）。
 
 ---
 
@@ -15,7 +17,7 @@
 1. [核心卡牌生命周期钩子](#1-核心卡牌生命周期钩子) — `OnPlay`, `OnUpgrade`, `AfterCreated`, `OnEnqueuePlayVfx`
 2. [卡牌事件钩子 — 进入战斗与打出](#2-卡牌事件钩子--进入战斗与打出) — `AfterCardEnteredCombat`, `BeforeCardPlayed`, `AfterCardPlayed`, `AfterCardPlayedLate`
 3. [卡牌事件钩子 — 抽牌、弃置、消耗](#3-卡牌事件钩子--抽牌弃置消耗) — `AfterCardDrawn`, `AfterCardDiscarded`, `AfterCardExhausted`
-4. [卡牌堆与状态变化钩子](#4-卡牌堆与状态变化钩子) — `AfterCardChangedPiles`, `AfterCardRetained`, `BeforeCardRemoved`, `AfterCardGeneratedForCombat`
+4. [卡牌堆与状态变化钩子](#4-卡牌堆与状态变化钩子) — `AfterCardChangedPiles`, `AfterCardRetained`（已移除）, `BeforeCardRemoved`, `AfterCardGeneratedForCombat`
 5. [攻击与格挡钩子（卡牌相关）](#5-攻击与格挡钩子卡牌相关) — `BeforeAttack`, `AfterAttack`, `BeforeBlockGained`, `AfterBlockGained`
 6. [回合结束与特殊钩子](#6-回合结束与特殊钩子) — `OnTurnEndInHand`, `AfterTransformed`, `AfterForged`, `AfterCloned`, `GetResultPileType`, `BeforeCardAutoPlayed`
 7. [Mod 系统卡牌修改器钩子](#7-mod-系统卡牌修改器钩子) — `AbstractCardModifier` + `CardModifierManager`
@@ -27,7 +29,7 @@
 11. [修改后通知钩子](#11-修改后通知钩子) — `AfterModifyingDamageAmount`, `AfterEnergyReset`, `AfterEnergySpent` 等
 12. [HP/伤害相关修改钩子](#12-hp伤害相关修改钩子) — `ModifyHpLostBeforeOsty`, `ModifyHpLostAfterOsty`, `ModifyHpLost`, `ModifyUnblockedDamageTarget`, `ModifyEnergyGain`, `ModifyMaxEnergy`
 13. [能力/充能球/能量相关钩子](#13-能力充能球能量相关钩子) — `ModifyPowerAmountGiven`, `ModifyPowerAmountReceived`, `ModifyOrbValue`, `ModifyOrbPassiveTriggerCounts`
-14. [Should 守卫钩子详解](#14-should-守卫钩子详解) — `ShouldDie`/`ShouldDieLate`, `ShouldClearBlock`, `ShouldDraw`, `ShouldGainGold`, `ShouldEtherealTrigger`
+14. [Should 守卫钩子详解](#14-should-守卫钩子详解) — `ShouldDie`/`ShouldDieLate`, `ShouldClearBlock`, `ShouldDraw`, `ShouldGainStars`, `ShouldEtherealTrigger`（`ShouldGainGold` 已移除 → `ModifyGoldGained`）
 15. [高级卡牌模式与进阶技巧](#15-高级卡牌模式与进阶技巧) — `BeforeDamage` VFX、`IsPlayable`、`CardSelectCmd`、`ShouldGlowGold`、`CanBeGeneratedByModifiers`
 
 ### 第三部分：能力与遗物系统
@@ -801,32 +803,13 @@ public sealed class SovereignBlade : CardModel
 
 ---
 
-### 4.2 `AfterCardRetained`
+### 4.2 `AfterCardRetained`（v0.107.1 已移除）
 
-```csharp
-// Hook.cs:208 — 调度方法
-// 0.106.1: vanilla no longer exposes Hook.AfterCardRetained as a public static hook.
+> **已废弃，仅作历史参考。** 在 v0.107.1 中 `AfterCardRetained` **既无 `Hook` 静态分发器、也无 `AbstractModel` 虚方法**（全量 corpus 0 命中）。不要再覆写或为其写 Harmony patch。
 
-// AbstractModel.cs:226 — 虚方法
-public virtual Task AfterCardRetained(CardModel card) => Task.CompletedTask;
-```
+**触发时机（旧）：** 回合结束时，一张卡牌因"保留"关键词而留在手牌中时触发。
 
-**触发时机：** 回合结束时，一张卡牌因"保留"关键词而留在手牌中时触发。
-
-**说明：** 0.106.1 中 `AbstractModel.AfterCardRetained(CardModel)` 仍然存在，但 `Hook.AfterCardRetained(...)` 不再作为公开静态调度入口出现；不要再给它写 Harmony patch。需要响应保留事件时，优先使用现有回合结束/flush 流程或 MultiEnchantmentMod 的 `OnCardRetained` lifecycle 桥接。
-
-#### 自定义示例：保留时降低自身费用
-
-```csharp
-public override Task AfterCardRetained(CardModel card)
-{
-    if (card != this) return Task.CompletedTask;
-
-    // 仅作为兼容旧覆写的例子；0.106.1 新逻辑优先接入 flush/retained 桥接。
-    base.EnergyCost.AddThisCombat(-1);
-    return Task.CompletedTask;
-}
-```
+**替代方案：** 需要响应保留事件时，使用现有回合结束 / flush 流程（`AfterFlush` 暴露了 `retainedCards`），或 MultiEnchantmentMod 的 `OnCardRetained` lifecycle 桥接。
 
 ---
 
@@ -2177,7 +2160,7 @@ public sealed class IceCream : RelicModel
 | `ShouldAllowSelectingMoreCardRewards` | 889 | 返回 true 允许选择额外卡牌奖励（OR 逻辑） | — |
 | `ShouldClearBlock` | — | 返回 false 阻止回合开始清空格挡 | `BarricadePower`（壁垒）、`SturdyClamp` |
 | `ShouldDraw` | — | 返回 false 阻止抽牌 | `NoDrawPower` |
-| `ShouldGainGold` | — | 返回 false 阻止获得金币 | `Ectoplasm`（灵体外质） |
+| `ModifyGoldGained` | — | 返回 0 阻止获得金币（`ShouldGainGold` 已移除） | `Ectoplasm`（灵体外质） |
 | `ShouldDie` / `ShouldDieLate` | — | 返回 false 阻止死亡 | `LizardTail`（蜥蜴尾巴）、`FairyInABottle` |
 
 ---
@@ -2393,12 +2376,8 @@ public override Task AfterModifyingCardRewardOptions()
 ### 12.1 `ModifyHpLostBeforeOsty` — 减血前修改（Osty 之前）
 
 ```csharp
-// Hook.cs:1301
-public static decimal ModifyHpLostBeforeOsty(IRunState runState, ICombatState? combatState,
-    Creature target, decimal amount, ValueProp props, Creature? dealer,
-    CardModel? cardSource, out IEnumerable<AbstractModel> modifiers)
-
-// AbstractModel.cs:（定义在 RelicModel/PowerModel 中重写）
+// 无独立 Hook 静态入口：统一通过 Hook.ModifyHpLost(..., HpLossHookPhase.BeforeOsty, ...) 调度（见 12.4）。
+// 下面是 AbstractModel 虚方法（在 RelicModel/PowerModel 中重写）：
 public virtual decimal ModifyHpLostBeforeOsty(Creature target, decimal amount,
     ValueProp props, Creature? dealer, CardModel? cardSource) => amount;
 public virtual decimal ModifyHpLostBeforeOstyLate(Creature target, decimal amount,
@@ -2453,12 +2432,8 @@ public override Task AfterModifyingHpLostBeforeOsty()
 ### 12.2 `ModifyHpLostAfterOsty` — 减血后修改（Osty 之后）
 
 ```csharp
-// Hook.cs:1327
-public static decimal ModifyHpLostAfterOsty(IRunState runState, ICombatState? combatState,
-    Creature target, decimal amount, ValueProp props, Creature? dealer,
-    CardModel? cardSource, out IEnumerable<AbstractModel> modifiers)
-
-// AbstractModel.cs:
+// 无独立 Hook 静态入口：统一通过 Hook.ModifyHpLost(..., HpLossHookPhase.AfterOsty, ...) 调度（见 12.4）。
+// 下面是 AbstractModel 虚方法：
 public virtual decimal ModifyHpLostAfterOsty(Creature target, decimal amount,
     ValueProp props, Creature? dealer, CardModel? cardSource) => amount;
 public virtual decimal ModifyHpLostAfterOstyLate(Creature target, decimal amount,
@@ -2608,9 +2583,9 @@ public override bool ShouldCreatureBeRemovedFromCombatAfterDeath(Creature creatu
 
 ```csharp
 // Hook.cs:1285
-public static decimal ModifyHpLost(IRunState runState, ICombatState combatState,
-    Creature target, decimal amount, ValueProp props, Creature dealer,
-    CardModel cardSource, HpLossHookPhase phases,
+public static decimal ModifyHpLost(IRunState runState, ICombatState? combatState,
+    Creature target, decimal amount, ValueProp props, Creature? dealer,
+    CardModel? cardSource, HpLossHookPhase phases,
     out IEnumerable<AbstractModel> modifiers)
 ```
 
@@ -2759,7 +2734,7 @@ public override Task AfterModifyingPowerAmountGiven(PowerModel power)
 ```csharp
 // Hook.cs:1460
 public static decimal ModifyPowerAmountReceived(ICombatState combatState,
-    PowerModel canonicalPower, Creature target, decimal amount, Creature giver,
+    PowerModel canonicalPower, Creature target, decimal amount, Creature? giver,
     out IEnumerable<AbstractModel> modifiers)
 
 // AbstractModel.cs:833
@@ -2817,12 +2792,11 @@ public override async Task AfterModifyingPowerAmountReceived(PowerModel power)
 ### 13.3 `ModifyOrbValue` — 修改充能球数值
 
 ```csharp
-// Hook.cs:1433
-public static decimal ModifyOrbValue(ICombatState combatState, Player player,
-    OrbModel orb, decimal value)
+// Hook.cs:2018
+public static decimal ModifyOrbValue(ICombatState combatState, OrbModel orb, decimal amount)
 
-// AbstractModel.cs:745
-public virtual decimal ModifyOrbValue(Player player, decimal value) => value;
+// AbstractModel.cs:1796
+public virtual decimal ModifyOrbValue(OrbModel orb, decimal value) => value;
 ```
 
 **触发时机：** 当充能球的被动数值（如闪电球的伤害、冰霜球的格挡）需要计算时。
@@ -2835,9 +2809,9 @@ public virtual decimal ModifyOrbValue(Player player, decimal value) => value;
 
 ```csharp
 // FocusPower.cs — 充能球数值加成
-public override decimal ModifyOrbValue(Player player, decimal value)
+public override decimal ModifyOrbValue(OrbModel orb, decimal value)
 {
-    if (base.Owner.Player != player) return value;
+    if (base.Owner.Player != orb.Owner) return value;  // 只对自己的充能球生效
     return Math.Max(value + (decimal)base.Amount, 0m);  // 不低于 0
 }
 ```
@@ -2849,12 +2823,12 @@ public override decimal ModifyOrbValue(Player player, decimal value)
 ### 13.4 `ModifyOrbPassiveTriggerCount` — 修改充能球被动触发次数
 
 ```csharp
-// Hook.cs:1417
-public static int ModifyOrbPassiveTriggerCounts(ICombatState combatState,
-    Player player, OrbModel orb, int triggerCount)
+// Hook.cs:1999 — 静态入口为单数 ModifyOrbPassiveTriggerCount，带 out 修改器列表
+public static int ModifyOrbPassiveTriggerCount(ICombatState combatState,
+    OrbModel orb, int triggerCount, out List<AbstractModel> modifyingModels)
 
-// AbstractModel.cs:641
-public virtual int ModifyOrbPassiveTriggerCounts(Player player, OrbModel orb,
+// AbstractModel.cs:1500 — 虚方法为复数 ModifyOrbPassiveTriggerCounts
+public virtual int ModifyOrbPassiveTriggerCounts(OrbModel orb,
     int triggerCount) => triggerCount;
 ```
 
@@ -3065,31 +3039,27 @@ public virtual bool ShouldDraw(Player player, bool fromHandDraw) => true;
 
 ---
 
-### 14.5 `ShouldGainGold` — 是否允许获得金币
+### 14.5 ~~`ShouldGainGold`~~（v0.107.1 已移除）— 改用 `ModifyGoldGained`
+
+> **该守卫钩子已不存在。** v0.107.1 全量 corpus 中无 `ShouldGainGold`（static / virtual 皆无）。金币没有 `Should*` 守卫——要阻止或修改获得的金币，覆写 `ModifyGoldGained`（返回 `0` 即等价于"阻止获得"）。星能仍有守卫 `ShouldGainStars`（见 14.7）。
 
 ```csharp
-// Hook.cs:1780
-public static bool ShouldGainGold(IRunState runState, ICombatState? combatState,
-    decimal amount, Player player)
-
-// AbstractModel（通常在 RelicModel 中重写）
-public virtual bool ShouldGainGold(decimal amount, Player player) => true;
+// AbstractModel.cs:1602 — 修改金币获得量（返回 0 = 不获得）
+public virtual decimal ModifyGoldGained(Player player, decimal amount) => amount;
 ```
 
-**用途：** 某些遗物（如 ectoplasm）可以阻止获得金币。
-
-#### 示例：灵体外质（Ectoplasm）
+#### 实际覆写参考：灵体外质（Ectoplasm）
 
 ```csharp
-public override bool ShouldGainGold(decimal amount, Player player)
+// Ectoplasm.cs — 持有者不再获得金币
+public override decimal ModifyGoldGained(Player player, decimal amount)
 {
-    if (player != base.Owner) return true;
-
-    return false;
+    if (player != base.Owner) return amount;
+    return 0m;   // 阻止获得金币
 }
 ```
 
-**实际覆写参考：** `Ectoplasm` 会阻止持有者获得金币；`BowlerHat` 也覆写了 `ShouldGainGold` 来处理金币获取限制。
+> 详见第 9 章数值修改钩子中的 `ModifyGoldGained` / `AfterModifyingGoldGained`。
 
 ---
 
@@ -3146,7 +3116,7 @@ public override bool ShouldGainStars(decimal amount, Player player)
 }
 ```
 
-该钩子语义和 `ShouldGainGold` 类似，返回 `false` 会阻止这次星能进入玩家资源池。
+该钩子返回 `false` 会阻止这次星能进入玩家资源池。（金币侧没有对应的 `Should*` 守卫，改用 `ModifyGoldGained`。）
 
 ---
 
@@ -4161,9 +4131,10 @@ public override decimal ModifyMaxEnergy(Player player, decimal amount)
     return amount + 1;
 }
 
-public override bool ShouldGainGold(decimal amount, Player player)
+public override decimal ModifyGoldGained(Player player, decimal amount)
 {
-    return player != base.Owner;  // 持有者不能获得金币
+    if (player != base.Owner) return amount;
+    return 0m;  // 持有者不能获得金币（ShouldGainGold 在 v0.107.1 已移除）
 }
 ```
 
@@ -4711,9 +4682,10 @@ public virtual bool ShouldForcePotionReward(Player player, RoomType roomType)
 ### 22.2 金币/星能钩子
 
 ```csharp
-// 金币
+// 金币（无 Should 守卫；阻止获得 = ModifyGoldGained 返回 0）
 AfterGoldGained(IRunState, Player)
-ShouldGainGold(IRunState, ICombatState?, decimal, Player) → bool
+ModifyGoldGained(IRunState, ICombatState?, decimal amount, Player, out IEnumerable<AbstractModel>) → decimal
+AfterModifyingGoldGained(IRunState, ICombatState?, IEnumerable<AbstractModel>, Player, decimal)
 
 // 星能（STS2 新资源）
 AfterStarsGained(ICombatState, int, Player)
@@ -4724,7 +4696,7 @@ ShouldPayExcessEnergyCostWithStars(ICombatState, Player) → bool
 
 **示例参考：**
 - `AfterGoldGained`：`BowlerHat`、`DragonFruit` 在金币获得后触发。
-- `ShouldGainGold`：`Ectoplasm` 阻止获得金币。
+- `ModifyGoldGained`：`Ectoplasm` 返回 0 阻止持有者获得金币（`ShouldGainGold` 已于 v0.107.1 移除）。
 - `AfterStarsGained`：`BlackHolePower` 在获得星能后响应。
 - `AfterStarsSpent`：`GalacticDust`、`MiniRegent`、`ChildOfTheStarsPower` 在花费星能后响应。
 - `ShouldGainStars` / `ShouldPayExcessEnergyCostWithStars`：当前 0.106.1 本体未发现实际覆写，是 Mod 控制星能获取和用星能补付能量费用的扩展点。

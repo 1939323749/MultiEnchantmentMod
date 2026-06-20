@@ -1477,4 +1477,73 @@ internal static class MultiEnchantmentScopeSupport
     {
         save.Props?.strings?.RemoveAll(p => string.Equals(p.name, ScopeStateSavePropertyName, StringComparison.Ordinal));
     }
+
+    // Defined on MultiEnchantmentSupport (which owns the MultiEnchantmentSaveCarrier registration);
+    // referenced here so the property name stays compile-time-checked against the carrier.
+    internal const string EnchantmentStatusSavePropertyName =
+        MultiEnchantmentSupport.EnchantmentStatusSavePropertyName;
+
+    /// <summary>
+    /// Copies the enchantment's runtime <see cref="EnchantmentStatus"/> into <paramref name="save"/>'s
+    /// <see cref="SavedProperties.ints"/> so a deserialized clone (multiplayer per-combat resync via
+    /// <c>SyncWithSerializedPlayer</c>, or a loaded save) reproduces it instead of defaulting to
+    /// <see cref="EnchantmentStatus.Normal"/>. Stored in <c>ints</c> (not <c>strings</c>) on purpose:
+    /// the disk sidecar's <c>StripProperties</c> only rewrites <c>strings</c>/<c>intArrays</c>, so this
+    /// stays inline and round-trips on both the packet and disk paths. Only the non-default
+    /// (<c>Disabled</c>) value is written; <c>Normal</c> strips any stale entry to avoid spending
+    /// packet bytes on the common case. Called from <c>EnchantmentToSerializablePostfix</c>.
+    /// </summary>
+    internal static void WriteEnchantmentStatusToSerializableProps(EnchantmentModel enchantment, ref SerializableEnchantment save)
+    {
+        if (enchantment.Status == EnchantmentStatus.Normal)
+        {
+            save.Props?.ints?.RemoveAll(p => string.Equals(p.name, EnchantmentStatusSavePropertyName, StringComparison.Ordinal));
+            return;
+        }
+
+        save.Props ??= new SavedProperties();
+        save.Props.ints ??= new List<SavedProperties.SavedProperty<int>>();
+        SavedProperties.SavedProperty<int> property = new(EnchantmentStatusSavePropertyName, (int)enchantment.Status);
+        int existingIndex = save.Props.ints.FindIndex(saved => string.Equals(saved.name, EnchantmentStatusSavePropertyName, StringComparison.Ordinal));
+        if (existingIndex >= 0)
+        {
+            save.Props.ints[existingIndex] = property;
+        }
+        else
+        {
+            save.Props.ints.Add(property);
+        }
+    }
+
+    /// <summary>
+    /// Restores the runtime <see cref="EnchantmentStatus"/> captured by
+    /// <see cref="WriteEnchantmentStatusToSerializableProps"/> directly onto the freshly-deserialized
+    /// enchantment instance, before the card-level restore re-derives keywords / DynamicVars off
+    /// <c>ActiveInstanceCount</c>. Enchantments that register a <c>WhenActive</c>/<c>ShouldBeActive</c>
+    /// predicate get their status re-evaluated deterministically by <see cref="RefreshActiveStatus"/>
+    /// afterward, so this only meaningfully persists imperatively-set status (the case the packet/disk
+    /// round-trip would otherwise drop). Called from <c>EnchantmentFromSerializablePostfix</c>.
+    /// </summary>
+    internal static void RestoreEnchantmentStatusFromSerializableProps(SerializableEnchantment save, EnchantmentModel enchantment)
+    {
+        List<SavedProperties.SavedProperty<int>>? ints = save.Props?.ints;
+        if (ints == null)
+        {
+            return;
+        }
+
+        int idx = ints.FindIndex(p => string.Equals(p.name, EnchantmentStatusSavePropertyName, StringComparison.Ordinal));
+        if (idx < 0)
+        {
+            return;
+        }
+
+        EnchantmentStatus restored = ints[idx].value == (int)EnchantmentStatus.Disabled
+            ? EnchantmentStatus.Disabled
+            : EnchantmentStatus.Normal;
+        if (enchantment.Status != restored)
+        {
+            enchantment.Status = restored;
+        }
+    }
 }

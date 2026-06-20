@@ -21,7 +21,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: supabase
+    environment: nexusmods
     steps:
       - uses: actions/checkout@v4
 
@@ -48,15 +48,15 @@ jobs:
 
       - name: Build
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
         run: |
           dotnet publish MultiEnchantmentMod.csproj -c Release \
             -p:Sts2DataDir=${{ github.workspace }}/.ci/gamedlls \
             -p:GodotPath= \
             -p:ModsPath= \
-            -p:SupabaseUrl="${SUPABASE_URL}" \
-            -p:SupabaseAnonKey="${SUPABASE_ANON_KEY}"
+            -p:PostHogHost="${POSTHOG_HOST:-https://us.i.posthog.com}" \
+            -p:PostHogProjectKey="${POSTHOG_PROJECT_KEY}"
 
       - name: Determine version
         id: version
@@ -113,7 +113,7 @@ jobs:
   upload-nexus:
     needs: build
     runs-on: ubuntu-latest
-    environment: supabase
+    environment: nexusmods
     if: github.ref_type == 'tag'  # Only upload to NexusMods on tagged releases
     steps:
       - uses: actions/checkout@v4

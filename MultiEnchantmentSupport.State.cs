@@ -192,6 +192,17 @@ internal static partial class MultiEnchantmentSupport
         [SavedProperty]
         public string MultiEnchantmentScopeData { get; set; } = string.Empty;
 
+        // Persists EnchantmentModel.Status (Normal/Disabled). Status is otherwise runtime-only —
+        // SerializableEnchantment carries Id/Amount/Props, and EnchantmentModel has no [SavedProperty]
+        // of its own — so a card rebuilt from a packet (multiplayer per-combat resync) or a save
+        // defaults every enchantment back to Normal. When an enchantment drives a checksummed card
+        // keyword off its status (e.g. a TrackKeyword enchantment whose KeywordSourceAmount keys on
+        // ActiveInstanceCount), that reset makes the rebuilt peer's card.Keywords diverge from the
+        // live owner's, tripping the multiplayer lockstep checksum (NetFullCombatState includes
+        // card.Keywords) → StateDivergence. Round-tripping Status keeps both peers identical.
+        [SavedProperty]
+        public int MultiEnchantmentEnchantmentStatus { get; set; }
+
         [SavedProperty]
         public string MultiEnchantmentInstanceId { get; set; } = string.Empty;
 

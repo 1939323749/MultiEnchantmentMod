@@ -3,8 +3,8 @@
     <!-- Telemetry secrets: local .env.props (gitignored) or CI -p: overrides -->
     <Import Project=".env.props" Condition="Exists('.env.props')" />
     <PropertyGroup>
-        <SupabaseUrl Condition="'$(SupabaseUrl)' == ''">REPLACE_ME</SupabaseUrl>
-        <SupabaseAnonKey Condition="'$(SupabaseAnonKey)' == ''">REPLACE_ME</SupabaseAnonKey>
+        <PostHogHost Condition="'$(PostHogHost)' == ''">https://us.i.posthog.com</PostHogHost>
+        <PostHogProjectKey Condition="'$(PostHogProjectKey)' == ''">REPLACE_ME</PostHogProjectKey>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -135,8 +135,8 @@
             <_SecretLines Include="namespace MultiEnchantmentMod.Telemetry%3B" />
             <_SecretLines Include="internal static partial class TelemetryConfig" />
             <_SecretLines Include="{" />
-            <_SecretLines Include="    internal const string SupabaseUrl = &quot;$(SupabaseUrl)&quot;%3B" />
-            <_SecretLines Include="    internal const string AnonKey = &quot;$(SupabaseAnonKey)&quot;%3B" />
+            <_SecretLines Include="    internal const string PostHogHost = &quot;$(PostHogHost)&quot;%3B" />
+            <_SecretLines Include="    internal const string PostHogProjectKey = &quot;$(PostHogProjectKey)&quot;%3B" />
             <_SecretLines Include="}" />
         </ItemGroup>
         <WriteLinesToFile File="$(IntermediateOutputPath)TelemetrySecrets.g.cs"
