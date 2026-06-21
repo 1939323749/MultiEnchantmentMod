@@ -12,7 +12,7 @@ namespace MultiEnchantmentMod.Telemetry;
 
 internal static partial class TelemetryConfig
 {
-    // PostHogHost and PostHogProjectKey are generated at build time into
+    // AxiomDomain, AxiomDataset, and AxiomToken are generated at build time into
     // TelemetrySecrets.g.cs from .env.props (local) or -p: MSBuild properties (CI).
     // See .env.props.template.
 
@@ -48,7 +48,7 @@ internal static partial class TelemetryConfig
 
     internal static void Initialize()
     {
-        if (PostHogProjectKey.Contains("REPLACE_ME"))
+        if (string.IsNullOrEmpty(AxiomToken) || AxiomToken.Contains("REPLACE_ME"))
         {
             _manifestEnabled = false;
             return;

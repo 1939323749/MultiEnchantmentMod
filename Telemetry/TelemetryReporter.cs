@@ -28,7 +28,7 @@ internal static class TelemetryReporter
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
 
-    // Each telemetry stream maps to one PostHog event name.
+    // Each telemetry stream maps to one Axiom event name.
     internal static void SendSession(object data) =>
         EnqueueRealtime(() => CaptureAsync("session_started", data));
     internal static void SendCombat(object data) =>
@@ -105,9 +105,9 @@ internal static class TelemetryReporter
     }
 
     /// <summary>
-    /// Posts one event to PostHog's batch ingestion endpoint. Fire-and-forget: a
+    /// Posts one event to Axiom's dataset ingest endpoint. Fire-and-forget: a
     /// failure is dropped (telemetry is non-critical and must never affect the game),
-    /// never retried into an amplifying storm. PostHog ingestion is built for high
+    /// never retried into an amplifying storm. Axiom ingestion is built for high
     /// concurrency, so there is no per-write connection bottleneck.
     /// </summary>
     private static async Task<bool> CaptureAsync(string eventName, object data)
@@ -116,32 +116,24 @@ internal static class TelemetryReporter
 
         try
         {
-            // The event's anonymous payload object becomes the PostHog "properties"
-            // bag; we only add the actor id and the anonymous-events flag.
-            JsonObject properties =
+            // The event's anonymous payload object is flattened into one Axiom event
+            // row; we add the event name and the actor id. Axiom auto-detects the
+            // `_time` field as the event timestamp.
+            JsonObject row =
                 JsonSerializer.SerializeToNode(data, JsonOptions)?.AsObject() ?? new JsonObject();
-            properties["distinct_id"] = TelemetryConfig.InstallationId;
-            properties["$process_person_profiles"] = false; // anonymous events: no person profiles
+            row["_time"] = DateTimeOffset.UtcNow;
+            row["event"] = eventName;
+            row["distinct_id"] = TelemetryConfig.InstallationId;
 
-            var payload = new
-            {
-                api_key = TelemetryConfig.PostHogProjectKey,
-                batch = new[]
-                {
-                    new
-                    {
-                        @event = eventName,
-                        timestamp = DateTimeOffset.UtcNow,
-                        properties,
-                    },
-                },
-            };
-
-            string json = JsonSerializer.Serialize(payload, JsonOptions);
+            // Axiom ingest accepts a JSON array of event objects.
+            string json = new JsonArray(row).ToJsonString(JsonOptions);
             DiagLog($"Capture {eventName}: json_length={json.Length}");
 
             using var request = new HttpRequestMessage(
-                HttpMethod.Post, $"{TelemetryConfig.PostHogHost}/batch/");
+                HttpMethod.Post,
+                $"{TelemetryConfig.AxiomDomain}/v1/datasets/{TelemetryConfig.AxiomDataset}/ingest");
+            request.Headers.TryAddWithoutValidation(
+                "Authorization", $"Bearer {TelemetryConfig.AxiomToken}");
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
             using var response = await Http.SendAsync(request);

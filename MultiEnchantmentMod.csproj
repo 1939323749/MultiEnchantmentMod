@@ -3,8 +3,9 @@
     <!-- Telemetry secrets: local .env.props (gitignored) or CI -p: overrides -->
     <Import Project=".env.props" Condition="Exists('.env.props')" />
     <PropertyGroup>
-        <PostHogHost Condition="'$(PostHogHost)' == ''">https://us.i.posthog.com</PostHogHost>
-        <PostHogProjectKey Condition="'$(PostHogProjectKey)' == ''">REPLACE_ME</PostHogProjectKey>
+        <AxiomDomain Condition="'$(AxiomDomain)' == ''">https://api.axiom.co</AxiomDomain>
+        <AxiomDataset Condition="'$(AxiomDataset)' == ''">multienchantmentmod</AxiomDataset>
+        <AxiomToken Condition="'$(AxiomToken)' == ''">REPLACE_ME</AxiomToken>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -135,8 +136,9 @@
             <_SecretLines Include="namespace MultiEnchantmentMod.Telemetry%3B" />
             <_SecretLines Include="internal static partial class TelemetryConfig" />
             <_SecretLines Include="{" />
-            <_SecretLines Include="    internal const string PostHogHost = &quot;$(PostHogHost)&quot;%3B" />
-            <_SecretLines Include="    internal const string PostHogProjectKey = &quot;$(PostHogProjectKey)&quot;%3B" />
+            <_SecretLines Include="    internal const string AxiomDomain = &quot;$(AxiomDomain)&quot;%3B" />
+            <_SecretLines Include="    internal const string AxiomDataset = &quot;$(AxiomDataset)&quot;%3B" />
+            <_SecretLines Include="    internal const string AxiomToken = &quot;$(AxiomToken)&quot;%3B" />
             <_SecretLines Include="}" />
         </ItemGroup>
         <WriteLinesToFile File="$(IntermediateOutputPath)TelemetrySecrets.g.cs"
