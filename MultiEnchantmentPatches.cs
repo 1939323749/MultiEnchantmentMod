@@ -281,8 +281,8 @@ internal static class MultiEnchantmentPatches
             if (existing != null && !MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType()))
             {
                 MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CardCmd.Enchant skipped — {GetSafeEnchantmentId(enchantment)} already on card {GetSafeCardId(card)} (vanilla re-apply). " +
-                    $"Returning existing instance.");
+                    $"[MultiEnchantment] {GetSafeEnchantmentId(enchantment)} has already settled onto card {GetSafeCardId(card)} — " +
+                    $"a card only carries one of each enchantment, so it keeps the one it already has and the re-apply is a no-op.");
                 __result = existing;
                 return false;
             }
@@ -295,9 +295,30 @@ internal static class MultiEnchantmentPatches
         }
         catch (Exception ex)
         {
+            // Vanilla CardCmd.Enchant only understands a single enchantment slot. If this card
+            // already carries ANY enchantment, re-running vanilla here would either overwrite
+            // card.Enchantment (destroying the existing enchant — the "replaces the other mod's
+            // enchantment" symptom) or throw "already has enchantment" straight out to the
+            // unguarded caller (so the enchant — and any currency the caller already spent —
+            // vanishes). Both are exactly what gets reported when stacking a second enchantment
+            // onto a card another mod (e.g. SoulEnchantMod's CardCmd.Enchant call) enchanted.
+            // Only fall back to vanilla when the card is genuinely empty, where vanilla is
+            // equivalent to our own first-enchant path and cannot clobber anything.
+            bool cardAlreadyEnchanted =
+                card.Enchantment != null ||
+                MultiEnchantmentSupport.GetAdditionalEnchantments(card).Count > 0;
+            if (cardAlreadyEnchanted)
+            {
+                MultiEnchantmentMod.Logger.Error(
+                    $"[MultiEnchantment] CardCmd.Enchant failed for Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)}. " +
+                    $"Card already has enchantments; suppressing the base-game fallback so existing enchantments are not overwritten or thrown away. Error: {ex}");
+                __result = MultiEnchantmentSupport.GetEnchantment(card, enchantment.GetType());
+                return false;
+            }
+
             MultiEnchantmentMod.Logger.Error(
                 $"[MultiEnchantment] CardCmd.Enchant failed for Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)}. " +
-                $"Falling back to base-game implementation. Error: {ex}");
+                $"Card has no existing enchantments; falling back to base-game implementation. Error: {ex}");
             return true;
         }
     }

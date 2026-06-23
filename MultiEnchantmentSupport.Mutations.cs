@@ -55,7 +55,16 @@ internal static partial class MultiEnchantmentSupport
                     continue;
                 }
 
+                // Only collapse Amount→1 for an instance that still carries MultiEnchantment's OWN
+                // merged-stack metadata — i.e. it was merged while its type was classified
+                // MergeAmount and is only now seen as DisallowDuplicate (a registration change or a
+                // save written by a version that classified the type differently). A genuine
+                // third-party DisallowDuplicate enchantment that uses Amount as its core value
+                // (e.g. an "Intoxicate 4" applied via CardCmd.Enchant(card, 4)) never has this
+                // metadata, so we must NOT assume its Amount is dirty: doing so silently turned
+                // "Intoxicate 4" into "Intoxicate 1" on the first combat rebuild (FromSerializable).
                 if (enchantment.Amount > 1 &&
+                    MultiEnchantmentStackSupport.HasMergedStackMetadata(enchantment) &&
                     !EnchantmentRegistry.DeclaresSavedProperties(enchantment.GetType()))
                 {
                     enchantment.Amount = 1;
@@ -508,35 +517,60 @@ internal static partial class MultiEnchantmentSupport
         enchantment.ApplyInternal(card, amount);
         CardEnchantmentState state = CardStates.GetOrCreateValue(card);
         state.ExtraEnchantments.Add(enchantment);
-        if (IsGameplayEnchantment(enchantment))
+        try
         {
-            state.LastAppliedEnchantment = enchantment;
-            state.LastAppliedEnchantmentThisTurn = enchantment;
-        }
-        MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
-
-        if (modifyCard && IsGameplayEnchantment(enchantment))
-        {
-            bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
-            ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
-            if (dispatchAppliedLifecycle)
+            if (IsGameplayEnchantment(enchantment))
             {
-                MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+                state.LastAppliedEnchantment = enchantment;
+                state.LastAppliedEnchantmentThisTurn = enchantment;
+            }
+            MultiEnchantmentScopeSupport.SetScopeOverrideOnApply(card, enchantment, scopeOverride);
 
-                // Phase 5: notify siblings that a new enchantment joined the card.
-                MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
-                MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment)
-                    .GetAwaiter()
-                    .GetResult();
+            if (modifyCard && IsGameplayEnchantment(enchantment))
+            {
+                bool isFirstOfTypeOnCard = MultiEnchantmentStackSupport.GetEnchantmentCount(card, enchantment.GetType()) == 1;
+                ApplyInitialEnchantmentState(enchantment, isFirstOfTypeOnCard);
+                if (dispatchAppliedLifecycle)
+                {
+                    MultiEnchantmentScopeSupport.DispatchOnApplied(card, enchantment);
+
+                    // Phase 5: notify siblings that a new enchantment joined the card.
+                    MultiEnchantmentScopeSupport.DispatchOnSiblingApplied(card, newcomer: enchantment);
+                    MultiEnchantmentScopeSupport.DispatchAfterSiblingAppliedStacked(choiceContext, card, enchantment)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+            }
+
+            // Sync active-status predicate immediately so the enchantment dims on first appearance.
+            MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
+
+            if (triggerChanged)
+            {
+                TriggerEnchantmentChanged(card);
             }
         }
-
-        // Sync active-status predicate immediately so the enchantment dims on first appearance.
-        MultiEnchantmentScopeSupport.RefreshActiveStatuses(card);
-
-        if (triggerChanged)
+        catch
         {
-            TriggerEnchantmentChanged(card);
+            // ApplyInternal already succeeded and the instance is in ExtraEnchantments, but a
+            // later step (ModifyCard / RefreshActiveStatuses / TriggerEnchantmentChanged) threw.
+            // Roll the partial attach back out of all tracking so we never leave a half-initialized
+            // "ghost" enchantment that renders and counts but never finished its lifecycle. The
+            // exception is rethrown so callers (and CardCmd.Enchant's prefix) still see the failure
+            // and react — the prefix now refuses to clobber the card's surviving enchantments.
+            state.ExtraEnchantments.Remove(enchantment);
+            state.ScopeStates.Remove(enchantment);
+            if (ReferenceEquals(state.LastAppliedEnchantment, enchantment))
+            {
+                state.LastAppliedEnchantment = null;
+            }
+
+            if (ReferenceEquals(state.LastAppliedEnchantmentThisTurn, enchantment))
+            {
+                state.LastAppliedEnchantmentThisTurn = null;
+            }
+
+            throw;
         }
 
         return enchantment;

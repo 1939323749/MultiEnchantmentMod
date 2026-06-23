@@ -331,6 +331,20 @@ internal static class MultiEnchantmentStackSupport
         RemoveSavedIntArray(enchantment, MergedStackAmountsPropertyName);
     }
 
+    /// <summary>
+    /// True when this instance still carries MultiEnchantment's own merged-stack metadata
+    /// (<see cref="MergedStackAmountsPropertyName"/>). That property is only ever written while a
+    /// type is classified <see cref="EnchantmentStackBehavior.MergeAmount"/>, so its presence is a
+    /// reliable signal that MultiEnchantment merged this instance itself. A genuine third-party
+    /// <see cref="EnchantmentStackBehavior.DisallowDuplicate"/> enchantment that uses <c>Amount</c>
+    /// as its own value never has it — letting <c>NormalizeCardEnchantmentStacks</c> tell "our stale
+    /// merge artifact" apart from "the author's intended Amount".
+    /// </summary>
+    public static bool HasMergedStackMetadata(EnchantmentModel enchantment)
+    {
+        return TryGetSavedIntArray(enchantment.Props, MergedStackAmountsPropertyName, out _);
+    }
+
     public static void InitializeMergedStackMetadata(EnchantmentModel enchantment)
     {
         if (GetBehavior(enchantment.GetType()) != EnchantmentStackBehavior.MergeAmount)
@@ -647,7 +661,25 @@ internal static class MultiEnchantmentStackSupport
 
     private static EnchantmentExecutionPolicy GetBuiltInExecutionPolicy(Type enchantmentType)
     {
-        return GetBehavior(enchantmentType) switch
+        // Resolve behavior first: GetBehavior runs EnsureRegistered, which is what records the
+        // type in the auto-registration set we check next. Doing it in this order keeps the
+        // execution mode stable across calls — and independent of whether the registry was already
+        // sealed when the type was first seen.
+        EnchantmentStackBehavior behavior = GetBehavior(enchantmentType);
+
+        // Unregistered third-party enchantments (auto-detected or fully defaulted) fire every hook
+        // PER LIVE INSTANCE — exactly as often as vanilla would for that instance — instead of
+        // MergedTotal times. We never saw the author's intent, so we cannot assume a hook is safe
+        // to replay ActiveTotalAmount times: an OnPlay already scaled by Amount would otherwise
+        // apply Amount² (the Momentum/Adroit quadratic trap, which the explicit built-in
+        // registrations special-case but auto-registration cannot). Explicitly registered types
+        // keep their behavior-derived default below.
+        if (EnchantmentRegistry.WasAutoRegistered(enchantmentType))
+        {
+            return new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.PerLiveInstance);
+        }
+
+        return behavior switch
         {
             EnchantmentStackBehavior.MergeAmount => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.MergedTotal),
             EnchantmentStackBehavior.DuplicateInstance => new EnchantmentExecutionPolicy(DefaultMode: HookExecutionMode.PerLiveInstance),

@@ -24,6 +24,14 @@ internal static class EnchantmentRegistry
     private static readonly object Sync = new();
     private static readonly Dictionary<Type, List<EnchantmentEntry>> EntriesByType = new();
     private static readonly ConcurrentDictionary<Type, byte> AutoRegisteredTypes = new();
+
+    // Subset of AutoRegisteredTypes: types for which MultiEnchant actually CHOSE the behavior
+    // itself (the saved-props / value-modifier heuristic or the DisallowDuplicate fallback), as
+    // opposed to types that were already explicitly registered when EnsureRegistered ran. The
+    // latter still get recorded in AutoRegisteredTypes by the dedup TryAdd at the top of
+    // EnsureRegistered, so AutoRegisteredTypes alone cannot tell "we guessed" from "the author
+    // registered it." WasAutoRegistered reads THIS set instead.
+    private static readonly ConcurrentDictionary<Type, byte> DefaultedTypes = new();
     // OrdinalIgnoreCase: vanilla DynamicVar.Name uses PascalCase ("Damage", "Block",
     // "CalculatedDamage", ...), but author-facing convention writes lowercase ("damage").
     // Compare case-insensitively so authors never have to mirror vanilla's exact casing.
@@ -344,6 +352,21 @@ internal static class EnchantmentRegistry
     }
 
     /// <summary>
+    /// True when MultiEnchant chose this type's stacking behavior itself via <see cref="EnsureRegistered"/>
+    /// (the saved-props / value-modifier heuristic or the <c>DisallowDuplicate</c> fallback) rather
+    /// than the author registering it through any public API. Explicitly registered types (vanilla
+    /// via <c>BuiltInRegistrations</c>, third-party via <c>MultiEnchantmentApi.Register</c>,
+    /// <c>[Enchantment]</c>, or <c>EnchantmentDefinition&lt;T&gt;</c>) return <c>false</c>: they
+    /// short-circuit at the existing-entry check before MultiEnchant guesses anything. Callers must
+    /// resolve the type's behavior (e.g. via <c>GetBehavior</c>) first so this reflects the final
+    /// state rather than a not-yet-detected one.
+    /// </summary>
+    internal static bool WasAutoRegistered(Type enchantmentType)
+    {
+        return DefaultedTypes.ContainsKey(enchantmentType);
+    }
+
+    /// <summary>
     /// Returns the most permissive registered <see cref="StackOverflowPolicy"/> for the
     /// enchantment type — i.e. anything other than <see cref="StackOverflowPolicy.Reject"/>
     /// wins over Reject. When no entry exists or all entries default to Reject, returns Reject.
@@ -616,6 +639,14 @@ internal static class EnchantmentRegistry
                 return;
             }
 
+            // Past this point MultiEnchant is choosing the behavior itself (saved-props →
+            // DisallowDuplicate, value-modifier override → MergeAmount, or the plain
+            // DisallowDuplicate fallback). Mark the type as guessed so execution-mode resolution
+            // can fire its hooks per live instance — we never saw the author's intent, so we
+            // mustn't replay a hook MergedTotal times. Explicitly registered types returned at the
+            // EntriesByType check above and never reach here.
+            DefaultedTypes.TryAdd(enchantmentType, 0);
+
             if (DeclaresSavedProperties(enchantmentType))
             {
                 global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
@@ -635,9 +666,8 @@ internal static class EnchantmentRegistry
                     if (EntriesByType.ContainsKey(enchantmentType))
                     {
                         global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
-                            $"[MultiEnchantment] auto-registered {enchantmentType.FullName} as MergeAmount " +
-                            $"(overrides EnchantDamage*/EnchantBlock*). Authors: call " +
-                            $"MultiEnchantmentApi.Register<{enchantmentType.Name}>() to opt out.");
+                            $"[MultiEnchantment] {enchantmentType.FullName} overrides EnchantDamage*/EnchantBlock*, " +
+                            $"so its same-type applications stack their amount together (MergeAmount).");
                     }
                 }
                 catch (Exception ex)
@@ -650,9 +680,8 @@ internal static class EnchantmentRegistry
             }
 
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] {enchantmentType.FullName} is not registered; defaulting to " +
-                $"DisallowDuplicate. Authors: call MultiEnchantmentApi.Register<{enchantmentType.Name}>() " +
-                $"to choose a stack behavior.");
+                $"[MultiEnchantment] {enchantmentType.FullName} hasn't declared a stack behavior, so it's treated as " +
+                $"one-per-card (DisallowDuplicate) — the safe default, and usually exactly what's wanted.");
         }
     }
 
