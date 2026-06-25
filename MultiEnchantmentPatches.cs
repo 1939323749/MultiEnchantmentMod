@@ -1763,6 +1763,87 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    private static readonly ConditionalWeakTable<RunState, object> ReassertedRuns = new();
+    private static readonly object ReassertedRunSentinel = new();
+
+    // Re-asserts a deck card's EXTRA enchantments from the snapshot captured during FromSerializable,
+    // repairing any that were dropped from our extra store after our postfix ran (e.g. a late
+    // mutation during the load chain). RunManager.Launch is the single convergence point for SP/MP
+    // and load/new-run and fires after the pre-Launch RunState/CardModel.FromSerializable chain has
+    // rebuilt every deck card, so re-asserting here repairs the persistent deck instances. Scope
+    // limits: this repairs only the extra store, NOT a clobbered primary card.Enchantment slot
+    // (vanilla owns that); post-Launch combat-pile clones are handled separately by the MutableClone
+    // postfix. The reconcile is idempotent, so the run-scoped guard below is only an optimization —
+    // a missed guard can never double-enchant.
+    [HarmonyPatch(typeof(RunManager), nameof(RunManager.Launch))]
+    [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
+    private static void RunManagerLaunchReassertPostfix(RunState __result)
+    {
+        try
+        {
+            if (__result == null)
+            {
+                return;
+            }
+
+            // Exactly-once per loaded RunState instance. An in-session Save&Quit -> Continue builds
+            // a fresh RunState, so this re-arms naturally on every load and no-ops a double Launch
+            // on the same instance.
+            if (ReassertedRuns.TryGetValue(__result, out _))
+            {
+                return;
+            }
+            ReassertedRuns.Add(__result, ReassertedRunSentinel);
+
+            // Multiplayer safety: the lockstep checksum (NetFullCombatState) only hashes combat
+            // piles while a combat is in progress; the run Deck is never checksummed. Launch fires
+            // before combat, but gate defensively so this can never mutate checksummed state. We
+            // also only touch deck cards, fire no enchant hooks, enqueue no actions, and consume no
+            // RNG, so the pass is deterministic across peers.
+            if (CombatManager.Instance is { IsInProgress: true })
+            {
+                return;
+            }
+
+            int repaired = 0;
+            foreach (Player player in __result.Players)
+            {
+                IReadOnlyList<CardModel>? cards = player?.Deck?.Cards;
+                if (cards == null)
+                {
+                    continue;
+                }
+
+                foreach (CardModel card in cards.ToList())
+                {
+                    try
+                    {
+                        if (MultiEnchantmentSupport.ReassertExtraEnchantmentsFromSnapshot(card))
+                        {
+                            repaired++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogNonFatalPatchFailure(
+                            $"RunManager.Launch extra-enchantment re-assert for Card={GetSafeCardId(card)}", ex);
+                    }
+                }
+            }
+
+            if (repaired > 0)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] Post-load re-assert restored dropped extra enchantments on {repaired} card(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogNonFatalPatchFailure("RunManager.Launch extra-enchantment re-assert postfix", ex);
+        }
+    }
+
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.ToSerializable))]
     [HarmonyPostfix]
     private static void EnchantmentToSerializablePostfix(EnchantmentModel __instance, ref SerializableEnchantment __result)

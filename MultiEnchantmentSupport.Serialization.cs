@@ -42,6 +42,19 @@ internal static partial class MultiEnchantmentSupport
     private static readonly object ExtraCardTextWarningLock = new();
     private static readonly HashSet<Type> ExtraCardTextFormatWarningTypes = new();
 
+    // Per-card snapshot of the extra enchantments (and their application order) the save intends,
+    // captured at FromSerializable time. The post-load re-assert (RunManager.Launch postfix) reads
+    // it back to repair any extra that a third-party CardModel.EnchantInternal replay dropped AFTER
+    // our postfix ran. Keyed by the live CardModel that FromSerializable built — the same instance
+    // that is placed into the run deck, so the Launch pass finds it again.
+    private sealed class DesiredExtrasSnapshot
+    {
+        public List<SerializableEnchantment> Extras { get; set; } = new();
+        public List<ModelId>? Order { get; set; }
+    }
+
+    private static readonly ConditionalWeakTable<CardModel, DesiredExtrasSnapshot> DesiredExtrasSnapshots = new();
+
     public static void SerializeAdditionalEnchantments(CardModel card, SerializableCard save)
     {
         // Base-game source: CardModel.ToSerializable only persists the primary enchantment.
@@ -107,40 +120,182 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
-        bool changed = false;
-        foreach (SerializableEnchantment serializable in extras)
+        // Snapshot the desired extras + order keyed by this exact CardModel so the post-load
+        // re-assert (RunManager.Launch postfix) can re-derive them and repair any extra dropped by
+        // a third-party CardModel.EnchantInternal replay that runs AFTER this postfix.
+        DesiredExtrasSnapshots.AddOrUpdate(card, new DesiredExtrasSnapshot
         {
-            try
-            {
-                EnchantmentModel enchantment = EnchantmentModel.FromSerializable(serializable);
-                RestoreAdditionalEnchantmentState(
-                    card,
-                    enchantment,
-                    modifyCard: true,
-                    triggerChanged: false,
-                    dispatchAppliedLifecycle: false);
-                changed = true;
-            }
-            catch (Exception ex)
-            {
-                MultiEnchantmentMod.Logger.Error(
-                    $"Failed to restore extra enchantment {GetSafeModelId(serializable.Id)} on card {GetSafeCardId(card)}: {ex}");
-                Telemetry.TelemetryCollector.NoteDeserializationFailure(
-                    GetSafeModelId(serializable.Id), GetSafeCardId(card), ex);
-            }
-        }
+            Extras = extras,
+            Order = TryReadApplicationOrder(save),
+        });
 
+        // Diff-based, add-missing-only restore (idempotent): on a normal load nothing is present
+        // yet so every extra is attached; if some are already present (e.g. a re-entrant restore)
+        // only the per-type shortfall is attached and nothing is duplicated.
+        bool changed = ReconcileAdditionalEnchantments(card, extras);
+
+        DeserializeApplicationOrder(save, card);
         if (changed)
         {
-            DeserializeApplicationOrder(save, card);
             NormalizeCardEnchantmentStacks(card);
             TriggerEnchantmentChanged(card);
             card.FinalizeUpgradeInternal();
             MultiEnchantmentStackSupport.RefreshDerivedState(card);
         }
-        else
+    }
+
+    /// <summary>
+    /// Idempotently attaches the extra enchantments in <paramref name="desired"/> that are missing
+    /// from the card's EXTRA store. <paramref name="desired"/> is the extras-only blob
+    /// (SerializeAdditionalEnchantments persists GetAdditionalEnchantments, never the primary
+    /// card.Enchantment), so the comparison is against the extra store only. Counting the primary
+    /// slot here would make a type that also sits in the primary look already-satisfied and silently
+    /// drop its legitimate extra on every load. For each enchantment id it attaches only the missing
+    /// copies (desired count minus extras already present), so:
+    /// <list type="bullet">
+    /// <item>a re-entrant restore or an already-repaired card is a no-op;</item>
+    /// <item>multi-instance types (DuplicateInstance / ExistenceStack) keep their full extra count;</item>
+    /// <item>nothing is ever duplicated, removed, or written to <c>card.Enchantment</c> — the primary
+    /// slot is vanilla's responsibility, so this pass cannot repair a clobbered primary.</item>
+    /// </list>
+    /// Returns true if at least one instance was attached. Used by both the FromSerializable restore
+    /// and the post-load re-assert. Each materialize/attach is guarded so one bad entry cannot abort
+    /// the rest of the load.
+    /// </summary>
+    private static bool ReconcileAdditionalEnchantments(CardModel card, IReadOnlyList<SerializableEnchantment> desired)
+    {
+        if (card == null || desired == null || desired.Count == 0)
         {
-            DeserializeApplicationOrder(save, card);
+            return false;
+        }
+
+        // Count the EXTRA instances already present, keyed by enchantment id. Extras-only, never the
+        // primary slot (see the summary): the desired blob lists extras, so the shortfall must be
+        // measured against extras alone.
+        Dictionary<string, int> presentExtras = new(StringComparer.Ordinal);
+        foreach (EnchantmentModel extra in GetAdditionalEnchantments(card))
+        {
+            string id = GetSafeModelId(extra.Id);
+            presentExtras.TryGetValue(id, out int count);
+            presentExtras[id] = count + 1;
+        }
+
+        // Group desired entries by enchantment id (entries sharing an id are the same enchantment; a
+        // type recurs only for DuplicateInstance / ExistenceStack). Null entries are skipped
+        // defensively. Insertion order is preserved so trailing-entry top-up stays deterministic.
+        Dictionary<string, List<SerializableEnchantment>> desiredById = new(StringComparer.Ordinal);
+        foreach (SerializableEnchantment serializable in desired)
+        {
+            if (serializable is not { } entry)
+            {
+                continue;
+            }
+
+            string id = GetSafeModelId(entry.Id);
+            if (!desiredById.TryGetValue(id, out List<SerializableEnchantment>? grouped))
+            {
+                grouped = new List<SerializableEnchantment>();
+                desiredById[id] = grouped;
+            }
+
+            grouped.Add(entry);
+        }
+
+        bool added = false;
+        foreach ((string id, List<SerializableEnchantment> entries) in desiredById)
+        {
+            presentExtras.TryGetValue(id, out int present);
+            int shortfall = entries.Count - present;
+
+            // Attach only the missing copies, taking the trailing entries so a partially-present
+            // multi-instance type tops up rather than re-adding the copies it already has. (For a
+            // full drop present == 0 and the originals are restored in order, preserving each
+            // instance's Amount; a non-trailing partial drop of a DuplicateInstance type restores
+            // the count but not necessarily the exact per-instance Amount — acceptable, rare.)
+            for (int i = 0; i < shortfall; i++)
+            {
+                int entryIndex = Math.Min(entries.Count - 1, present + i);
+                SerializableEnchantment serializable = entries[entryIndex];
+                try
+                {
+                    EnchantmentModel enchantment = EnchantmentModel.FromSerializable(serializable);
+                    RestoreAdditionalEnchantmentState(
+                        card,
+                        enchantment,
+                        modifyCard: true,
+                        triggerChanged: false,
+                        dispatchAppliedLifecycle: false);
+                    added = true;
+                }
+                catch (Exception ex)
+                {
+                    MultiEnchantmentMod.Logger.Error(
+                        $"Failed to restore extra enchantment {GetSafeModelId(serializable.Id)} on card {GetSafeCardId(card)}: {ex}");
+                    Telemetry.TelemetryCollector.NoteDeserializationFailure(
+                        GetSafeModelId(serializable.Id), GetSafeCardId(card), ex);
+                }
+            }
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// Post-load re-assert entry point (called per deck card from the RunManager.Launch postfix).
+    /// Re-derives the card's intended extras from the snapshot captured during FromSerializable and
+    /// idempotently re-attaches any a later third-party EnchantInternal replay dropped. No-op when
+    /// the card carried no extras (no snapshot) or when nothing is missing. Returns true if it
+    /// repaired anything. Pure data mutation of a deck card only — never fires enchant lifecycle
+    /// hooks, enqueues actions, or consumes RNG (multiplayer-checksum safe; see the Launch postfix).
+    /// </summary>
+    internal static bool ReassertExtraEnchantmentsFromSnapshot(CardModel? card)
+    {
+        if (card == null || !DesiredExtrasSnapshots.TryGetValue(card, out DesiredExtrasSnapshot? snapshot))
+        {
+            return false;
+        }
+
+        if (!ReconcileAdditionalEnchantments(card, snapshot.Extras))
+        {
+            return false;
+        }
+
+        ApplyApplicationOrder(card, snapshot.Order);
+        NormalizeCardEnchantmentStacks(card);
+        TriggerEnchantmentChanged(card);
+        card.FinalizeUpgradeInternal();
+        MultiEnchantmentStackSupport.RefreshDerivedState(card);
+        return true;
+    }
+
+    private static void ApplyApplicationOrder(CardModel card, IReadOnlyList<ModelId>? order)
+    {
+        if (order == null || order.Count == 0)
+        {
+            return;
+        }
+
+        CardEnchantmentState state = CardStates.GetOrCreateValue(card);
+        state.ApplicationOrder.Clear();
+        state.ApplicationOrder.AddRange(order);
+    }
+
+    // Best-effort parse of the saved application order for the snapshot. The authoritative parse
+    // (with telemetry on failure) stays in DeserializeApplicationOrder; this copy must not throw.
+    private static List<ModelId>? TryReadApplicationOrder(SerializableCard save)
+    {
+        if (!TryGetSavedString(save.Props, OrderSavePropertyName, out string payload) || string.IsNullOrWhiteSpace(payload))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<ModelId>>(payload);
+        }
+        catch
+        {
+            return null;
         }
     }
 
