@@ -143,18 +143,18 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
+        bool anyHandlerRan = false;
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             EnsureScopeState(card, enchantment);
-            InvokeLifecycle(card, enchantment, static entry => entry.OnRestored != null, static (entry, owner, model) => entry.RunOnRestored(owner, model));
+            anyHandlerRan |= InvokeLifecycle(card, enchantment, static entry => entry.OnRestored != null, static (entry, owner, model) => entry.RunOnRestored(owner, model));
         }
 
-        RefreshActiveStatuses(card);
-
         // OnRestored handlers may have mutated Status / Amount / Props as part of cache rebuild;
-        // refresh derived state (keywords, DynamicVars, UI) so callers don't have to remember to
-        // call NotifyPropsChanged after every restore.
-        RefreshAfterUserCallbacks(card);
+        // refresh derived state (keywords, DynamicVars, UI) when one actually ran. The cheap
+        // active-status sync inside RefreshAfterUserCallbacks always runs (and forces the full
+        // refresh if a predicate flipped), so authors still don't need to call NotifyPropsChanged.
+        RefreshAfterUserCallbacks(card, mutated: anyHandlerRan);
     }
 
     // Tracks which cards have already received the OnCombatStart callback for a given combat,
@@ -261,9 +261,12 @@ internal static class MultiEnchantmentScopeSupport
             InvokeLifecycle(card, enchantment, static entry => entry.OnCombatStart != null, static (entry, owner, model) => entry.RunOnCombatStart(owner, model));
         }
 
-        // OnCombatStart handlers may mutate Status / Amount / Props (e.g. priming counters,
-        // pre-disabling under conditions). Refresh derived state so the very first turn
-        // observes the new keyword / DynamicVar values.
+        // Refresh derived state so the very first turn observes the new keyword / DynamicVar values.
+        // This MUST stay unconditional (no mutated: gating): OnCombatStarted pre-syncs
+        // RefreshActiveStatuses for this card BEFORE these OnCombatStart handlers run, which CONSUMES
+        // any active-status flip — so a gated refresh here would see statusChanged == false and skip
+        // the keyword recompute, leaving card.Keywords stale for the first turn (and risking an MP
+        // checksum desync). It is a one-time per-combat cost, not a per-frame/draw hot path.
         RefreshAfterUserCallbacks(card);
     }
 
@@ -328,20 +331,24 @@ internal static class MultiEnchantmentScopeSupport
                 continue;
             }
 
+            bool anyHandlerRan = false;
             foreach (EnchantmentModel enchantment in enchantments)
             {
                 EnsureScopeState(card, enchantment);
-                InvokeLifecycle(card, enchantment, static entry => entry.OnTurnStart != null, static (entry, owner, model) => entry.RunOnTurnStart(owner, model));
+                anyHandlerRan |= InvokeLifecycle(card, enchantment, static entry => entry.OnTurnStart != null, static (entry, owner, model) => entry.RunOnTurnStart(owner, model));
             }
 
-            // Turn start can flip active-status predicates / mutate Status. Refresh derived
-            // state so keyword caches and DynamicVars stay accurate.
-            RefreshAfterUserCallbacks(card);
+            // Turn start can flip active-status predicates / mutate Status. The cheap predicate sync
+            // inside RefreshAfterUserCallbacks always runs and forces a full refresh if a predicate
+            // flipped; the expensive DynamicVars recompute is otherwise skipped unless an OnTurnStart
+            // handler actually ran. (Was ~245 full recomputes/turn at high concentration.)
+            RefreshAfterUserCallbacks(card, mutated: anyHandlerRan);
         }
     }
 
     internal static void OnPlayerTurnEnded(ICombatState combatState)
     {
+        Perf.Dump("player turn end");
         foreach (CardModel card in EnumerateCombatCards(combatState, includeDeckVersions: true))
         {
             HandleTurnEnd(card, RemovalReason.TurnEnded);
@@ -360,10 +367,29 @@ internal static class MultiEnchantmentScopeSupport
     /// propagate without the author having to remember <see cref="MultiEnchantmentApi.NotifyPropsChanged"/>.
     /// Idempotent and cheap (RefreshDerivedKeywords short-circuits when nothing changed).
     /// </summary>
-    private static void RefreshAfterUserCallbacks(CardModel? card)
+    /// <param name="mutated">
+    /// Pass <c>false</c> from the bulk per-card fan-out paths (turn start, combat start, restore,
+    /// sibling-applied) that run for every enchanted card regardless of whether anything changed.
+    /// When <c>false</c> the expensive vanilla DynamicVars recompute + visual rebuild are skipped
+    /// UNLESS an active-status predicate actually flipped — the only thing that can change without a
+    /// handler running. The cheap active-status sync (which also drives MP-relevant keyword state)
+    /// always runs. Callers that just ran a user handler leave this <c>true</c> (a handler may have
+    /// mutated Status/Amount/Props). This collapsed ~1300 full recomputes/turn at high enchantment
+    /// concentration down to the handful where something genuinely changed.
+    /// </param>
+    private static void RefreshAfterUserCallbacks(CardModel? card, bool mutated = true, [CallerMemberName] string caller = "")
     {
         if (card == null) return;
-        RefreshActiveStatuses(card);
+        if (Perf.Enabled) Perf.Count("Refresh.from." + caller);
+        Perf.MaybeDump("sample (refresh storm)");
+        using Perf.Scope _ = Perf.Measure("RefreshAfterUserCallbacks");
+
+        bool statusChanged = RefreshActiveStatuses(card);
+        if (!mutated && !statusChanged)
+        {
+            return;
+        }
+
         card.DynamicVars.RecalculateForUpgradeOrEnchant();
         card.FinalizeUpgradeInternal();
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
@@ -569,20 +595,23 @@ internal static class MultiEnchantmentScopeSupport
             return;
         }
 
+        Perf.Count("Broadcast.dispatch");
         foreach (Player player in concreteState.Players.Where(static p => p.IsActiveForHooks && p.PlayerCombatState != null).ToList())
         {
             foreach (CardModel selfCard in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
-                bool anyEnchantments = false;
+                bool anyHandlerRan = false;
                 foreach (EnchantmentModel ench in MultiEnchantmentSupport.GetGameplayEnchantments(selfCard).ToList())
                 {
-                    anyEnchantments = true;
                     if (!IsActive(selfCard, ench)) continue;
-                    InvokeLifecycleWithContext(selfCard, ench, context, hasHandler, action);
+                    anyHandlerRan |= InvokeLifecycleWithContext(selfCard, ench, context, hasHandler, action);
                 }
 
-                // Broadcast handlers (OnAnyCardPlayed / Drawn / etc.) may mutate state. Refresh.
-                if (anyEnchantments)
+                // Only a handler that actually ran could have mutated Status / Amount / Props, so only
+                // then is the (expensive, O(enchantments)) derived-state + visual refresh warranted.
+                // Refreshing every enchanted card on every card event — even when no enchantment
+                // subscribes to this broadcast — was a primary driver of the high-concentration lag.
+                if (anyHandlerRan)
                 {
                     RefreshAfterUserCallbacks(selfCard);
                 }
@@ -599,18 +628,21 @@ internal static class MultiEnchantmentScopeSupport
     /// </summary>
     internal static void DispatchOnSiblingApplied(CardModel card, EnchantmentModel newcomer)
     {
+        bool anyHandlerRan = false;
         foreach (EnchantmentModel sibling in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
         {
             if (ReferenceEquals(sibling, newcomer)) continue;
             if (!IsActive(card, sibling)) continue;
-            InvokeLifecycleWithContext(card, sibling, newcomer,
+            anyHandlerRan |= InvokeLifecycleWithContext(card, sibling, newcomer,
                 static entry => entry.OnSiblingApplied != null,
                 static (entry, newcomer_, selfCard, self) => entry.RunOnSiblingApplied(selfCard, self, newcomer_));
         }
 
         // OnSiblingApplied handlers may mutate sibling Status / Amount (e.g. combo-counter
-        // increments). Refresh derived state so the change propagates immediately.
-        RefreshAfterUserCallbacks(card);
+        // increments). Only refresh when one actually ran — the newcomer's own DispatchOnApplied
+        // already refreshes the card for the "an enchantment was added" case. Re-applying a whole
+        // deck on restore made this an O(enchantments^2) refresh storm per card (was 513 refreshes).
+        RefreshAfterUserCallbacks(card, mutated: anyHandlerRan);
     }
 
     internal static Task DispatchAfterSiblingAppliedStacked(
@@ -749,19 +781,18 @@ internal static class MultiEnchantmentScopeSupport
 
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
-            bool anyEnchantments = false;
+            bool anyHandlerRan = false;
             foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
-                anyEnchantments = true;
                 if (!IsActive(card, enchantment))
                 {
                     continue;
                 }
-                InvokeLifecycleWithContext(card, enchantment, context,
+                anyHandlerRan |= InvokeLifecycleWithContext(card, enchantment, context,
                     static entry => entry.OnAfterDamageReceived != null,
                     static (entry, ctx, owner, model) => entry.RunOnAfterDamageReceived(owner, model, ctx));
             }
-            if (anyEnchantments) RefreshAfterUserCallbacks(card);
+            if (anyHandlerRan) RefreshAfterUserCallbacks(card);
         }
     }
 
@@ -785,23 +816,24 @@ internal static class MultiEnchantmentScopeSupport
         {
             foreach (CardModel card in player.PlayerCombatState!.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
             {
-                bool anyEnchantments = false;
+                bool anyHandlerRan = false;
                 foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
                 {
-                    anyEnchantments = true;
                     if (!IsActive(card, enchantment))
                     {
                         continue;
                     }
-                    InvokeLifecycleWithContext(card, enchantment, context, hasHandler, action);
+                    anyHandlerRan |= InvokeLifecycleWithContext(card, enchantment, context, hasHandler, action);
                 }
 
                 // Side-turn / attack handlers (OnBeforeSideTurnStart, OnSideTurnStart,
                 // OnBeforeAttack, OnAfterAttack) commonly mutate Status / Amount / Props to
-                // implement "disable on enemy turn", "boost during attack", etc. Refresh
-                // derived state per card so keyword caches and DynamicVars reflect the
-                // mutation before the next vanilla flush / damage step.
-                if (anyEnchantments)
+                // implement "disable on enemy turn", "boost during attack", etc. Only a handler
+                // that actually ran could have mutated anything, so only then is the per-card
+                // O(enchantments) recompute warranted. Refreshing every enchanted card on every
+                // attack/side-turn even when no enchantment subscribes was a primary lag driver
+                // (measured ~1314 RefreshAfterUserCallbacks / ~950ms in a single turn cycle).
+                if (anyHandlerRan)
                 {
                     RefreshAfterUserCallbacks(card);
                 }
@@ -869,19 +901,18 @@ internal static class MultiEnchantmentScopeSupport
         }
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
-            bool anyEnchantments = false;
+            bool anyHandlerRan = false;
             foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
-                anyEnchantments = true;
                 if (!IsActive(card, enchantment))
                 {
                     continue;
                 }
-                InvokeLifecycleWithContext(card, enchantment, context,
+                anyHandlerRan |= InvokeLifecycleWithContext(card, enchantment, context,
                     static entry => entry.OnBeforeBlockGained != null,
                     static (entry, ctx, owner, model) => entry.RunOnBeforeBlockGained(owner, model, ctx));
             }
-            if (anyEnchantments) RefreshAfterUserCallbacks(card);
+            if (anyHandlerRan) RefreshAfterUserCallbacks(card);
         }
     }
 
@@ -894,19 +925,18 @@ internal static class MultiEnchantmentScopeSupport
         }
         foreach (CardModel card in player.PlayerCombatState.AllCards.Where(static c => !c.HasBeenRemovedFromState).ToList())
         {
-            bool anyEnchantments = false;
+            bool anyHandlerRan = false;
             foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetGameplayEnchantments(card).ToList())
             {
-                anyEnchantments = true;
                 if (!IsActive(card, enchantment))
                 {
                     continue;
                 }
-                InvokeLifecycleWithContext(card, enchantment, context,
+                anyHandlerRan |= InvokeLifecycleWithContext(card, enchantment, context,
                     static entry => entry.OnBlockGained != null,
                     static (entry, ctx, owner, model) => entry.RunOnBlockGained(owner, model, ctx));
             }
-            if (anyEnchantments) RefreshAfterUserCallbacks(card);
+            if (anyHandlerRan) RefreshAfterUserCallbacks(card);
         }
     }
 
@@ -959,7 +989,9 @@ internal static class MultiEnchantmentScopeSupport
     /// handling matches <see cref="InvokeLifecycle"/>: per-enchantment try/catch with warn log,
     /// so one author's bug doesn't kill the combat tick.
     /// </summary>
-    private static void InvokeLifecycleWithContext<TContext>(
+    /// <returns><c>true</c> when a registered handler was actually invoked (so the caller may need
+    /// to refresh derived state), <c>false</c> when the enchantment had no handler for this hook.</returns>
+    private static bool InvokeLifecycleWithContext<TContext>(
         CardModel card,
         EnchantmentModel enchantment,
         TContext context,
@@ -971,14 +1003,16 @@ internal static class MultiEnchantmentScopeSupport
             EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
             if (entry == null)
             {
-                return;
+                return false;
             }
 
             action(entry, context, card, enchantment);
+            return true;
         }
         catch (Exception ex)
         {
             LogLifecycleFailure(card, enchantment, "lifecycle dispatch", ex);
+            return true;
         }
     }
 
@@ -1059,12 +1093,16 @@ internal static class MultiEnchantmentScopeSupport
     /// <see cref="EnchantmentPresentationStyle.HideWhenDisabled"/>) — not a gameplay lifecycle hook —
     /// so markers must participate or a registered marker's HideWhenDisabled would never fire.
     /// </summary>
-    internal static void RefreshActiveStatuses(CardModel card)
+    /// <returns><c>true</c> if any enchantment's active <c>Status</c> actually flipped this call.</returns>
+    internal static bool RefreshActiveStatuses(CardModel card)
     {
+        bool anyChanged = false;
         foreach (EnchantmentModel enchantment in MultiEnchantmentSupport.GetEnchantments(card).ToList())
         {
-            RefreshActiveStatus(card, enchantment);
+            anyChanged |= RefreshActiveStatus(card, enchantment);
         }
+
+        return anyChanged;
     }
 
     /// <summary>
@@ -1134,7 +1172,9 @@ internal static class MultiEnchantmentScopeSupport
         return EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), static entry => entry.GetScope != null)?.GetSafeScope() ?? EnchantmentScope.Permanent;
     }
 
-    private static void InvokeLifecycle(
+    /// <returns><c>true</c> when a registered handler actually ran (caller may need to refresh
+    /// derived/display state), <c>false</c> when the enchantment had no handler for this hook.</returns>
+    private static bool InvokeLifecycle(
         CardModel card,
         EnchantmentModel enchantment,
         Func<EnchantmentEntry, bool> hasHandler,
@@ -1145,14 +1185,16 @@ internal static class MultiEnchantmentScopeSupport
             EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(enchantment.GetType(), hasHandler);
             if (entry == null)
             {
-                return;
+                return false;
             }
 
             action(entry, card, enchantment);
+            return true;
         }
         catch (Exception ex)
         {
             LogLifecycleFailure(card, enchantment, "lifecycle dispatch", ex);
+            return true;
         }
     }
 

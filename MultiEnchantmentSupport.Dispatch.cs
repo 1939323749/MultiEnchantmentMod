@@ -118,9 +118,12 @@ internal static partial class MultiEnchantmentSupport
         playCount = ApplyCardPlayCountContributions(card, playCount);
         await Hook.AfterModifyingCardPlayCount(combatState, card, modifyingModels);
 
+        Perf.Count("Play.card");
+
         ulong playStartTime = Time.GetTicksMsec();
         for (int i = 0; i < playCount; i++)
         {
+            Perf.Count("Play.replay");
             if (card.Type == CardType.Power)
             {
                 await PlayPowerCardFlyVfxForMultiEnchantmentPatch(card);

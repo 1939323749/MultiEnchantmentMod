@@ -81,41 +81,84 @@ public abstract class EnchantmentDefinition<TEnchantment> : IEnchantmentDefiniti
             entry.GetActiveStatus = (card, model) => InvokeShouldBeActive(card, (TEnchantment)model);
         }
 
+        // Scope wiring stays on the broad gate (an explicit scope or ANY lifecycle override needs
+        // the scope delegate so EnsureScopeState resolves a non-default scope). This is a one-time
+        // per-type cost with no per-event fan-out.
         if (HasExplicitScopeOrLifecycle())
         {
             entry.GetScope = InvokeScope;
-            entry.OnApplied = (card, model) => InvokeOnApplied(card, (TEnchantment)model);
-            entry.OnRemoved = (card, model, reason) => InvokeOnRemoved(card, (TEnchantment)model, reason);
-            entry.OnCombatStart = (card, model) => InvokeOnCombatStart(card, (TEnchantment)model);
-            entry.OnCombatEnd = (card, model) => InvokeOnCombatEnd(card, (TEnchantment)model);
-            entry.OnTurnStart = (card, model) => InvokeOnTurnStart(card, (TEnchantment)model);
-            entry.OnTurnEnd = (card, model) => InvokeOnTurnEnd(card, (TEnchantment)model);
-            entry.OnRestored = (card, model) => InvokeOnRestored(card, (TEnchantment)model);
-            entry.OnCardPlayed = (card, model) => InvokeOnCardPlayed(card, (TEnchantment)model);
-            entry.OnCardDrawn = (card, model) => InvokeOnCardDrawn(card, (TEnchantment)model);
-            entry.OnCardExhausted = (card, model) => InvokeOnCardExhausted(card, (TEnchantment)model);
-            entry.OnCardDiscarded = (card, model) => InvokeOnCardDiscarded(card, (TEnchantment)model);
-            entry.OnCardEnteredCombat = (card, model) => InvokeOnCardEnteredCombat(card, (TEnchantment)model);
-            entry.OnAfterDamageReceived = (card, model, ctx) => InvokeOnAfterDamageReceived(card, (TEnchantment)model, ctx);
-            entry.OnSideTurnStart = (card, model, side) => InvokeOnSideTurnStart(card, (TEnchantment)model, side);
-            entry.OnBeforeSideTurnStart = (card, model, side) => InvokeOnBeforeSideTurnStart(card, (TEnchantment)model, side);
-            entry.OnBeforeAttack = (card, model, cmd) => InvokeOnBeforeAttack(card, (TEnchantment)model, cmd);
-            entry.OnAfterAttack = (card, model, cmd) => InvokeOnAfterAttack(card, (TEnchantment)model, cmd);
-            entry.OnCardChangedPiles = (card, model, pile, source) => InvokeOnCardChangedPiles(card, (TEnchantment)model, pile, source);
-            entry.OnCardRetained = (card, model) => InvokeOnCardRetained(card, (TEnchantment)model);
-            entry.OnBeforeBlockGained = (card, model, ctx) => InvokeOnBeforeBlockGained(card, (TEnchantment)model, ctx);
-            entry.OnBlockGained = (card, model, ctx) => InvokeOnBlockGained(card, (TEnchantment)model, ctx);
-            entry.OnShouldDie = (card, model, creature) => InvokeOnShouldDie(card, (TEnchantment)model, creature);
-            entry.OnAnyCardPlayed = (played, self, model) => InvokeOnAnyCardPlayed(played, self, (TEnchantment)model);
-            entry.OnAnyCardDrawn = (drawn, self, model) => InvokeOnAnyCardDrawn(drawn, self, (TEnchantment)model);
-            entry.OnAnyCardExhausted = (exhausted, self, model) => InvokeOnAnyCardExhausted(exhausted, self, (TEnchantment)model);
-            entry.OnAnyCardDiscarded = (discarded, self, model) => InvokeOnAnyCardDiscarded(discarded, self, (TEnchantment)model);
-            entry.OnSiblingApplied = (card, self, sibling) => InvokeOnSiblingApplied(card, (TEnchantment)self, sibling);
-            entry.OnSiblingRemoved = (card, self, sibling, reason) => InvokeOnSiblingRemoved(card, (TEnchantment)self, sibling, reason);
-            entry.OnCardAppliedPower = (card, model, ctx) => InvokeOnCardAppliedPower(card, (TEnchantment)model, ctx);
-            entry.OnCardTransformed = (card, model, replacement) => InvokeOnCardTransformed(card, (TEnchantment)model, replacement);
-            entry.OnCardCloned = (card, model, clone) => InvokeOnCardCloned(card, (TEnchantment)model, clone);
         }
+
+        // Each event handler is wired ONLY when the subclass actually overrides that specific
+        // virtual. Previously a single gate wired ALL ~30 handlers whenever the enchantment had any
+        // scope/override, so every definition-based enchantment looked subscribed to the broadcast
+        // (OnAnyCard*), sibling and attack hooks — making the dispatchers fan out to every card on
+        // every card event and run a full per-card RefreshAfterUserCallbacks (measured ~1300
+        // refreshes / ~950ms per turn at high enchantment concentration). Per-method gating leaves
+        // un-overridden handlers null so those dispatchers skip the card entirely (no handler ran →
+        // no refresh). Signatures mirror HasExplicitScopeOrLifecycle exactly.
+        if (Overrides(nameof(OnApplied), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnApplied = (card, model) => InvokeOnApplied(card, (TEnchantment)model);
+        if (Overrides(nameof(OnRemoved), typeof(CardModel), typeof(TEnchantment), typeof(RemovalReason)))
+            entry.OnRemoved = (card, model, reason) => InvokeOnRemoved(card, (TEnchantment)model, reason);
+        if (Overrides(nameof(OnCombatStart), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCombatStart = (card, model) => InvokeOnCombatStart(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCombatEnd), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCombatEnd = (card, model) => InvokeOnCombatEnd(card, (TEnchantment)model);
+        if (Overrides(nameof(OnTurnStart), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnTurnStart = (card, model) => InvokeOnTurnStart(card, (TEnchantment)model);
+        if (Overrides(nameof(OnTurnEnd), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnTurnEnd = (card, model) => InvokeOnTurnEnd(card, (TEnchantment)model);
+        if (Overrides(nameof(OnRestored), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnRestored = (card, model) => InvokeOnRestored(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCardPlayed), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardPlayed = (card, model) => InvokeOnCardPlayed(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCardDrawn), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardDrawn = (card, model) => InvokeOnCardDrawn(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCardExhausted), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardExhausted = (card, model) => InvokeOnCardExhausted(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCardDiscarded), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardDiscarded = (card, model) => InvokeOnCardDiscarded(card, (TEnchantment)model);
+        if (Overrides(nameof(OnCardEnteredCombat), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardEnteredCombat = (card, model) => InvokeOnCardEnteredCombat(card, (TEnchantment)model);
+        if (Overrides(nameof(OnAfterDamageReceived), typeof(CardModel), typeof(TEnchantment), typeof(DamageReceivedContext)))
+            entry.OnAfterDamageReceived = (card, model, ctx) => InvokeOnAfterDamageReceived(card, (TEnchantment)model, ctx);
+        if (Overrides(nameof(OnSideTurnStart), typeof(CardModel), typeof(TEnchantment), typeof(CombatSide)))
+            entry.OnSideTurnStart = (card, model, side) => InvokeOnSideTurnStart(card, (TEnchantment)model, side);
+        if (Overrides(nameof(OnBeforeSideTurnStart), typeof(CardModel), typeof(TEnchantment), typeof(CombatSide)))
+            entry.OnBeforeSideTurnStart = (card, model, side) => InvokeOnBeforeSideTurnStart(card, (TEnchantment)model, side);
+        if (Overrides(nameof(OnBeforeAttack), typeof(CardModel), typeof(TEnchantment), typeof(AttackCommand)))
+            entry.OnBeforeAttack = (card, model, cmd) => InvokeOnBeforeAttack(card, (TEnchantment)model, cmd);
+        if (Overrides(nameof(OnAfterAttack), typeof(CardModel), typeof(TEnchantment), typeof(AttackCommand)))
+            entry.OnAfterAttack = (card, model, cmd) => InvokeOnAfterAttack(card, (TEnchantment)model, cmd);
+        if (Overrides(nameof(OnCardChangedPiles), typeof(CardModel), typeof(TEnchantment), typeof(PileType), typeof(AbstractModel)))
+            entry.OnCardChangedPiles = (card, model, pile, source) => InvokeOnCardChangedPiles(card, (TEnchantment)model, pile, source);
+        if (Overrides(nameof(OnCardRetained), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnCardRetained = (card, model) => InvokeOnCardRetained(card, (TEnchantment)model);
+        if (Overrides(nameof(OnBeforeBlockGained), typeof(CardModel), typeof(TEnchantment), typeof(BlockGainContext)))
+            entry.OnBeforeBlockGained = (card, model, ctx) => InvokeOnBeforeBlockGained(card, (TEnchantment)model, ctx);
+        if (Overrides(nameof(OnBlockGained), typeof(CardModel), typeof(TEnchantment), typeof(BlockGainContext)))
+            entry.OnBlockGained = (card, model, ctx) => InvokeOnBlockGained(card, (TEnchantment)model, ctx);
+        if (Overrides(nameof(OnShouldDie), typeof(CardModel), typeof(TEnchantment), typeof(Creature)))
+            entry.OnShouldDie = (card, model, creature) => InvokeOnShouldDie(card, (TEnchantment)model, creature);
+        if (Overrides(nameof(OnAnyCardPlayed), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnAnyCardPlayed = (played, self, model) => InvokeOnAnyCardPlayed(played, self, (TEnchantment)model);
+        if (Overrides(nameof(OnAnyCardDrawn), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnAnyCardDrawn = (drawn, self, model) => InvokeOnAnyCardDrawn(drawn, self, (TEnchantment)model);
+        if (Overrides(nameof(OnAnyCardExhausted), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnAnyCardExhausted = (exhausted, self, model) => InvokeOnAnyCardExhausted(exhausted, self, (TEnchantment)model);
+        if (Overrides(nameof(OnAnyCardDiscarded), typeof(CardModel), typeof(CardModel), typeof(TEnchantment)))
+            entry.OnAnyCardDiscarded = (discarded, self, model) => InvokeOnAnyCardDiscarded(discarded, self, (TEnchantment)model);
+        if (Overrides(nameof(OnSiblingApplied), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel)))
+            entry.OnSiblingApplied = (card, self, sibling) => InvokeOnSiblingApplied(card, (TEnchantment)self, sibling);
+        if (Overrides(nameof(OnSiblingRemoved), typeof(CardModel), typeof(TEnchantment), typeof(EnchantmentModel), typeof(RemovalReason)))
+            entry.OnSiblingRemoved = (card, self, sibling, reason) => InvokeOnSiblingRemoved(card, (TEnchantment)self, sibling, reason);
+        if (Overrides(nameof(OnCardAppliedPower), typeof(CardModel), typeof(TEnchantment), typeof(PowerAppliedContext)))
+            entry.OnCardAppliedPower = (card, model, ctx) => InvokeOnCardAppliedPower(card, (TEnchantment)model, ctx);
+        if (Overrides(nameof(OnCardTransformed), typeof(CardModel), typeof(TEnchantment), typeof(CardModel)))
+            entry.OnCardTransformed = (card, model, replacement) => InvokeOnCardTransformed(card, (TEnchantment)model, replacement);
+        if (Overrides(nameof(OnCardCloned), typeof(CardModel), typeof(TEnchantment), typeof(CardModel)))
+            entry.OnCardCloned = (card, model, clone) => InvokeOnCardCloned(card, (TEnchantment)model, clone);
 
         foreach (CardKeyword keyword in InvokeTrackedKeywords())
         {

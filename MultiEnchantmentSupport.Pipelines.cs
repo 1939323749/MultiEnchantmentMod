@@ -36,6 +36,8 @@ internal static partial class MultiEnchantmentSupport
 {
     public static int GetReplayCount(CardModel card)
     {
+        Perf.MaybeDump("interactive sample (replay count)");
+        using Perf.Scope _ = Perf.Measure("GetReplayCount");
         int replayCount = card.BaseReplayCount;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {
@@ -69,6 +71,8 @@ internal static partial class MultiEnchantmentSupport
 
     public static decimal ApplyDamageEnchantments(CardModel? card, decimal damage, ValueProp props, ModifyDamageHookType hookType)
     {
+        Perf.MaybeDump("interactive sample (damage preview)");
+        using Perf.Scope _ = Perf.Measure("ApplyDamageEnchantments");
         decimal result = damage;
         foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
         {

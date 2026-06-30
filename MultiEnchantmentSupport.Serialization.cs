@@ -356,6 +356,7 @@ internal static partial class MultiEnchantmentSupport
 
     public static void AppendAdditionalExtraCardText(CardModel card, ref string description)
     {
+        using Perf.Scope _perf = Perf.Measure("AppendAdditionalExtraCardText");
         HashSet<(Type EnchantmentType, string Text)> seenLines = new();
         List<string> lines = new();
 
@@ -400,6 +401,7 @@ internal static partial class MultiEnchantmentSupport
 
     public static IEnumerable<IHoverTip> AppendAdditionalHoverTips(CardModel card, IEnumerable<IHoverTip> original)
     {
+        using Perf.Scope _ = Perf.Measure("AppendAdditionalHoverTips");
         // Phase 1.5 T1.5.1: inactive enchantments (gated via .WhenActive(false) / scope predicates)
         // should appear absent in the UI. Skip their hover tips so authors get the "doesn't exist"
         // semantic they expect — consistent with the IsActive gating already applied to damage /

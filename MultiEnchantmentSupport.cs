@@ -111,6 +111,35 @@ internal static partial class MultiEnchantmentSupport
     private static readonly StringName ShaderS = new("s");
     private static readonly StringName ShaderV = new("v");
 
+    // Two cached, shared HSV badge materials. Every ENABLED badge points at one Material RID and every
+    // DISABLED badge at the other, so Godot's 2D renderer can batch the badge backings instead of
+    // issuing one draw call per badge. Previously DuplicateEnchantmentTab gave each badge its OWN
+    // Material.Duplicate(), which broke batching and forced ~one material rebind + draw call per badge
+    // per frame — the dominant per-frame render cost at high enchantment concentration, and invisible
+    // to managed profiling (zero C# runs while the renderer draws the persistent badge nodes). The two
+    // materials bake the exact same h/s/v the per-tab SetShaderParameter calls used, so the look is
+    // byte-for-byte unchanged. Cached statics (the shader is shared/immutable), never freed.
+    private static ShaderMaterial? _enabledBadgeMaterial;
+    private static ShaderMaterial? _disabledBadgeMaterial;
+
+    internal static ShaderMaterial? GetSharedBadgeMaterial(EnchantmentStatus status, ShaderMaterial? template)
+    {
+        if (_enabledBadgeMaterial == null && template?.Shader != null)
+        {
+            _enabledBadgeMaterial = (ShaderMaterial)template.Duplicate();
+            _enabledBadgeMaterial.SetShaderParameter(ShaderH, 0.25);
+            _enabledBadgeMaterial.SetShaderParameter(ShaderS, 0.4);
+            _enabledBadgeMaterial.SetShaderParameter(ShaderV, 0.6);
+
+            _disabledBadgeMaterial = (ShaderMaterial)template.Duplicate();
+            _disabledBadgeMaterial.SetShaderParameter(ShaderH, 0.25);
+            _disabledBadgeMaterial.SetShaderParameter(ShaderS, 0.1);
+            _disabledBadgeMaterial.SetShaderParameter(ShaderV, 0.6);
+        }
+
+        return status == EnchantmentStatus.Disabled ? _disabledBadgeMaterial : _enabledBadgeMaterial;
+    }
+
     public static void Initialize()
     {
         ValidateReflectionTargets();
@@ -356,6 +385,7 @@ internal static partial class MultiEnchantmentSupport
             return false;
         }
 
+        using Perf.Scope _perf = Perf.Measure("RequiresMultiEnchantmentLogic");
         if (GetAdditionalEnchantments(card).Any(IsGameplayEnchantment))
         {
             return true;
@@ -418,6 +448,7 @@ internal static partial class MultiEnchantmentSupport
 
     internal static void TriggerEnchantmentChanged(CardModel card)
     {
+        using Perf.Scope _ = Perf.Measure("TriggerEnchantmentChanged");
         foreach (NCard cardNode in CardUiStates.Select(static entry => entry.Key).Where(node => node.Model == card).ToList())
         {
             if (CardUiStates.TryGetValue(cardNode, out CardUiState? state))

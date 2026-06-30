@@ -19,8 +19,20 @@ public partial class MultiEnchantmentMod : Node
     public static MegaCrit.Sts2.Core.Logging.Logger Logger { get; } =
         new(ModId, MegaCrit.Sts2.Core.Logging.LogType.Generic);
 
+    /// <summary>
+    /// Gates high-frequency diagnostic INFO logging on the combat/UI hot paths (replay-count,
+    /// damage-hook and turn-setup interception traces). Those fire thousands of times per combat
+    /// for heavily-enchanted cards, and the game Logger writes synchronously under a global lock —
+    /// always-on they caused severe stutter (≈92% of mod log volume in a single combat). Default
+    /// off; set <c>"verboseLog": true</c> in <c>MultiEnchantmentMod.json</c> to re-enable for
+    /// diagnostics without a rebuild.
+    /// </summary>
+    public static bool VerboseLog { get; private set; }
+
     public static void Initialize()
     {
+        VerboseLog = ReadVerboseLogPreference();
+        Perf.Enabled = VerboseLog;
         MultiEnchantmentSupport.Initialize();
 
         // Register every built-in MegaCrit enchantment via the v2 fluent builder before any
@@ -57,6 +69,33 @@ public partial class MultiEnchantmentMod : Node
         if (Telemetry.TelemetryConfig.IsEnabled)
         {
             Telemetry.CrashReporter.Install(Telemetry.TelemetryCollector.SessionId);
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>"verboseLog": true</c> from the root <c>MultiEnchantmentMod.json</c> manifest
+    /// (the single source of truth for mod metadata, sitting next to the DLL). Defaults to
+    /// <c>false</c> on any absence/parse failure so the quiet, fast path is the default.
+    /// </summary>
+    private static bool ReadVerboseLogPreference()
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(typeof(MultiEnchantmentMod).Assembly.Location);
+            string manifestPath = Path.Combine(dir ?? ".", "MultiEnchantmentMod.json");
+            if (!File.Exists(manifestPath))
+            {
+                return false;
+            }
+
+            using System.Text.Json.JsonDocument doc =
+                System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifestPath));
+            return doc.RootElement.TryGetProperty("verboseLog", out System.Text.Json.JsonElement el) &&
+                   el.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
         }
     }
 

@@ -250,9 +250,12 @@ internal static class MultiEnchantmentPatches
             if (relaxed)
             {
                 __result = true;
-                MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] CanEnchant postfix re-allowed for distinct extra enchantment. " +
-                    $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)}");
+                if (MultiEnchantmentMod.VerboseLog)
+                {
+                    MultiEnchantmentMod.Logger.Info(
+                        $"[MultiEnchantment] CanEnchant postfix re-allowed for distinct extra enchantment. " +
+                        $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)}");
+                }
             }
         }
         catch (Exception ex)
@@ -268,9 +271,12 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool EnchantPrefix(EnchantmentModel enchantment, CardModel card, decimal amount, ref EnchantmentModel? __result)
     {
-        MultiEnchantmentMod.Logger.Info(
-            $"[MultiEnchantment] Intercepting CardCmd.Enchant. " +
-            $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)} Amount={amount}");
+        if (MultiEnchantmentMod.VerboseLog)
+        {
+            MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] Intercepting CardCmd.Enchant. " +
+                $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(enchantment)} Amount={amount}");
+        }
         try
         {
             // CardCmd.Enchant is the vanilla API. It often re-fires the same enchantment from
@@ -280,9 +286,12 @@ internal static class MultiEnchantmentPatches
             EnchantmentModel? existing = MultiEnchantmentSupport.GetEnchantment(card, enchantment.GetType());
             if (existing != null && !MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType()))
             {
-                MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] {GetSafeEnchantmentId(enchantment)} has already settled onto card {GetSafeCardId(card)} — " +
-                    $"a card only carries one of each enchantment, so it keeps the one it already has and the re-apply is a no-op.");
+                if (MultiEnchantmentMod.VerboseLog)
+                {
+                    MultiEnchantmentMod.Logger.Info(
+                        $"[MultiEnchantment] {GetSafeEnchantmentId(enchantment)} has already settled onto card {GetSafeCardId(card)} — " +
+                        $"a card only carries one of each enchantment, so it keeps the one it already has and the re-apply is a no-op.");
+                }
                 __result = existing;
                 return false;
             }
@@ -948,6 +957,8 @@ internal static class MultiEnchantmentPatches
         await original;
         try
         {
+            Perf.Count("Draw.afterDrawn");
+            using Perf.Scope _perf = Perf.Measure("Draw.afterDrawn(sync)");
             MultiEnchantmentScopeSupport.DispatchActivationTriggerForCard(
                 card, ActivationTrigger.AfterCardDrawn);
 
@@ -1574,10 +1585,42 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    // Diagnostics only (gated by VerboseLog). NTargetManager._Process is not a reliable per-frame tick
+    // (it stops when no targeting is active), so we only use it as a convenient hook to add our OWN
+    // FrameProfilerNode to the SceneTree root exactly once. From then on that node's _Process drives
+    // the frame-time sampling every rendered frame, regardless of NTargetManager's process state.
+    private static bool _frameProfilerInstalled;
+
+    [HarmonyPatch(typeof(NTargetManager), "_Process")]
+    [HarmonyPostfix]
+    private static void FrameSamplerPostfix(NTargetManager __instance)
+    {
+        if (!Perf.Enabled || _frameProfilerInstalled)
+        {
+            return;
+        }
+
+        try
+        {
+            SceneTree? tree = __instance.GetTree();
+            Window? root = tree?.Root;
+            if (root != null)
+            {
+                _frameProfilerInstalled = true;
+                root.AddChild(new FrameProfilerNode { Name = "MultiEnchantmentFrameProfiler" });
+            }
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn($"[MultiEnchantment] Failed to install frame profiler node: {ex.Message}");
+        }
+    }
+
     [HarmonyPatch(typeof(CardModel), nameof(CardModel.GetEnchantedReplayCount))]
     [HarmonyPostfix]
     private static void ReplayCountPostfix(CardModel __instance, ref int __result)
     {
+        Perf.Count("GetEnchantedReplayCount.postfix");
         try
         {
             // Stay out of the way when the mod has nothing to add: vanilla already computed
@@ -1591,9 +1634,12 @@ internal static class MultiEnchantmentPatches
             }
 
             __result = MultiEnchantmentSupport.GetReplayCount(__instance);
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
-                $"Card={GetSafeCardId(__instance)} Result={__result}");
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] CardModel.GetEnchantedReplayCount postfix. " +
+                    $"Card={GetSafeCardId(__instance)} Result={__result}");
+            }
         }
         catch (Exception ex)
         {
@@ -2041,9 +2087,13 @@ internal static class MultiEnchantmentPatches
     {
         try
         {
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting CombatManager.SetupPlayerTurn. " +
-                $"Player={GetSafePlayerId(player)}");
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] Intercepting CombatManager.SetupPlayerTurn. " +
+                    $"Player={GetSafePlayerId(player)}");
+                Perf.Dump($"player turn start (Player={GetSafePlayerId(player)})");
+            }
             __result = SetupPlayerTurnWithMultiEnchantments(__instance, player, playerChoiceContext);
             return false;
         }
@@ -2083,14 +2133,21 @@ internal static class MultiEnchantmentPatches
                 return true;
             }
 
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting Hook.ModifyBlock. " +
-                $"CardSource={GetSafeCardId(cardSource)} Block={block}");
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] Intercepting Hook.ModifyBlock. " +
+                    $"CardSource={GetSafeCardId(cardSource)} Block={block}");
+            }
 
             List<AbstractModel> modifyingModels = new();
             decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(cardSource, block, props);
 
-            foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
+            // One listener snapshot for both passes (see ModifyDamageInternal: the per-pass .ToList()
+            // over the enchantment-inflated listener list was a major draw/play preview allocation).
+            List<AbstractModel> blockListeners = combatState.IterateHookListeners().ToList();
+
+            foreach (AbstractModel model in blockListeners)
             {
                 decimal add = model.ModifyBlockAdditive(target, value, props, cardSource, cardPlay);
                 value += add;
@@ -2100,7 +2157,7 @@ internal static class MultiEnchantmentPatches
                 }
             }
 
-            foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
+            foreach (AbstractModel model in blockListeners)
             {
                 decimal multiply = model.ModifyBlockMultiplicative(target, value, props, cardSource, cardPlay);
                 value *= multiply;
@@ -2158,9 +2215,12 @@ internal static class MultiEnchantmentPatches
                 return true;
             }
 
-            MultiEnchantmentMod.Logger.Info(
-                $"[MultiEnchantment] Intercepting Hook.ModifyDamage. " +
-                $"CardSource={GetSafeCardId(cardSource)} Damage={damage} PreviewMode={previewMode}");
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] Intercepting Hook.ModifyDamage. " +
+                    $"CardSource={GetSafeCardId(cardSource)} Damage={damage} PreviewMode={previewMode}");
+            }
 
             decimal value = ApplyCardDamageEnchantments(cardSource, damage, props, modifyDamageHookType);
             bool multiTargetPreview = target == null && previewMode == CardPreviewMode.MultiCreatureTargeting;
@@ -2362,6 +2422,8 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool DamageVarUpdateCardPreviewPrefix(DamageVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
+        Perf.MaybeDump("frame");
+        Perf.Count("DamageVar.UpdateCardPreview.all");
         try
         {
             // Fast path: card has no mod-specific enchant state, vanilla preview is equivalent.
@@ -2369,6 +2431,8 @@ internal static class MultiEnchantmentPatches
             {
                 return true;
             }
+
+            using Perf.Scope _perf = Perf.Measure("DamageVar.UpdateCardPreview");
 
             decimal value = MultiEnchantmentSupport.ApplyDamageEnchantments(card, __instance.BaseValue, __instance.Props, ModifyDamageHookType.All);
             if (!card.IsEnchantmentPreview)
@@ -2411,6 +2475,7 @@ internal static class MultiEnchantmentPatches
     [HarmonyPriority(Priority.Low)]
     private static bool BlockVarUpdateCardPreviewPrefix(BlockVar __instance, CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)
     {
+        Perf.Count("BlockVar.UpdateCardPreview.all");
         try
         {
             if (!MultiEnchantmentSupport.RequiresMultiEnchantmentLogic(card))
@@ -2418,6 +2483,7 @@ internal static class MultiEnchantmentPatches
                 return true;
             }
 
+            using Perf.Scope _perf = Perf.Measure("BlockVar.UpdateCardPreview");
             decimal value = MultiEnchantmentSupport.ApplyBlockEnchantments(card, __instance.BaseValue, __instance.Props);
             if (!card.IsEnchantmentPreview)
             {
@@ -2846,6 +2912,9 @@ internal static class MultiEnchantmentPatches
     [HarmonyPrefix]
     private static void CardVisualsPrefix(NCard __instance, PileType pileType, CardPreviewMode previewMode)
     {
+        Perf.Count("NCard.UpdateVisuals.all");
+        Perf.MaybeDump("interactive sample (card visual refresh)");
+        using Perf.Scope _ = Perf.Measure("UpdateAdditionalEnchantmentPreviews");
         try
         {
             MultiEnchantmentSupport.UpdateAdditionalEnchantmentPreviews(__instance, previewMode);
@@ -2858,43 +2927,74 @@ internal static class MultiEnchantmentPatches
         }
     }
 
-    [HarmonyPatch(typeof(NCard), nameof(NCard.UpdateVisuals))]
-    [HarmonyPostfix]
-    private static void CardVisualsPostfix(NCard __instance)
-    {
-        // Display-only markers must also work on card-library / encyclopedia cards that have
-        // no live enchantment instance. Sync after the full visual pass so the marker is present
-        // even if vanilla skipped UpdateEnchantmentVisuals for an unenchanted card.
-        try
-        {
-            MultiEnchantmentSupport.SyncExtraEnchantmentTabs(__instance);
-        }
-        catch (Exception ex)
-        {
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] Failed to sync extra enchantment tabs for Card={GetSafeCardNodeModelId(__instance)}. " +
-                $"{ex.GetType().Name}: {ex.Message}");
-        }
-    }
+    // NOTE: There is intentionally no postfix on NCard.UpdateVisuals for tab syncing. Vanilla
+    // UpdateVisuals (v0.107.0 NCard.cs:556) unconditionally calls UpdateEnchantmentVisuals(), so the
+    // CardEnchantTabsPostfix hook on that method already fires for every UpdateVisuals pass — including
+    // display-only markers on unenchanted card-library / encyclopedia cards (UpdateVisuals returns
+    // early at NCard.cs:543 before line 556 only when the node isn't ready, in which case a tab sync
+    // would no-op anyway). It also covers the direct UpdateEnchantmentVisuals() calls that never go
+    // through UpdateVisuals. A second UpdateVisuals postfix would re-run SyncExtraEnchantmentTabs a
+    // second time per visual refresh (an extra ExpandVisualStates allocation + fingerprint hash that
+    // then early-outs), which is pure waste — the older protective comment here predated vanilla making
+    // UpdateEnchantmentVisuals unconditional.
+
+    // Nodes with a full-visual refresh queued for the end of the current frame. Coalesces the
+    // storm of EnchantmentChanged signals a single logical operation produces (one per refresh
+    // trigger × every NCard subscribed to the model — hand / enlarged-preview / selected-container)
+    // into at most ONE UpdateVisuals per node per frame. Each UpdateVisuals is O(enchantments)
+    // and TriggerEnchantmentChanged nulls the badge fingerprint cache first, so without this every
+    // signal forced a full card-text + hover-tip + badge rebuild — the dominant cost of the
+    // "high enchantment concentration = lag" symptom. Main-thread only (combat is single-threaded).
+    private static readonly HashSet<NCard> PendingVisualRefresh = new();
 
     [HarmonyPatch(typeof(NCard), "OnEnchantmentChanged")]
     [HarmonyPostfix]
     private static void CardEnchantmentChangedPostfix(NCard __instance)
     {
-        // Base-game NCard.OnEnchantmentChanged only refreshes enchantment icons. Re-run the full
-        // visual pass so formatter-generated extra card text is recomputed when enchantments change.
+        // Base-game NCard.OnEnchantmentChanged already refreshed the enchantment icons synchronously.
+        // We additionally need a full visual pass so formatter-generated extra card text is recomputed,
+        // but that is expensive and fires many times per logical operation — so defer + dedupe it.
+        Perf.Count("EnchantmentChanged.signal");
         try
         {
-            CardModel? model = __instance.Model;
-            if (model != null && __instance.IsNodeReady())
+            if (!__instance.IsNodeReady() || !PendingVisualRefresh.Add(__instance))
             {
-                __instance.UpdateVisuals(model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
+                return;
+            }
+
+            NCard node = __instance;
+            Callable.From(() => FlushDeferredVisualRefresh(node)).CallDeferred();
+        }
+        catch (Exception ex)
+        {
+            PendingVisualRefresh.Remove(__instance);
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Failed to queue card visual refresh after enchantment change for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void FlushDeferredVisualRefresh(NCard node)
+    {
+        PendingVisualRefresh.Remove(node);
+        using Perf.Scope _ = Perf.Measure("UpdateVisuals(deferred)");
+        try
+        {
+            if (!GodotObject.IsInstanceValid(node) || !node.IsNodeReady())
+            {
+                return;
+            }
+
+            CardModel? model = node.Model;
+            if (model != null)
+            {
+                node.UpdateVisuals(model.Pile?.Type ?? PileType.None, CardPreviewMode.Normal);
             }
         }
         catch (Exception ex)
         {
             MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] Failed to refresh card visuals after enchantment change for Card={GetSafeCardNodeModelId(__instance)}. " +
+                $"[MultiEnchantment] Failed to refresh card visuals after enchantment change for Card={GetSafeCardNodeModelId(node)}. " +
                 $"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -3536,9 +3636,20 @@ internal static class MultiEnchantmentPatches
     {
         decimal value = damage;
 
+        // Snapshot the hook listeners ONCE and reuse it across the additive / multiplicative / cap
+        // passes. Vanilla's ModifyDamageInternal (Hook.cs) enumerates IterateHookListeners lazily 3x
+        // with no allocation; this mod copy materialized it with .ToList() on EACH of the 3 passes.
+        // Because the mod patches IterateHookListeners to also surface every extra enchantment as a
+        // listener, that list is large at high concentration — and DamageVar.UpdateCardPreview runs
+        // this for every hand card whenever the hand/combat state changes (i.e. on every draw and
+        // play). Three full materializations × hand cards × draw/play was the dominant draw/play
+        // allocation (~93MB/session → GC stutter; hover does not recompute previews, so it stayed
+        // smooth). One snapshot cuts that by ~3x with identical results.
+        List<AbstractModel> listeners = runState.IterateHookListeners(combatState).ToList();
+
         if (modifyDamageHookType.HasFlag(ModifyDamageHookType.Additive))
         {
-            foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
+            foreach (AbstractModel model in listeners)
             {
                 decimal add = model.ModifyDamageAdditive(target, value, props, dealer, cardSource);
                 value += add;
@@ -3551,7 +3662,7 @@ internal static class MultiEnchantmentPatches
 
         if (modifyDamageHookType.HasFlag(ModifyDamageHookType.Multiplicative))
         {
-            foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
+            foreach (AbstractModel model in listeners)
             {
                 decimal multiply = model.ModifyDamageMultiplicative(target, value, props, dealer, cardSource);
                 value *= multiply;
@@ -3563,7 +3674,7 @@ internal static class MultiEnchantmentPatches
         }
 
         decimal damageCap = decimal.MaxValue;
-        foreach (AbstractModel model in runState.IterateHookListeners(combatState).ToList())
+        foreach (AbstractModel model in listeners)
         {
             decimal cap = model.ModifyDamageCap(target, props, dealer, cardSource);
             if (cap < damageCap)
@@ -3597,7 +3708,10 @@ internal static class MultiEnchantmentPatches
             return Math.Max(0m, value);
         }
 
-        foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
+        // One listener snapshot reused for both passes (was .ToList() per pass — see ModifyDamageInternal).
+        List<AbstractModel> blockListeners = combatState.IterateHookListeners().ToList();
+
+        foreach (AbstractModel model in blockListeners)
         {
             decimal add = model.ModifyBlockAdditive(target, value, props, cardSource, cardPlay);
             value += add;
@@ -3607,7 +3721,7 @@ internal static class MultiEnchantmentPatches
             }
         }
 
-        foreach (AbstractModel model in combatState.IterateHookListeners().ToList())
+        foreach (AbstractModel model in blockListeners)
         {
             decimal multiply = model.ModifyBlockMultiplicative(target, value, props, cardSource, cardPlay);
             value *= multiply;

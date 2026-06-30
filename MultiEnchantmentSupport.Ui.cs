@@ -80,6 +80,8 @@ internal static partial class MultiEnchantmentSupport
             return;
         }
 
+        using Perf.Scope _ = Perf.Measure("SyncExtraEnchantmentTabs");
+
         CardModel? model = cardNode.Model;
         if (model == null)
         {
@@ -893,11 +895,9 @@ internal static partial class MultiEnchantmentSupport
         Control tab = (Control)source.Duplicate();
         RestoreDuplicatedEnchantmentBadgePresentation(source, tab);
         tab.UniqueNameInOwner = false;
-        if (tab.Material != null)
-        {
-            tab.Material = (Material)tab.Material.Duplicate();
-        }
-
+        // Intentionally NO per-tab Material.Duplicate(): ApplyStatusToTab assigns one of two shared,
+        // cached HSV materials (enabled / disabled) so all same-status badges share a Material RID and
+        // the renderer can batch them. Per-tab duplicates broke batching (one draw call per badge).
         return tab;
     }
 
@@ -1528,16 +1528,20 @@ internal static partial class MultiEnchantmentSupport
 
     private static void ApplyStatusToTab(Control tab, TextureRect? icon, MegaLabel? label, EnchantmentStatus status)
     {
+        // Point the badge at the shared enabled/disabled material instead of mutating a per-tab
+        // material with SetShaderParameter. Same baked h/s/v as before, but all same-status badges now
+        // share a Material RID so the 2D renderer batches the backings (huge per-frame draw-call win at
+        // high enchantment concentration). The current tab.Material seeds the shared materials on first
+        // use (it carries the scene's hsv shader before reassignment).
+        ShaderMaterial? shared = GetSharedBadgeMaterial(status, tab.Material as ShaderMaterial);
+        if (shared != null)
+        {
+            tab.Material = shared;
+        }
+
         if (status == EnchantmentStatus.Disabled)
         {
             tab.Modulate = new Color(1f, 1f, 1f, 0.9f);
-            if (tab.Material is ShaderMaterial shader)
-            {
-                shader.SetShaderParameter(ShaderH, 0.25);
-                shader.SetShaderParameter(ShaderS, 0.1);
-                shader.SetShaderParameter(ShaderV, 0.6);
-            }
-
             if (icon != null)
             {
                 icon.UseParentMaterial = true;
@@ -1551,13 +1555,6 @@ internal static partial class MultiEnchantmentSupport
         else
         {
             tab.Modulate = Colors.White;
-            if (tab.Material is ShaderMaterial shader)
-            {
-                shader.SetShaderParameter(ShaderH, 0.25);
-                shader.SetShaderParameter(ShaderS, 0.4);
-                shader.SetShaderParameter(ShaderV, 0.6);
-            }
-
             if (icon != null)
             {
                 icon.UseParentMaterial = false;

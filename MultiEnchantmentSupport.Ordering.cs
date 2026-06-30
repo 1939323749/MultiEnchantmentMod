@@ -332,6 +332,7 @@ internal static partial class MultiEnchantmentSupport
 
     private static List<OrderedEnchantmentEntry> GetOrderedEnchantmentEntries(CardModel? card)
     {
+        using Perf.Scope _perf = Perf.Measure("GetOrderedEnchantmentEntries");
         return OrderEntries(
             card,
             GetDefaultOrderedEnchantmentEntries(card),
