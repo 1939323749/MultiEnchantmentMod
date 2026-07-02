@@ -111,6 +111,12 @@ internal static partial class MultiEnchantmentSupport
     /// mirrored to <see cref="CardModel.DeckVersion"/>; transient ones (<c>UntilCombatEnds</c>,
     /// <c>UntilTurnEnds</c>, <c>LingerForTurns</c>, <c>MaxActivations</c>) should not, because
     /// the deck version is the pre-combat baseline and must not accumulate combat-only state.
+    /// A type with <b>no</b> explicit scope registration also does not sync — mirrors vanilla
+    /// <c>CardCmd.Enchant</c>, which never touches <c>DeckVersion</c> either, regardless of which
+    /// enchantment type. This keeps vanilla's own <c>enchant</c> debug console command combat-only
+    /// for every type, matching its unmodified behavior. Callers that want deck persistence for a
+    /// specific application must pass an explicit <see cref="EnchantmentScope.Permanent"/>
+    /// override (see <c>MenchantConsoleCmd</c>) rather than relying on a type-level default.
     /// </summary>
     private static bool IsScopeEffectivelyPermanent(Type enchantmentType, EnchantmentScope? overrideScope)
     {
@@ -121,7 +127,7 @@ internal static partial class MultiEnchantmentSupport
                 or EnchantmentScope.RemoveWhenScope;
         }
 
-        return EnchantmentRegistry.IsPermanentScope(enchantmentType);
+        return EnchantmentRegistry.HasExplicitPermanentScope(enchantmentType);
     }
 
     private static void SyncDeckVersionEnchantment(

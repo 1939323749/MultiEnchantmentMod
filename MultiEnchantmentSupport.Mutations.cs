@@ -1220,7 +1220,7 @@ internal static partial class MultiEnchantmentSupport
             return enchantment;
         }
 
-        return AttachAdditionalEnchantmentState(choiceContext, card, enchantment, amount, modifyCard, triggerChanged);
+        return AttachAdditionalEnchantmentState(choiceContext, card, enchantment, amount, modifyCard, triggerChanged, scopeOverride);
     }
 
     private static async Task<EnchantmentModel> AttachEnchantmentStateAsync(
@@ -1270,7 +1270,7 @@ internal static partial class MultiEnchantmentSupport
             return enchantment;
         }
 
-        return await AttachAdditionalEnchantmentStateAsync(choiceContext, card, enchantment, amount, modifyCard, triggerChanged);
+        return await AttachAdditionalEnchantmentStateAsync(choiceContext, card, enchantment, amount, modifyCard, triggerChanged, scopeOverride);
     }
 
     private static bool ShouldFanOutAppliedStacks(EnchantmentStackBehavior behavior)

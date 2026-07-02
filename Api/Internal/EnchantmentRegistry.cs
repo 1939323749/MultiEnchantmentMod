@@ -589,6 +589,40 @@ internal static class EnchantmentRegistry
     }
 
     /// <summary>
+    /// Returns <c>true</c> only when this type has an <b>explicitly registered</b> scope that
+    /// resolves to a persisted scope (<see cref="EnchantmentScope.PermanentScope"/>,
+    /// <see cref="EnchantmentScope.ConditionalActiveScope"/>, or
+    /// <see cref="EnchantmentScope.RemoveWhenScope"/>). Unlike <see cref="IsPermanentScope"/> —
+    /// which defaults to <c>true</c> for display purposes when nothing was registered — this
+    /// defaults to <c>false</c>. Used to gate <c>CardCmd.Enchant</c>'s combat-card →
+    /// <see cref="CardModel.DeckVersion"/> mirroring: a type nobody explicitly opted into
+    /// permanence should not silently start writing into the player's deck.
+    /// </summary>
+    internal static bool HasExplicitPermanentScope(Type enchantmentType)
+    {
+        lock (Sync)
+        {
+            if (!EntriesByType.TryGetValue(enchantmentType, out List<EnchantmentEntry>? entries))
+            {
+                return false;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if (entries[i].GetScope is { })
+                {
+                    EnchantmentScope scope = entries[i].GetSafeScope();
+                    return scope is EnchantmentScope.PermanentScope
+                        or EnchantmentScope.ConditionalActiveScope
+                        or EnchantmentScope.RemoveWhenScope;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Ensures a non-vanilla third-party <see cref="EnchantmentModel"/> subclass that hasn't been
     /// registered through any public API gets a sensible default. Idempotent per type (cached in
     /// <see cref="AutoRegisteredTypes"/>); logs once per type so the third-party author knows the
