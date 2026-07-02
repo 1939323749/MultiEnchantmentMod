@@ -29,9 +29,18 @@ public partial class MultiEnchantmentMod : Node
     /// </summary>
     public static bool VerboseLog { get; private set; }
 
+    /// <summary>
+    /// Experimental: rewrites third-party <c>card.Enchantment is XXX</c> IL so those checks also
+    /// see additional enchantment slots (see <see cref="MultiEnchantmentIsCheckRewriter"/>).
+    /// Default on; set <c>"rewriteIsChecks": false</c> in <c>MultiEnchantmentMod.json</c> to
+    /// disable without a rebuild.
+    /// </summary>
+    public static bool RewriteIsChecks { get; private set; }
+
     public static void Initialize()
     {
-        VerboseLog = ReadVerboseLogPreference();
+        VerboseLog = ReadManifestFlag("verboseLog", defaultValue: false);
+        RewriteIsChecks = ReadManifestFlag("rewriteIsChecks", defaultValue: true);
         Perf.Enabled = VerboseLog;
         MultiEnchantmentSupport.Initialize();
 
@@ -59,6 +68,18 @@ public partial class MultiEnchantmentMod : Node
         // canonical "I see everything that's loaded now" pass.
         Api.Internal.AssemblyScanner.EnsureScanned();
 
+        // Experimental: after ALL mods finish loading (next idle frame — the mod-loading loop is
+        // synchronous from here to completion), rewrite third-party `card.Enchantment is XXX`
+        // checks to also see additional enchantment slots.
+        if (RewriteIsChecks)
+        {
+            MultiEnchantmentIsCheckRewriter.ScheduleAfterAllModsLoaded();
+        }
+        else
+        {
+            Logger.Info("[MultiEnchantment] is-check rewrite disabled via manifest (rewriteIsChecks=false).");
+        }
+
         // Boot-time integrity check for the small set of vanilla methods this mod copies
         // verbatim. Logs current IL hashes (and any drift vs. frozen baseline). Idempotent.
         Api.Internal.VanillaCopyGuard.RunOnce();
@@ -73,11 +94,12 @@ public partial class MultiEnchantmentMod : Node
     }
 
     /// <summary>
-    /// Reads <c>"verboseLog": true</c> from the root <c>MultiEnchantmentMod.json</c> manifest
-    /// (the single source of truth for mod metadata, sitting next to the DLL). Defaults to
-    /// <c>false</c> on any absence/parse failure so the quiet, fast path is the default.
+    /// Reads a boolean flag from the root <c>MultiEnchantmentMod.json</c> manifest (the single
+    /// source of truth for mod metadata, sitting next to the DLL). Returns
+    /// <paramref name="defaultValue"/> when the key is absent or on any parse failure, so each
+    /// flag's safe state is what ships by default.
     /// </summary>
-    private static bool ReadVerboseLogPreference()
+    private static bool ReadManifestFlag(string key, bool defaultValue)
     {
         try
         {
@@ -85,17 +107,26 @@ public partial class MultiEnchantmentMod : Node
             string manifestPath = Path.Combine(dir ?? ".", "MultiEnchantmentMod.json");
             if (!File.Exists(manifestPath))
             {
-                return false;
+                return defaultValue;
             }
 
             using System.Text.Json.JsonDocument doc =
                 System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifestPath));
-            return doc.RootElement.TryGetProperty("verboseLog", out System.Text.Json.JsonElement el) &&
-                   el.ValueKind == System.Text.Json.JsonValueKind.True;
+            if (!doc.RootElement.TryGetProperty(key, out System.Text.Json.JsonElement el))
+            {
+                return defaultValue;
+            }
+
+            return el.ValueKind switch
+            {
+                System.Text.Json.JsonValueKind.True => true,
+                System.Text.Json.JsonValueKind.False => false,
+                _ => defaultValue,
+            };
         }
         catch
         {
-            return false;
+            return defaultValue;
         }
     }
 
