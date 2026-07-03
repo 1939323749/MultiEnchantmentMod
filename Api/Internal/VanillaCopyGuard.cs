@@ -72,7 +72,9 @@ internal static class VanillaCopyGuard
             "System.Decimal",
             "MegaCrit.Sts2.Core.ValueProps.ValueProp",
             "MegaCrit.Sts2.Core.Entities.Creatures.Creature",
-            "MegaCrit.Sts2.Core.Models.CardModel"),
+            "MegaCrit.Sts2.Core.Models.CardModel",
+            // v0.108.0 added CardPlay? cardPlay to the ModifyDamage* virtuals.
+            "MegaCrit.Sts2.Core.Entities.Cards.CardPlay"),
     };
 
     /// <summary>

@@ -2814,7 +2814,10 @@ internal static class TelemetryCollector
         {
             ModManifest? manifest = mod.manifest;
             string? id = manifest?.id ?? diskManifest?.Id;
-            string? assemblyName = mod.assembly?.GetName().Name;
+            // v0.108.0 replaced Mod.assembly (single Assembly?) with Mod.assemblies (List<Assembly>).
+            // Use the first as the representative for name/version; HasEnchantments checks them all.
+            Assembly? primaryAssembly = mod.assemblies.Count > 0 ? mod.assemblies[0] : null;
+            string? assemblyName = primaryAssembly?.GetName().Name;
             bool loaded = mod.state == ModLoadState.Loaded;
             bool enabled = mod.state is not ModLoadState.Disabled and not ModLoadState.DisabledDuplicate;
             return new ModSnapshot
@@ -2822,7 +2825,7 @@ internal static class TelemetryCollector
                 Id = id,
                 Name = manifest?.name ?? diskManifest?.DisplayName ?? id ?? assemblyName ?? "unknown",
                 Assembly = assemblyName,
-                Version = manifest?.version ?? diskManifest?.Version ?? (mod.assembly == null ? null : GetModVersion(mod.assembly)),
+                Version = manifest?.version ?? diskManifest?.Version ?? (primaryAssembly == null ? null : GetModVersion(primaryAssembly)),
                 Directory = TryGetDirectoryName(mod.path) ?? diskManifest?.Directory,
                 Manifest = diskManifest?.ManifestFileName ?? (string.IsNullOrWhiteSpace(id) ? null : id + ".json"),
                 Loaded = loaded,
@@ -2832,7 +2835,7 @@ internal static class TelemetryCollector
                 Source = mod.modSource.ToString(),
                 LoadOrder = order,
                 ReferencesUs = RuntimeManifestDependsOnUs(manifest) || (diskManifest != null && ManifestDependsOnUs(diskManifest)),
-                HasEnchantments = mod.assembly != null && ContainsThirdPartyEnchantmentTypes(mod.assembly),
+                HasEnchantments = mod.assemblies.Any(ContainsThirdPartyEnchantmentTypes),
                 HasDll = manifest?.hasDll ?? diskManifest?.HasDll,
                 HasPck = manifest?.hasPck ?? diskManifest?.HasPck,
                 AffectsGameplay = manifest?.affectsGameplay ?? diskManifest?.AffectsGameplay,

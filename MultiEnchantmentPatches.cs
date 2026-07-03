@@ -863,19 +863,22 @@ internal static class MultiEnchantmentPatches
         }
     }
 
-    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterTurnEnd))]
+    // v0.108.0 renamed Hook.AfterTurnEnd → Hook.AfterSideTurnEnd (identical signature; the vanilla
+    // turn-end hooks were unified onto the "Side" naming to match Before/AfterSideTurnStart). It still
+    // fires per-side, so we keep filtering on CombatSide.Player below.
+    [HarmonyPatch(typeof(Hook), nameof(Hook.AfterSideTurnEnd))]
     [HarmonyPostfix]
-    private static void AfterTurnEndPostfix(ref Task __result, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
+    private static void AfterSideTurnEndPostfix(ref Task __result, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
     {
-        __result = AfterTurnEndPostfixAsync(__result, combatState, side, participants);
+        __result = AfterSideTurnEndPostfixAsync(__result, combatState, side, participants);
     }
 
-    private static async Task AfterTurnEndPostfixAsync(Task original, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
+    private static async Task AfterSideTurnEndPostfixAsync(Task original, ICombatState combatState, CombatSide side, IEnumerable<Creature> participants)
     {
         await original;
         try
         {
-            // Base-game source: Hook.AfterTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
+            // Base-game source: Hook.AfterSideTurnEnd(ICombatState, CombatSide, IEnumerable<Creature>)
             // The parameter type must be spelled CombatSide (MegaCrit.Sts2.Core.Combat) — never
             // just Side. The file's `using Godot;` makes the unqualified name resolve to
             // Godot.Side (the UI margin enum Left/Top/Right/Bottom), which leaves Harmony with a
@@ -901,7 +904,7 @@ internal static class MultiEnchantmentPatches
         }
         catch (Exception ex)
         {
-            LogNonFatalPatchFailure($"Hook.AfterTurnEnd postfix for Side={side}", ex);
+            LogNonFatalPatchFailure($"Hook.AfterSideTurnEnd postfix for Side={side}", ex);
         }
     }
 
@@ -2196,6 +2199,9 @@ internal static class MultiEnchantmentPatches
         decimal damage,
         ValueProp props,
         CardModel? cardSource,
+        // v0.108.0 added CardPlay? cardPlay to Hook.ModifyDamage; Harmony injects it by name so we can
+        // forward the real play context (not just null) into our per-enchantment damage recomputation.
+        CardPlay? cardPlay,
         ModifyDamageHookType modifyDamageHookType,
         CardPreviewMode previewMode,
         ref IEnumerable<AbstractModel> modifiers,
@@ -2248,7 +2254,7 @@ internal static class MultiEnchantmentPatches
                 foreach (Creature enemy in combatState?.HittableEnemies ?? Array.Empty<Creature>())
                 {
                     List<AbstractModel> perTargetModifiers = new();
-                    decimal targetValue = ModifyDamageInternal(runState, combatState, enemy, dealer, value, props, cardSource, modifyDamageHookType, perTargetModifiers);
+                    decimal targetValue = ModifyDamageInternal(runState, combatState, enemy, dealer, value, props, cardSource, cardPlay, modifyDamageHookType, perTargetModifiers);
                     if (!sharedValue.HasValue)
                     {
                         sharedValue = targetValue;
@@ -2277,7 +2283,7 @@ internal static class MultiEnchantmentPatches
             }
 
             List<AbstractModel> modifiersList = new();
-            value = ModifyDamageInternal(runState, combatState, target, dealer, value, props, cardSource, modifyDamageHookType, modifiersList);
+            value = ModifyDamageInternal(runState, combatState, target, dealer, value, props, cardSource, cardPlay, modifyDamageHookType, modifiersList);
             modifiers = modifiersList;
             __result = Math.Max(0m, value);
             return false;
@@ -2587,6 +2593,8 @@ internal static class MultiEnchantmentPatches
                         value,
                         __instance.Props,
                         card,
+                        // Preview path: no live CardPlay while a card is only previewed.
+                        null,
                         ModifyDamageHookType.All,
                         modifiers);
                 }
@@ -3530,6 +3538,8 @@ internal static class MultiEnchantmentPatches
             value,
             props,
             card,
+            // Preview path: no live CardPlay exists while a card is only being previewed.
+            null,
             modifyDamageHookType,
             new List<AbstractModel>());
     }
@@ -3553,6 +3563,7 @@ internal static class MultiEnchantmentPatches
                 value,
                 props,
                 cardSource,
+                null,
                 modifyDamageHookType,
                 new List<AbstractModel>());
         }
@@ -3569,6 +3580,7 @@ internal static class MultiEnchantmentPatches
                 value,
                 props,
                 cardSource,
+                null,
                 modifyDamageHookType,
                 new List<AbstractModel>());
             if (!sharedValue.HasValue)
@@ -3631,6 +3643,7 @@ internal static class MultiEnchantmentPatches
         decimal damage,
         ValueProp props,
         CardModel? cardSource,
+        CardPlay? cardPlay,
         ModifyDamageHookType modifyDamageHookType,
         List<AbstractModel> modifiers)
     {
@@ -3651,7 +3664,7 @@ internal static class MultiEnchantmentPatches
         {
             foreach (AbstractModel model in listeners)
             {
-                decimal add = model.ModifyDamageAdditive(target, value, props, dealer, cardSource);
+                decimal add = model.ModifyDamageAdditive(target, value, props, dealer, cardSource, cardPlay);
                 value += add;
                 if (add != 0m)
                 {
@@ -3664,7 +3677,7 @@ internal static class MultiEnchantmentPatches
         {
             foreach (AbstractModel model in listeners)
             {
-                decimal multiply = model.ModifyDamageMultiplicative(target, value, props, dealer, cardSource);
+                decimal multiply = model.ModifyDamageMultiplicative(target, value, props, dealer, cardSource, cardPlay);
                 value *= multiply;
                 if (multiply != 1m)
                 {
@@ -3676,7 +3689,7 @@ internal static class MultiEnchantmentPatches
         decimal damageCap = decimal.MaxValue;
         foreach (AbstractModel model in listeners)
         {
-            decimal cap = model.ModifyDamageCap(target, props, dealer, cardSource);
+            decimal cap = model.ModifyDamageCap(target, props, dealer, cardSource, cardPlay);
             if (cap < damageCap)
             {
                 damageCap = cap;

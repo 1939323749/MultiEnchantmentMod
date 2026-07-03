@@ -34,5 +34,8 @@ dll_backup_*/
 # Telemetry secrets (use .env.props.template as reference)
 .env.props
 
+# Axiom read-only query token (maintainer-side analytics; not embedded in the mod)
+.axiom-query-token
+
 # Local Supabase schema/query drafts.
 supabase/

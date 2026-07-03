@@ -124,21 +124,31 @@ internal static class MultiEnchantmentIsCheckRewriter
 
         foreach (Mod mod in ModManager.Mods)
         {
-            if (mod.state != ModLoadState.Loaded || mod.assembly == null || mod.assembly == self)
+            if (mod.state != ModLoadState.Loaded)
             {
                 continue;
             }
 
-            if (HasOptOutAttribute(mod.assembly))
+            // v0.108.0 replaced Mod.assembly (single Assembly?) with Mod.assemblies
+            // (List<Assembly>) — a mod can now ship more than one managed assembly. Scan each.
+            foreach (Assembly modAssembly in mod.assemblies)
             {
-                MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] is-check rewrite: skipping {mod.manifest?.id ?? mod.assembly.GetName().Name} " +
-                    $"({OptOutAttributeName} present).");
-                continue;
-            }
+                if (modAssembly == null || modAssembly == self)
+                {
+                    continue;
+                }
 
-            scannedAssemblies++;
-            ScanAssembly(mod.manifest?.id ?? mod.assembly.GetName().Name ?? "<unknown>", mod.assembly);
+                if (HasOptOutAttribute(modAssembly))
+                {
+                    MultiEnchantmentMod.Logger.Info(
+                        $"[MultiEnchantment] is-check rewrite: skipping {mod.manifest?.id ?? modAssembly.GetName().Name} " +
+                        $"({OptOutAttributeName} present).");
+                    continue;
+                }
+
+                scannedAssemblies++;
+                ScanAssembly(mod.manifest?.id ?? modAssembly.GetName().Name ?? "<unknown>", modAssembly);
+            }
         }
 
         if (scannedAssemblies > 0 || _rewrittenSites > 0 || _unrewrittenSites > 0)
@@ -211,14 +221,22 @@ internal static class MultiEnchantmentIsCheckRewriter
 
     private static void ScanMethod(string modId, MethodBase method)
     {
+        // ── Pre-screen (cheap, before the accurate-but-costlier PatchProcessor.ReadMethodBody) ──
+        // Abstract → no body to scan. Generic method / generic declaring type → cannot be
+        // Harmony-patched AND PatchProcessor.ReadMethodBody throws "Specified method is not
+        // supported" on open generics. Parsing them only manufactures false "could not read IL"
+        // warnings for helpers that merely contain an unrelated `is SomeType` check (e.g. a mod's
+        // FindChildOfType<T> / FindFirst<T> node walkers), so skip them outright.
+        if (method.IsAbstract ||
+            method.ContainsGenericParameters ||
+            (method.DeclaringType?.ContainsGenericParameters ?? false))
+        {
+            return;
+        }
+
         byte[]? il;
         try
         {
-            if (method.IsAbstract)
-            {
-                return;
-            }
-
             il = method.GetMethodBody()?.GetILAsByteArray();
         }
         catch
@@ -226,9 +244,14 @@ internal static class MultiEnchantmentIsCheckRewriter
             return;
         }
 
-        // Cheap pre-filter: no isinst opcode byte anywhere → no is/as check of any kind.
-        // (0x75 can appear inside operands too; false positives just cost a ReadMethodBody.)
-        if (il == null || Array.IndexOf(il, (byte)0x75) < 0)
+        // Cheap byte pre-filter: `card.Enchantment is X` needs BOTH an isinst (0x75) and the
+        // call/callvirt (0x28/0x6F) that invokes the get_Enchantment getter. Requiring both trims
+        // methods carrying an isinst for unrelated reasons before the costlier parse. These bytes
+        // can also occur inside operands, so this only narrows candidates — the ReadMethodBody
+        // parse below is the real arbiter and never rewrites a non-matching site.
+        if (il == null ||
+            Array.IndexOf(il, (byte)0x75) < 0 ||
+            (Array.IndexOf(il, (byte)0x6F) < 0 && Array.IndexOf(il, (byte)0x28) < 0))
         {
             return;
         }
@@ -266,8 +289,15 @@ internal static class MultiEnchantmentIsCheckRewriter
         }
         catch (Exception ex)
         {
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] is-check rewrite: could not read IL of {Describe(method)} ({modId}): {ex.Message}. {CompatAdvice}");
+            // The method only tripped the byte pre-filter — there is no evidence yet that it even
+            // reads card.Enchantment — so a player-facing compat warning here would be a false
+            // alarm. Keep it as a verbose-only diagnostic.
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] is-check rewrite: skipped {Describe(method)} ({modId}); " +
+                    $"could not read IL: {ex.Message}.");
+            }
             return;
         }
 
@@ -284,15 +314,8 @@ internal static class MultiEnchantmentIsCheckRewriter
             return;
         }
 
-        if (method.ContainsGenericParameters || (method.DeclaringType?.ContainsGenericParameters ?? false))
-        {
-            _unrewrittenSites += adjacentSites;
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] {Describe(method)} ({modId}) contains {adjacentSites} 'card.Enchantment is X' " +
-                $"site(s) but is generic and cannot be Harmony-patched. {CompatAdvice}");
-            return;
-        }
-
+        // Generic methods are already screened out at the top of this method (ReadMethodBody cannot
+        // parse open generics), so any method reaching here is non-generic and Harmony-patchable.
         try
         {
             _harmony!.Patch(method, transpiler: new HarmonyMethod(

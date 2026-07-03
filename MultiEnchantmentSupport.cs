@@ -96,8 +96,12 @@ internal static partial class MultiEnchantmentSupport
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
     private static readonly MethodInfo? CardModelOnPlayMethod =
         AccessTools.Method(typeof(CardModel), "OnPlay");
+    // v0.108.0 renamed GetResultPileTypeForCardPlay() → GetResultPileTypeAndPositionForCardPlay()
+    // (return type changed PileType → (PileType, CardPilePosition)). Resolve the new name first, fall
+    // back to the old one so both game versions work; callers handle both return shapes.
     private static readonly MethodInfo? CardModelGetResultPileTypeMethod =
-        AccessTools.Method(typeof(CardModel), "GetResultPileTypeForCardPlay");
+        AccessTools.Method(typeof(CardModel), "GetResultPileTypeAndPositionForCardPlay")
+        ?? AccessTools.Method(typeof(CardModel), "GetResultPileTypeForCardPlay");
     private static readonly MethodInfo? CardModelPlayPowerCardFlyVfxMethod =
         AccessTools.Method(typeof(CardModel), "PlayPowerCardFlyVfx");
     private static readonly MethodInfo? CardModelClearEnchantmentInternalMethod =
@@ -161,7 +165,7 @@ internal static partial class MultiEnchantmentSupport
         AddMissing(missing, NCardEnchantmentTabField, "NCard._enchantmentTab");
         AddMissing(missing, EnchantedValueProperty, "DynamicVar.EnchantedValue");
         AddMissing(missing, CardModelOnPlayMethod, "CardModel.OnPlay");
-        AddMissing(missing, CardModelGetResultPileTypeMethod, "CardModel.GetResultPileTypeForCardPlay");
+        AddMissing(missing, CardModelGetResultPileTypeMethod, "CardModel.GetResultPileType[AndPosition]ForCardPlay");
         AddMissing(missing, CardModelPlayPowerCardFlyVfxMethod, "CardModel.PlayPowerCardFlyVfx");
         AddMissing(missing, CardModelClearEnchantmentInternalMethod, "CardModel.ClearEnchantmentInternal");
         AddMissing(missing, SavedPropertiesNetIdMapField, "SavedPropertiesTypeCache._netIdToPropertyNameMap");
@@ -548,16 +552,25 @@ internal static partial class MultiEnchantmentSupport
 
     public static PileType GetResultPileTypeForMultiEnchantmentPatch(CardModel card)
     {
-        // Dispatch to vanilla CardModel.GetResultPileTypeForCardPlay via reflection so subclass
+        // Dispatch to the vanilla CardModel pile-resolution method via reflection so subclass
         // overrides (e.g., ParticleWall returning to Hand) AND the ExhaustOnNextPlay side effect
-        // both match base-game behavior exactly.
-        if (CardModelGetResultPileTypeMethod?.Invoke(card, null) is PileType pileType)
+        // both match base-game behavior exactly. v0.108.0 renamed the method and changed its return
+        // from PileType to (PileType, CardPilePosition); handle both shapes. We read Item1 off the
+        // boxed ValueTuple by reflection so we don't hard-bind to CardPilePosition (keeps this robust
+        // if the tuple's second element ever changes again).
+        object? invokeResult = CardModelGetResultPileTypeMethod?.Invoke(card, null);
+        if (invokeResult is PileType pileType)
         {
             return pileType;
         }
+        if (invokeResult != null
+            && invokeResult.GetType().GetField("Item1")?.GetValue(invokeResult) is PileType tuplePileType)
+        {
+            return tuplePileType;
+        }
 
-        // Fallback when GetResultPileTypeForCardPlay is unavailable (renamed/removed in newer
-        // game versions): replicate the base-game branches as best we can. NOTE: this path
+        // Fallback when neither method is available (renamed/removed in a future game version):
+        // replicate the base-game branches as best we can. NOTE: this path
         // cannot clear ExhaustOnNextPlay because the field is not reachable from here.
         if (card.IsDupe || card.Type == CardType.Power)
             return PileType.None;
