@@ -10,5 +10,5 @@
     { "id": "MultiEnchantmentMod", "min_version": "v2.0.0" }
   ],
   "affects_gameplay": false,
-  "min_game_version": "0.106.1"
+  "min_game_version": "0.109.0"
 }

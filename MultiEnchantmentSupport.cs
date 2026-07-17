@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
@@ -69,6 +70,8 @@ internal static partial class MultiEnchantmentSupport
         AccessTools.Field(typeof(CardModel), nameof(CardModel.EnchantmentChanged));
     private static readonly PropertyInfo? CardCurrentTargetProperty =
         AccessTools.Property(typeof(CardModel), nameof(CardModel.CurrentTarget));
+    private static readonly PropertyInfo? CardCurrentPlayIndexProperty =
+        AccessTools.Property(typeof(CardModel), nameof(CardModel.CurrentPlayIndex));
     private static readonly FieldInfo? CardTemporaryStarCostsField =
         AccessTools.Field(typeof(CardModel), "_temporaryStarCosts");
     private static readonly FieldInfo? CardPlayedField =
@@ -96,20 +99,15 @@ internal static partial class MultiEnchantmentSupport
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
     private static readonly MethodInfo? CardModelOnPlayMethod =
         AccessTools.Method(typeof(CardModel), "OnPlay");
-    // v0.108.0 renamed GetResultPileTypeForCardPlay() → GetResultPileTypeAndPositionForCardPlay()
-    // (return type changed PileType → (PileType, CardPilePosition)). Resolve the new name first, fall
-    // back to the old one so both game versions work; callers handle both return shapes.
-    private static readonly MethodInfo? CardModelGetResultPileTypeMethod =
-        AccessTools.Method(typeof(CardModel), "GetResultPileTypeAndPositionForCardPlay")
-        ?? AccessTools.Method(typeof(CardModel), "GetResultPileTypeForCardPlay");
+    // v0.109.0 replaced the pile/position tuple with CardLocation, which also records a potentially
+    // different destination player. Resolve the canonical method through reflection so subclasses
+    // keep their vanilla location logic (including ExhaustOnNextPlay side effects).
+    private static readonly MethodInfo? CardModelGetResultLocationMethod =
+        AccessTools.Method(typeof(CardModel), "GetResultLocationForCardPlay");
     private static readonly MethodInfo? CardModelPlayPowerCardFlyVfxMethod =
         AccessTools.Method(typeof(CardModel), "PlayPowerCardFlyVfx");
     private static readonly MethodInfo? CardModelClearEnchantmentInternalMethod =
         AccessTools.Method(typeof(CardModel), "ClearEnchantmentInternal");
-    private static readonly FieldInfo? SavedPropertiesNetIdMapField =
-        AccessTools.Field(typeof(SavedPropertiesTypeCache), "_netIdToPropertyNameMap");
-    private static readonly PropertyInfo? SavedPropertiesNetIdBitSizeProperty =
-        AccessTools.Property(typeof(SavedPropertiesTypeCache), nameof(SavedPropertiesTypeCache.NetIdBitSize));
 
     private static readonly StringName ShaderH = new("h");
     private static readonly StringName ShaderS = new("s");
@@ -146,9 +144,11 @@ internal static partial class MultiEnchantmentSupport
 
     public static void Initialize()
     {
+        // v0.109.0 merged SavedPropertiesTypeCache into ModelIdSerializationCache. Register this
+        // non-ModelDb carrier before the game's cache initializes so its property names participate
+        // in the deterministic network-ID table and its computed bit size.
+        ModelIdSerializationCache.CacheSavedPropertiesForTypeDebug(typeof(MultiEnchantmentSaveCarrier));
         ValidateReflectionTargets();
-        SavedPropertiesTypeCache.InjectTypeIntoCache(typeof(MultiEnchantmentSaveCarrier));
-        RefreshSavedPropertiesNetIdBitSize();
     }
 
     private static void ValidateReflectionTargets()
@@ -156,6 +156,7 @@ internal static partial class MultiEnchantmentSupport
         List<string> missing = new();
         AddMissing(missing, CardEnchantmentChangedField, "CardModel.EnchantmentChanged");
         AddMissing(missing, CardCurrentTargetProperty, "CardModel.CurrentTarget");
+        AddMissing(missing, CardCurrentPlayIndexProperty, "CardModel.CurrentPlayIndex");
         AddMissing(missing, CardTemporaryStarCostsField, "CardModel._temporaryStarCosts");
         AddMissing(missing, CardPlayedField, "CardModel.Played");
         AddMissing(missing, CardStarCostChangedField, "CardModel.StarCostChanged");
@@ -165,11 +166,9 @@ internal static partial class MultiEnchantmentSupport
         AddMissing(missing, NCardEnchantmentTabField, "NCard._enchantmentTab");
         AddMissing(missing, EnchantedValueProperty, "DynamicVar.EnchantedValue");
         AddMissing(missing, CardModelOnPlayMethod, "CardModel.OnPlay");
-        AddMissing(missing, CardModelGetResultPileTypeMethod, "CardModel.GetResultPileType[AndPosition]ForCardPlay");
+        AddMissing(missing, CardModelGetResultLocationMethod, "CardModel.GetResultLocationForCardPlay");
         AddMissing(missing, CardModelPlayPowerCardFlyVfxMethod, "CardModel.PlayPowerCardFlyVfx");
         AddMissing(missing, CardModelClearEnchantmentInternalMethod, "CardModel.ClearEnchantmentInternal");
-        AddMissing(missing, SavedPropertiesNetIdMapField, "SavedPropertiesTypeCache._netIdToPropertyNameMap");
-        AddMissing(missing, SavedPropertiesNetIdBitSizeProperty, "SavedPropertiesTypeCache.NetIdBitSize");
 
         if (missing.Count > 0)
         {
@@ -185,19 +184,6 @@ internal static partial class MultiEnchantmentSupport
         {
             missing.Add(name);
         }
-    }
-
-    internal static void RefreshSavedPropertiesNetIdBitSize()
-    {
-        if (SavedPropertiesNetIdMapField?.GetValue(null) is not List<string> propertyNames ||
-            SavedPropertiesNetIdBitSizeProperty == null)
-        {
-            throw new InvalidOperationException("Failed to access SavedPropertiesTypeCache network ID metadata.");
-        }
-
-        int count = Math.Max(1, propertyNames.Count);
-        int bitSize = Mathf.CeilToInt(Math.Log2(count));
-        SavedPropertiesNetIdBitSizeProperty.SetValue(null, bitSize);
     }
 
     public static IEnumerable<EnchantmentModel> GetEnchantments(CardModel? card)
@@ -550,33 +536,21 @@ internal static partial class MultiEnchantmentSupport
         return Task.CompletedTask;
     }
 
-    public static PileType GetResultPileTypeForMultiEnchantmentPatch(CardModel card)
+    public static CardLocation GetResultLocationForMultiEnchantmentPatch(CardModel card)
     {
-        // Dispatch to the vanilla CardModel pile-resolution method via reflection so subclass
-        // overrides (e.g., ParticleWall returning to Hand) AND the ExhaustOnNextPlay side effect
-        // both match base-game behavior exactly. v0.108.0 renamed the method and changed its return
-        // from PileType to (PileType, CardPilePosition); handle both shapes. We read Item1 off the
-        // boxed ValueTuple by reflection so we don't hard-bind to CardPilePosition (keeps this robust
-        // if the tuple's second element ever changes again).
-        object? invokeResult = CardModelGetResultPileTypeMethod?.Invoke(card, null);
-        if (invokeResult is PileType pileType)
+        if (CardModelGetResultLocationMethod?.Invoke(card, null) is CardLocation location)
         {
-            return pileType;
-        }
-        if (invokeResult != null
-            && invokeResult.GetType().GetField("Item1")?.GetValue(invokeResult) is PileType tuplePileType)
-        {
-            return tuplePileType;
+            return location;
         }
 
         // Fallback when neither method is available (renamed/removed in a future game version):
         // replicate the base-game branches as best we can. NOTE: this path
         // cannot clear ExhaustOnNextPlay because the field is not reachable from here.
         if (card.IsDupe || card.Type == CardType.Power)
-            return PileType.None;
+            return new CardLocation(card.Owner, PileType.None, CardPilePosition.Bottom);
         if (card.Keywords.Contains(CardKeyword.Exhaust))
-            return PileType.Exhaust;
-        return PileType.Discard;
+            return new CardLocation(card.Owner, PileType.Exhaust, CardPilePosition.Bottom);
+        return new CardLocation(card.Owner, PileType.Discard, CardPilePosition.Bottom);
     }
 
     public static Task PlayPowerCardFlyVfxForMultiEnchantmentPatch(CardModel card)
@@ -616,6 +590,17 @@ internal static partial class MultiEnchantmentSupport
 
         card.AssertMutable();
         CardCurrentTargetProperty.SetValue(card, target);
+    }
+
+    public static void SetCurrentPlayIndexForMultiEnchantmentPatch(CardModel card, int playIndex)
+    {
+        if (CardCurrentPlayIndexProperty == null)
+        {
+            return;
+        }
+
+        card.AssertMutable();
+        CardCurrentPlayIndexProperty.SetValue(card, playIndex);
     }
 
     private static bool ClearTemporaryStarCostsOnPlay(CardModel card)

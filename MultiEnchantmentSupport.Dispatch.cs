@@ -10,9 +10,11 @@ using HarmonyLib;
 using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
@@ -57,6 +59,11 @@ internal static partial class MultiEnchantmentSupport
                 for (int i = 0; i < onPlayCount; i++)
                 {
                     await enchantment.OnPlay(choiceContext, cardPlay);
+                    if (cardPlay.Card.Owner.Creature.IsDead)
+                    {
+                        break;
+                    }
+
                     enchantment.InvokeExecutionFinished();
                     MultiEnchantmentScopeSupport.NoteActivation(enchantment, ActivationTrigger.OnPlay);
                 }
@@ -64,6 +71,11 @@ internal static partial class MultiEnchantmentSupport
             finally
             {
                 choiceContext.PopModel(enchantment);
+            }
+
+            if (cardPlay.Card.Owner.Creature.IsDead)
+            {
+                break;
             }
         }
 
@@ -78,13 +90,13 @@ internal static partial class MultiEnchantmentSupport
         ResourceInfo resources,
         bool skipCardPileVisuals)
     {
-        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.99.1.
-        // This copy stays intentionally close to vanilla. The only functional change is inserting
-        // extra-enchantment OnPlay execution immediately after the primary enchantment OnPlay.
-        ICombatState combatState = card.CombatState!;
+        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.109.0.
+        // This copy stays intentionally close to vanilla. Functional changes are limited to the
+        // stacked hook dispatches and executing additional enchantments beside the primary one.
         choiceContext.PushModel(card);
         await CombatManager.Instance.WaitForUnpause();
         SetCurrentTargetForMultiEnchantmentPatch(card, target);
+        SetCurrentPlayIndexForMultiEnchantmentPatch(card, 0);
         if (!isAutoPlay)
         {
             await CardPileCmd.AddDuringManualCardPlay(card);
@@ -98,90 +110,158 @@ internal static partial class MultiEnchantmentSupport
             }
         }
 
-        (PileType resultPileType, CardPilePosition resultPilePosition) =
-            Hook.ModifyCardPlayResultPileTypeAndPosition(
-                combatState,
-                card,
-                isAutoPlay,
-                resources,
-                GetResultPileTypeForMultiEnchantmentPatch(card),
-                CardPilePosition.Bottom,
-                out IEnumerable<AbstractModel> modifiers);
+        ICombatState? combatState = card.CombatState;
+        if (combatState == null)
+        {
+            return;
+        }
+
+        CardLocation resultLocation = Hook.ModifyCardPlayResultLocation(
+            combatState,
+            card,
+            isAutoPlay,
+            resources,
+            GetResultLocationForMultiEnchantmentPatch(card),
+            out IEnumerable<AbstractModel> modifiers);
 
         foreach (AbstractModel item in modifiers)
         {
-            await item.AfterModifyingCardPlayResultPileOrPosition(card, resultPileType, resultPilePosition);
+            await item.AfterModifyingCardPlayResultLocation(card, resultLocation);
         }
 
         int playCount = card.GetEnchantedReplayCount() + 1;
         playCount = Hook.ModifyCardPlayCount(combatState, card, playCount, target, out List<AbstractModel> modifyingModels);
         playCount = ApplyCardPlayCountContributions(card, playCount);
         await Hook.AfterModifyingCardPlayCount(combatState, card, modifyingModels);
+        if (card.Owner.Creature.IsDead)
+        {
+            return;
+        }
 
         Perf.Count("Play.card");
 
         ulong playStartTime = Time.GetTicksMsec();
-        for (int i = 0; i < playCount; i++)
+        CombatManager.Instance.BeginCardOrPotionEffect(card.Owner);
+        try
         {
-            Perf.Count("Play.replay");
-            if (card.Type == CardType.Power)
+            for (int i = 0; i < playCount; i++)
             {
-                await PlayPowerCardFlyVfxForMultiEnchantmentPatch(card);
-            }
-            else if (i > 0)
-            {
-                NCard? nCard = NCard.FindOnTable(card);
-                if (nCard != null)
+                if (CombatManager.Instance.IsOverOrEnding)
                 {
-                    await nCard.AnimMultiCardPlay();
+                    break;
+                }
+
+                SetCurrentPlayIndexForMultiEnchantmentPatch(card, i);
+                Perf.Count("Play.replay");
+                if (card.Type == CardType.Power)
+                {
+                    await PlayPowerCardFlyVfxForMultiEnchantmentPatch(card);
+                }
+                else if (i > 0)
+                {
+                    NCard? nCard = NCard.FindOnTable(card);
+                    if (nCard != null)
+                    {
+                        await nCard.AnimMultiCardPlay();
+                    }
+                }
+
+                CardPlay cardPlay = new()
+                {
+                    Card = card,
+                    Player = card.Owner,
+                    Target = target,
+                    ResultPile = resultLocation.pileType,
+                    Resources = resources,
+                    IsAutoPlay = isAutoPlay,
+                    PlayIndex = i,
+                    PlayCount = playCount,
+                };
+
+                await Hook.BeforeCardPlayed(combatState, cardPlay);
+                await DispatchBeforeCardPlayedStacked(card, cardPlay);
+                if (card.Owner.Creature.IsDead)
+                {
+                    return;
+                }
+
+                CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
+
+                BranchingPlayerChoiceContext branchingChoiceContext = new(
+                    LocalContext.NetId ?? card.Owner.NetId,
+                    GameActionType.Combat,
+                    choiceContext);
+                branchingChoiceContext.PushModel(card);
+                Task onPlayTask = OnPlayForMultiEnchantmentPatch(card, branchingChoiceContext, cardPlay);
+                await branchingChoiceContext.AssignTaskAndWaitForPauseOrCompletion(onPlayTask);
+                if (card.Owner.Creature.IsDead)
+                {
+                    return;
+                }
+
+                card.InvokeExecutionFinished();
+                if (card.Enchantment != null && MultiEnchantmentScopeSupport.IsActive(card, card.Enchantment))
+                {
+                    int primaryOnPlayCount = MultiEnchantmentStackApi.GetHookExecutionCount(
+                        card.Enchantment,
+                        EnchantmentHookKind.OnPlay);
+                    for (int j = 0; j < primaryOnPlayCount; j++)
+                    {
+                        await card.Enchantment.OnPlay(choiceContext, cardPlay);
+                        if (card.Owner.Creature.IsDead)
+                        {
+                            return;
+                        }
+
+                        card.Enchantment.InvokeExecutionFinished();
+                        MultiEnchantmentScopeSupport.NoteActivation(card.Enchantment, ActivationTrigger.OnPlay);
+                    }
+                }
+
+                await RunAdditionalEnchantmentsOnPlay(choiceContext, cardPlay);
+                if (card.Owner.Creature.IsDead)
+                {
+                    return;
+                }
+
+                await DispatchOnPlayStacked(choiceContext, cardPlay);
+                if (card.Owner.Creature.IsDead)
+                {
+                    return;
+                }
+
+                if (card.Affliction != null)
+                {
+                    AfflictionModel affliction = card.Affliction;
+                    await affliction.OnPlay(choiceContext, target);
+                    if (card.Owner.Creature.IsDead)
+                    {
+                        return;
+                    }
+
+                    affliction.InvokeExecutionFinished();
+                }
+
+                CombatManager.Instance.History.CardPlayFinished(combatState, cardPlay);
+                if (CombatManager.Instance.IsInProgress)
+                {
+                    await Hook.AfterCardPlayed(combatState, choiceContext, cardPlay);
+                    if (card.Owner.Creature.IsDead)
+                    {
+                        return;
+                    }
+
+                    await DispatchAfterCardPlayedStacked(choiceContext, cardPlay);
+                    if (card.Owner.Creature.IsDead)
+                    {
+                        return;
+                    }
                 }
             }
-
-            CardPlay cardPlay = new()
-            {
-                Card = card,
-                Target = target,
-                ResultPile = resultPileType,
-                Resources = resources,
-                IsAutoPlay = isAutoPlay,
-                PlayIndex = i,
-                PlayCount = playCount,
-            };
-
-            await Hook.BeforeCardPlayed(combatState, cardPlay);
-            await DispatchBeforeCardPlayedStacked(card, cardPlay);
-            CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
-            await OnPlayForMultiEnchantmentPatch(card, choiceContext, cardPlay);
-            card.InvokeExecutionFinished();
-            if (card.Enchantment != null && MultiEnchantmentScopeSupport.IsActive(card, card.Enchantment))
-            {
-                int primaryOnPlayCount = MultiEnchantmentStackApi.GetHookExecutionCount(
-                    card.Enchantment,
-                    EnchantmentHookKind.OnPlay);
-                for (int j = 0; j < primaryOnPlayCount; j++)
-                {
-                    await card.Enchantment.OnPlay(choiceContext, cardPlay);
-                    card.Enchantment.InvokeExecutionFinished();
-                    MultiEnchantmentScopeSupport.NoteActivation(card.Enchantment, ActivationTrigger.OnPlay);
-                }
-            }
-
-            await RunAdditionalEnchantmentsOnPlay(choiceContext, cardPlay);
-            await DispatchOnPlayStacked(choiceContext, cardPlay);
-
-            if (card.Affliction != null)
-            {
-                AfflictionModel affliction = card.Affliction;
-                await affliction.OnPlay(choiceContext, target);
-                affliction.InvokeExecutionFinished();
-            }
-
-            CombatManager.Instance.History.CardPlayFinished(combatState, cardPlay);
-            if (CombatManager.Instance.IsInProgress)
-            {
-                await Hook.AfterCardPlayed(combatState, choiceContext, cardPlay);
-                await DispatchAfterCardPlayedStacked(choiceContext, cardPlay);
-            }
+        }
+        finally
+        {
+            await CombatManager.Instance.EndCardOrPotionEffect(card.Owner);
         }
 
         if (!skipCardPileVisuals)
@@ -190,10 +270,20 @@ internal static partial class MultiEnchantmentSupport
             await Cmd.CustomScaledWait(0.15f - elapsed, 0.3f - elapsed);
         }
 
+        Player originalOwner = card.Owner;
+        if (originalOwner != resultLocation.player && resultLocation.pileType != PileType.None)
+        {
+            await CardPileCmd.GiveToAnotherPlayer(
+                card,
+                resultLocation.player,
+                resultLocation.pileType,
+                resultLocation.position);
+        }
+
         CardPile? pile = card.Pile;
         if (pile != null && pile.Type == PileType.Play)
         {
-            switch (resultPileType)
+            switch (resultLocation.pileType)
             {
                 case PileType.None:
                     await CardPileCmd.RemoveFromCombat(card, skipCardPileVisuals);
@@ -202,12 +292,12 @@ internal static partial class MultiEnchantmentSupport
                     await CardCmd.Exhaust(choiceContext, card, causedByEthereal: false, skipCardPileVisuals);
                     break;
                 default:
-                    await CardPileCmd.Add(card, resultPileType, resultPilePosition, null, skipCardPileVisuals);
+                    await CardPileCmd.Add(card, resultLocation.pileType, resultLocation.position, null, skipCardPileVisuals);
                     break;
             }
         }
 
-        await CombatManager.Instance.CheckForEmptyHand(choiceContext, card.Owner);
+        await CombatManager.Instance.CheckForEmptyHand(choiceContext, originalOwner);
         if (card.EnergyCost.AfterCardPlayedCleanup())
         {
             card.InvokeEnergyCostChanged();
@@ -219,6 +309,7 @@ internal static partial class MultiEnchantmentSupport
         }
 
         SetCurrentTargetForMultiEnchantmentPatch(card, null);
+        SetCurrentPlayIndexForMultiEnchantmentPatch(card, 0);
         InvokePlayedForMultiEnchantmentPatch(card);
         choiceContext.PopModel(card);
     }

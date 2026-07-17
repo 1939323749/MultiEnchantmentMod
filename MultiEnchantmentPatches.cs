@@ -1932,20 +1932,6 @@ internal static class MultiEnchantmentPatches
         }
     }
 
-    [HarmonyPatch(typeof(SavedPropertiesTypeCache), nameof(SavedPropertiesTypeCache.InjectTypeIntoCache))]
-    [HarmonyPostfix]
-    private static void SavedPropertiesInjectTypeIntoCachePostfix()
-    {
-        try
-        {
-            MultiEnchantmentSupport.RefreshSavedPropertiesNetIdBitSize();
-        }
-        catch (Exception ex)
-        {
-            LogNonFatalPatchFailure("SavedPropertiesTypeCache.InjectTypeIntoCache postfix", ex);
-        }
-    }
-
     [HarmonyPatch(typeof(RunSaveManager), nameof(RunSaveManager.SaveRun), new[] { typeof(SerializableRun), typeof(bool) })]
     [HarmonyPrefix]
     private static void SaveRunPrefix(SerializableRun save, bool isMultiplayer)

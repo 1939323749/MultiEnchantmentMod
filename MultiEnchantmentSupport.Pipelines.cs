@@ -288,13 +288,15 @@ internal static partial class MultiEnchantmentSupport
 
     public static Task DispatchOnPlayStacked(PlayerChoiceContext choiceContext, CardPlay? cardPlay)
     {
+        CardModel? card = cardPlay?.Card;
         return DispatchStackedHook(
-            cardPlay?.Card,
+            card,
             static entry => entry.OnPlayStacked != null,
             (entry, snapshot) => entry.RunOnPlayStacked(new Api.StackedOnPlayContext(
                 snapshot,
                 choiceContext,
-                cardPlay)));
+                cardPlay)),
+            shouldStop: () => card?.Owner.Creature.IsDead == true);
     }
 
     public static Task DispatchBeforeCardPlayedStacked(CardModel? card, CardPlay cardPlay)
@@ -304,7 +306,8 @@ internal static partial class MultiEnchantmentSupport
             static entry => entry.BeforeCardPlayedStacked != null,
             (entry, snapshot) => entry.RunBeforeCardPlayedStacked(new Api.StackedBeforeCardPlayedContext(
                 snapshot,
-                cardPlay)));
+                cardPlay)),
+            shouldStop: () => cardPlay.Card.Owner.Creature.IsDead);
     }
 
     public static Task DispatchAfterCardPlayedStacked(PlayerChoiceContext choiceContext, CardPlay cardPlay)
@@ -315,7 +318,8 @@ internal static partial class MultiEnchantmentSupport
             (entry, snapshot) => entry.RunAfterCardPlayedStacked(new Api.StackedAfterCardPlayedContext(
                 snapshot,
                 choiceContext,
-                cardPlay)));
+                cardPlay)),
+            shouldStop: () => cardPlay.Card.Owner.Creature.IsDead);
     }
 
     public static Task DispatchAfterSiblingAppliedStacked(
@@ -399,7 +403,8 @@ internal static partial class MultiEnchantmentSupport
         CardModel? card,
         Func<EnchantmentEntry, bool> hasHandler,
         Func<EnchantmentEntry, EnchantmentStackSnapshot, Task> invoke,
-        Func<EnchantmentStackSnapshot, bool>? shouldInvoke = null)
+        Func<EnchantmentStackSnapshot, bool>? shouldInvoke = null,
+        Func<bool>? shouldStop = null)
     {
         if (card == null)
         {
@@ -408,6 +413,11 @@ internal static partial class MultiEnchantmentSupport
 
         foreach (EnchantmentStackSnapshot snapshot in GetOrderedActiveStackSnapshots(card))
         {
+            if (shouldStop?.Invoke() == true)
+            {
+                break;
+            }
+
             EnchantmentEntry? entry = EnchantmentRegistry.GetDefinitionEntry(
                 snapshot.EnchantmentType,
                 hasHandler);
@@ -422,6 +432,10 @@ internal static partial class MultiEnchantmentSupport
             }
 
             await invoke(entry, snapshot);
+            if (shouldStop?.Invoke() == true)
+            {
+                break;
+            }
         }
 
         MultiEnchantmentStackSupport.RefreshDerivedState(card);
