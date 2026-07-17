@@ -29,18 +29,9 @@ public partial class MultiEnchantmentMod : Node
     /// </summary>
     public static bool VerboseLog { get; private set; }
 
-    /// <summary>
-    /// Experimental: rewrites third-party <c>card.Enchantment is XXX</c> IL so those checks also
-    /// see additional enchantment slots (see <see cref="MultiEnchantmentIsCheckRewriter"/>).
-    /// Default on; set <c>"rewriteIsChecks": false</c> in <c>MultiEnchantmentMod.json</c> to
-    /// disable without a rebuild.
-    /// </summary>
-    public static bool RewriteIsChecks { get; private set; }
-
     public static void Initialize()
     {
         VerboseLog = ReadManifestFlag("verboseLog", defaultValue: false);
-        RewriteIsChecks = ReadManifestFlag("rewriteIsChecks", defaultValue: true);
         Perf.Enabled = VerboseLog;
         MultiEnchantmentSupport.Initialize();
 
@@ -68,17 +59,12 @@ public partial class MultiEnchantmentMod : Node
         // canonical "I see everything that's loaded now" pass.
         Api.Internal.AssemblyScanner.EnsureScanned();
 
-        // Experimental: after ALL mods finish loading (next idle frame — the mod-loading loop is
-        // synchronous from here to completion), rewrite third-party `card.Enchantment is XXX`
-        // checks to also see additional enchantment slots.
-        if (RewriteIsChecks)
-        {
-            MultiEnchantmentIsCheckRewriter.ScheduleAfterAllModsLoaded();
-        }
-        else
-        {
-            Logger.Info("[MultiEnchantment] is-check rewrite disabled via manifest (rewriteIsChecks=false).");
-        }
+        // After ALL mods finish loading (next idle frame — the mod-loading loop is synchronous
+        // from here to completion), rewrite third-party `card.Enchantment is XXX` checks to also
+        // see additional enchantment slots. Always on (no manifest toggle: a per-player switch
+        // would let two multiplayer clients diverge in third-party enchantment logic and desync
+        // the lockstep sim). Mod authors opt out per-assembly via MultiEnchantmentNoRewriteAttribute.
+        MultiEnchantmentIsCheckRewriter.ScheduleAfterAllModsLoaded();
 
         // Boot-time integrity check for the small set of vanilla methods this mod copies
         // verbatim. Logs current IL hashes (and any drift vs. frozen baseline). Idempotent.

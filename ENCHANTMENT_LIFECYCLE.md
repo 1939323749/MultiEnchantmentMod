@@ -647,10 +647,13 @@ DamageVar.UpdateCardPreview prefix:
 
 ### 11.6 第三方附魔的 auto-detection
 
-如果某个第三方 mod 写了一个 `EnchantmentModel` 子类、override 了 `EnchantDamage*` / `EnchantBlock*`、但**没**调 `MultiEnchantmentApi.Register<...>()`，本 mod 第一次看到该类型时会：
+如果某个第三方 mod 写了一个 `EnchantmentModel` 子类、但**没**调 `MultiEnchantmentApi.Register<...>()`，本 mod 第一次看到该类型时会按顺序检测：
 
-1. 反射检测它 override 了哪个虚方法。
-2. 自动注册为 `MergeAmount + SharedAcrossStack`。
-3. 写一行 info log 提示作者显式注册以覆盖默认。
+1. 带 `[SavedProperty]` 成员 → 保持 `DisallowDuplicate`（Amount/持久化语义由源 mod 自己掌控），不再继续。
+2. override `IsStackable => true`（取 `ModelDb` canonical 实例读值）→ 自动注册为 `MergeAmount + SharedAcrossStack`，对应原版 `CardCmd.Enchant` 的同类型 `Amount +=` 堆叠。若作者同时 override 了 `CanEnchant`，每次合并前仍会执行该 override（原版每次施加都查一遍，堆叠上限通常写在这里）。
+3. override `EnchantDamage*` / `EnchantBlock*` → 自动注册为 `MergeAmount + SharedAcrossStack`。
+4. 都不满足 → 保持 `DisallowDuplicate`。
 
-如果该第三方附魔本意是 `DisallowDuplicate`，作者要显式 `MultiEnchantmentApi.Register<MyEnchantment>().Stack(StackBehavior.DisallowDuplicate, ...).Commit()`，必须发生在玩家碰到该附魔之前（典型做法：放在 `[ModInitializer]` 里）。
+命中 2/3 时写一行 info log 提示作者显式注册以覆盖默认。
+
+如果该第三方附魔本意是 `DisallowDuplicate`，作者显式 `MultiEnchantmentApi.Register<MyEnchantment>().Stack(StackBehavior.DisallowDuplicate, ...).Commit()` 即可——显式注册无论发生在 auto-detect 之前还是之后都优先（之后注册会替换掉 auto-detect 装入的默认行为；仅要求在注册表封盘、即第一场战斗开始之前）。

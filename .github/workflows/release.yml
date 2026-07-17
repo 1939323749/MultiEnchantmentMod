@@ -116,7 +116,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: nexusmods
-    if: github.ref_type == 'tag'  # Only upload to NexusMods on tagged releases
+    # stable107 line (game v0.107.1): NexusMods hosts the master/beta build only, so this
+    # branch's releases publish to GitHub (+ Workshop manually) but NOT to NexusMods. This
+    # is branch-local — a tag on stable107 uses this workflow, master keeps its Nexus upload.
+    if: false  # Nexus disabled on stable107
     steps:
       - uses: actions/checkout@v4
 

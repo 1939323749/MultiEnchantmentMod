@@ -166,6 +166,44 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    // True while PassesMergeCanEnchantRules probes the author's CanEnchant override for a
+    // same-type merge. The postfix must stand down for that one call: its tightening half would
+    // force false for any already-present type (defeating the probe), and its relaxing half could
+    // mask the author's own rejection. With the postfix inert the probe returns pure vanilla
+    // semantics — the base clauses plus the author's override — which is exactly what vanilla
+    // CardCmd.Enchant consults before its same-type `Amount +=` merge. The probe is synchronous,
+    // so [ThreadStatic] set/reset in try/finally cannot leak across awaits.
+    [ThreadStatic]
+    private static bool _probingVanillaCanEnchant;
+
+    /// <summary>
+    /// Evaluates the vanilla <see cref="EnchantmentModel.CanEnchant"/> chain (author overrides
+    /// included) with this mod's postfix adjustments suspended. Used by the merge gate for
+    /// auto-registered stackable types whose author encodes per-application restrictions there.
+    /// A throwing override refuses the merge — safer than propagating author exceptions further
+    /// into the apply pipeline.
+    /// </summary>
+    internal static bool ProbeVanillaCanEnchant(EnchantmentModel enchantment, CardModel card)
+    {
+        bool previous = _probingVanillaCanEnchant;
+        _probingVanillaCanEnchant = true;
+        try
+        {
+            return enchantment.CanEnchant(card);
+        }
+        catch (Exception ex)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] author CanEnchant probe threw for Card={GetSafeCardId(card)} " +
+                $"Enchantment={GetSafeEnchantmentId(enchantment)}; refusing the merge. {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _probingVanillaCanEnchant = previous;
+        }
+    }
+
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
@@ -173,6 +211,11 @@ internal static class MultiEnchantmentPatches
     {
         try
         {
+            if (_probingVanillaCanEnchant)
+            {
+                return;
+            }
+
             // Base-game source: EnchantmentModel.CanEnchant.
             // Run as a postfix so other mods' prefixes / transpilers on CanEnchant can take effect:
             //   - If vanilla allowed it, tighten with the mod's PassesAdditionalCanEnchantRules.

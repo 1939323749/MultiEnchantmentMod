@@ -142,9 +142,18 @@ internal static partial class MultiEnchantmentSupport
 
     public static void Initialize()
     {
-        ValidateReflectionTargets();
+        // Data-integrity critical, so this runs FIRST — ahead of anything that can throw. Binary run
+        // serialization (PacketWriter: combat replay / multiplayer sync) maps every SavedProperty
+        // name to a net ID via SavedPropertiesTypeCache; an unregistered name throws at serialize
+        // time → combat-end soft-lock + black-screen on reload. Registering the carrier's
+        // [SavedProperty] names here also covers the same names written into each enchantment's Props
+        // (the name→netId map is global). Keeping it before ValidateReflectionTargets means a future
+        // game-API change that trips an unrelated reflection target can't also take out save/replay
+        // integrity — InjectTypeIntoCache only needs the game's own (stable) cache method.
         SavedPropertiesTypeCache.InjectTypeIntoCache(typeof(MultiEnchantmentSaveCarrier));
         RefreshSavedPropertiesNetIdBitSize();
+
+        ValidateReflectionTargets();
     }
 
     private static void ValidateReflectionTargets()

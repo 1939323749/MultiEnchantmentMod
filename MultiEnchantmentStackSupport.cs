@@ -285,6 +285,32 @@ internal static class MultiEnchantmentStackSupport
         return PassesAdditionalCanEnchantRules(enchantment, card);
     }
 
+    /// <summary>
+    /// Merge-path CanEnchant gate. Every merge passes the vanilla base clauses (with the
+    /// duplicate check excluded — the merge IS the deliberate duplicate); types the IsStackable
+    /// heuristic swept in whose author also overrides <c>CanEnchant</c> additionally re-run that
+    /// override, because vanilla <c>CardCmd.Enchant</c> re-evaluates it on every same-type stack
+    /// and authors encode stacking caps there (all five vanilla stackables do). The probe runs
+    /// with the mod's CanEnchant postfix suspended, so it returns pure vanilla semantics — which
+    /// also means a type living only in the extra storage under a different primary refuses the
+    /// merge (vanilla's primary-slot clause), the conservative reading of a contract the author
+    /// wrote for single-slot vanilla.
+    /// </summary>
+    public static bool PassesMergeCanEnchantRules(EnchantmentModel enchantment, CardModel card)
+    {
+        if (!PassesCanEnchantRulesIgnoringDuplicate(enchantment, card))
+        {
+            return false;
+        }
+
+        if (!EnchantmentRegistry.RequiresAuthorCanEnchantGateOnMerge(enchantment.GetType()))
+        {
+            return true;
+        }
+
+        return MultiEnchantmentPatches.ProbeVanillaCanEnchant(enchantment, card);
+    }
+
     public static int GetEnchantmentCount(CardModel? card, Type enchantmentType)
     {
         return MultiEnchantmentSupport.GetEnchantmentsForType(card, enchantmentType)

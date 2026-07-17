@@ -25,15 +25,19 @@ namespace MultiEnchantmentMod;
 /// the primary slot first (preserving original behavior whenever it matched before) and then the
 /// additional slots.</para>
 ///
-/// <para>Anything it cannot rewrite (generic methods, non-adjacent patterns such as
+/// <para>Anything it cannot rewrite (generic methods, non-adjacent patterns such as multi-arm
 /// <c>switch</c>-on-enchantment or <c>card?.Enchantment</c>, or a Harmony patch failure) is left
-/// untouched and logged as a warning telling the player that mod's enchantment detection may miss
-/// additional slots, with a pointer to the wiki's no-dependency compatibility bridge.</para>
+/// untouched, and MOST such shapes are logged as a warning telling the player that mod's
+/// enchantment detection may miss additional slots, with a pointer to the wiki's no-dependency
+/// compatibility bridge. The near-miss detection is a heuristic window, not dataflow analysis —
+/// a getter and isinst separated by many instructions (e.g. stored to a local, null-checked,
+/// then tested much later) can stay silent.</para>
 ///
-/// <para>Opt-outs: a mod can declare an assembly-level attribute whose type is <b>named</b>
+/// <para>Opt-out: a mod author declares an assembly-level attribute whose type is <b>named</b>
 /// <c>MultiEnchantmentNoRewriteAttribute</c> (declared in its own assembly — no reference to this
-/// mod needed; matched by name), or the player can set <c>"rewriteIsChecks": false</c> in
-/// <c>MultiEnchantmentMod.json</c>.</para>
+/// mod needed; matched by name). There is deliberately NO player-facing toggle: a per-player
+/// switch would let two multiplayer clients diverge in third-party enchantment logic and desync
+/// the lockstep sim.</para>
 /// </summary>
 internal static class MultiEnchantmentIsCheckRewriter
 {
@@ -124,21 +128,38 @@ internal static class MultiEnchantmentIsCheckRewriter
 
         foreach (Mod mod in ModManager.Mods)
         {
-            if (mod.state != ModLoadState.Loaded || mod.assembly == null || mod.assembly == self)
+            if (mod.assembly == null || mod.assembly == self)
             {
                 continue;
             }
 
-            if (HasOptOutAttribute(mod.assembly))
+            string modId = mod.manifest?.id ?? mod.assembly.GetName().Name ?? "<unknown>";
+
+            if (mod.state != ModLoadState.Loaded)
             {
-                MultiEnchantmentMod.Logger.Info(
-                    $"[MultiEnchantment] is-check rewrite: skipping {mod.manifest?.id ?? mod.assembly.GetName().Name} " +
-                    $"({OptOutAttributeName} present).");
+                // A mod can end up Failed AFTER its assembly loaded and its Harmony patches were
+                // applied (ModManager marks Loaded even when a [ModInitializer] throws, but a
+                // later initializer TYPE failing to resolve, or an OnModDetected subscriber
+                // throwing, downgrades it) — that patch code still runs at runtime. We don't scan
+                // non-Loaded mods (half-initialized types are the loader's problem, not ours to
+                // poke), but say so instead of silently skipping.
+                if (mod.state == ModLoadState.Failed)
+                {
+                    MultiEnchantmentMod.Logger.Warn(
+                        $"[MultiEnchantment] is-check rewrite: {modId} failed to load but its assembly is " +
+                        "live (any Harmony patches it applied before failing still run); its " +
+                        $"'card.Enchantment is X' checks stay primary-slot-only. {CompatAdvice}");
+                }
+                continue;
+            }
+
+            if (HasOptOutAttribute(modId, mod.assembly))
+            {
                 continue;
             }
 
             scannedAssemblies++;
-            ScanAssembly(mod.manifest?.id ?? mod.assembly.GetName().Name ?? "<unknown>", mod.assembly);
+            ScanAssembly(modId, mod.assembly);
         }
 
         if (scannedAssemblies > 0 || _rewrittenSites > 0 || _unrewrittenSites > 0)
@@ -150,16 +171,30 @@ internal static class MultiEnchantmentIsCheckRewriter
         }
     }
 
-    private static bool HasOptOutAttribute(Assembly assembly)
+    private static bool HasOptOutAttribute(string modId, Assembly assembly)
     {
         try
         {
-            return assembly.GetCustomAttributesData()
-                .Any(attr => attr.AttributeType.Name == OptOutAttributeName);
-        }
-        catch
-        {
+            if (assembly.GetCustomAttributesData()
+                .Any(attr => attr.AttributeType.Name == OptOutAttributeName))
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] is-check rewrite: skipping {modId} ({OptOutAttributeName} present).");
+                return true;
+            }
+
             return false;
+        }
+        catch (Exception ex)
+        {
+            // Unreadable attribute table ⇒ we cannot rule out an author's explicit opt-out.
+            // Skip the assembly: a missed rewrite merely keeps the pre-rewrite status quo
+            // (primary-slot-only checks), while rewriting against a declared opt-out would
+            // break the documented contract.
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] is-check rewrite: could not read assembly attributes of {modId} " +
+                $"({ex.GetType().Name}: {ex.Message}); skipping it as if {OptOutAttributeName} were present. {CompatAdvice}");
+            return true;
         }
     }
 
@@ -251,10 +286,15 @@ internal static class MultiEnchantmentIsCheckRewriter
                     continue;
                 }
 
-                // switch-on-type / pattern-with-stloc shapes put a few instructions between the
-                // getter call and the isinst. We don't rewrite those (no local dataflow analysis),
-                // but we do tell the player/author which method still misses additional slots.
-                for (int j = i + 2; j < codes.Count && j <= i + 4; j++)
+                // switch-on-type / pattern-with-stloc / store-to-local-then-test shapes put a few
+                // instructions between the getter call and the isinst (measured on Release IL:
+                // multi-arm switch ≈ +3; `var e = card.Enchantment; if (e == null) …; if (e is X)`
+                // ≈ +6). We don't rewrite those (no local dataflow analysis), but we do tell the
+                // player/author which method still misses additional slots. The window is a
+                // heuristic: wide enough for the shapes above, and a false hit (an unrelated
+                // enchantment isinst within 8 instructions of a getter call) only costs a
+                // spurious advisory warning.
+                for (int j = i + 2; j < codes.Count && j <= i + 8; j++)
                 {
                     if (IsEnchantmentIsInst(codes[j]))
                     {

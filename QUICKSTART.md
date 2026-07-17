@@ -88,6 +88,9 @@ public partial class MyMod : Node
 **The single most common failure mode**: forgetting `ScanCallingAssembly()`. Without it, your
 `[Enchantment]`-tagged classes default to `DisallowDuplicate` + no v2 lifecycle. If you see your
 enchantment behave like a vanilla single-instance enchantment, this is the first thing to check.
+(Exception: unregistered types that override `IsStackable => true` or `EnchantDamage*` /
+`EnchantBlock*` are auto-detected as `MergeAmount`, so those still merge amounts without a scan —
+but none of your v2 lifecycle hooks run. Don't rely on auto-detect as a substitute for scanning.)
 
 ### 4. Add localization (optional but expected)
 
@@ -168,7 +171,7 @@ Launch the game and search `godot.log` for one of these markers:
 
 | Symptom | Likely cause |
 |---|---|
-| Enchantment registers but stacks like DisallowDuplicate | Forgot `ScanCallingAssembly()` — fall back to default StackDefinition |
+| Enchantment registers but stacks like DisallowDuplicate | Forgot `ScanCallingAssembly()` — fall back to default StackDefinition. Note: types overriding `IsStackable => true` or `EnchantDamage*`/`EnchantBlock*` auto-detect as `MergeAmount` even without a scan, so they won't show this symptom |
 | Enchantment never appears in-game | `EnchantmentModel` not registered with vanilla `ModelDb` — that's a separate step from MultiEnchantmentMod |
 | `MEM004` / `MEM009` / `MEM011` analyzer errors | See [docs/v2-api-wiki.md](docs/v2-api-wiki.md) §Analyzer Rules; each ID has a fix recipe |
 | `[ModifyDynamicVar]` silently does nothing | Wrong method signature; MEM009 catches at compile time |

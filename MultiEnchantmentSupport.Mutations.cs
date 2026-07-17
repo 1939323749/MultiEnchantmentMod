@@ -132,7 +132,7 @@ internal static partial class MultiEnchantmentSupport
 
         bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
         bool canApply = isStackingExisting
-            ? MultiEnchantmentStackSupport.PassesCanEnchantRulesIgnoringDuplicate(enchantment, card)
+            ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
             : enchantment.CanEnchant(card);
         if (!canApply)
         {
@@ -247,7 +247,7 @@ internal static partial class MultiEnchantmentSupport
 
         bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
         bool canApply = isStackingExisting
-            ? MultiEnchantmentStackSupport.PassesCanEnchantRulesIgnoringDuplicate(enchantment, card)
+            ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
             : enchantment.CanEnchant(card);
         if (!canApply)
         {

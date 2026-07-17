@@ -83,7 +83,12 @@ v2 新增 `ModifyDynamicVar` API 让多个附魔可以协同修改同一个动�
 
 ### 2. 第三方未注册 EnchantmentModel 的 auto-detect
 
-如果某个第三方 `EnchantmentModel` 子类 override 了 `EnchantDamage*` / `EnchantBlock*` 但**未**调 `Register<...>()`，本 mod 看到时自动注册为 `MergeAmount + SharedAcrossStack`，并写一行 info log。
+两类未注册的第三方 `EnchantmentModel` 子类会被自动注册为 `MergeAmount + SharedAcrossStack`，并写一行 info log：
+
+1. override `IsStackable => true`（取 `ModelDb` canonical 实例读值）——对应原版 `CardCmd.Enchant` 的同类型 `Amount +=` 堆叠；若作者同时 override 了 `CanEnchant`，每次合并仍先执行该 override（原版每次施加都会查，堆叠上限通常写在这里）。
+2. override `EnchantDamage*` / `EnchantBlock*` 之一。
+
+带 `[SavedProperty]` 成员的类型不参与 auto-detect，保持 `DisallowDuplicate`。
 
 **作者 opt-out**：在 `[ModInitializer]` 里显式注册其它 stack behavior。例如：
 
@@ -115,9 +120,9 @@ MultiEnchantmentApi.Register<MyEnchantment>()
 ### C. 第三方未注册 EnchantmentModel 默认行为变了
 
 旧行为：第三方 EnchantmentModel 子类未注册时按 `DisallowDuplicate` 处理。
-新行为：如果 override 了 `EnchantDamage*` / `EnchantBlock*`，按 `MergeAmount` 处理；否则仍 `DisallowDuplicate`。
+新行为：如果 override 了 `IsStackable => true` 或 `EnchantDamage*` / `EnchantBlock*`，按 `MergeAmount` 处理（带 `[SavedProperty]` 的类型除外）；否则仍 `DisallowDuplicate`。
 
-**影响**：第三方 mod 如果有 `EnchantDamageAdditive` 这种"硬编码 +5"且**没**调用 `Register<...>()`，现在能被堆叠了。如果不希望这样请显式注册——见上面 opt-out 示例。
+**影响**：第三方 mod 如果有 `IsStackable => true` 的可堆叠附魔、或 `EnchantDamageAdditive` 这种"硬编码 +5"且**没**调用 `Register<...>()`，现在能被堆叠了——前者恢复了原版 `Amount +=` 的层数堆叠（作者的 `CanEnchant` override 仍会每次合并前执行）。如果不希望这样请显式注册——见上面 opt-out 示例；显式注册无论先后都优先于 auto-detect。
 
 ---
 
@@ -152,7 +157,7 @@ v0.106 玩家日志中的 `SavedProperty name MultiEnchantmentMergedStackAmounts
 
 ### v0.106.x 原生签名变更提醒
 
-当前本仓库按 0.106.1 系列 DLL 复核。直接 patch vanilla `Hook` 或重写 vanilla block 附魔方法时，请同步以下签名：
+当前本仓库（stable107 分支）按 0.107.1 系列 DLL 复核。直接 patch vanilla `Hook` 或重写 vanilla block 附魔方法时，请同步以下签名：
 
 - `Hook.BeforeSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)`
 - `Hook.AfterSideTurnStart(ICombatState, CombatSide, IReadOnlyList<Creature>)`

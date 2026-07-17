@@ -49,7 +49,12 @@ MultiEnchantmentApi.ScanAssembly(typeof(MyModRegistration).Assembly);
 | `DuplicateInstance` | 每次应用都创建独立 `EnchantmentModel` 实例 | 每个实例有独立状态，例如各自禁用/恢复 |
 | `ExistenceStack` | 每次应用创建实例，但只有首次应用执行改卡副作用 | 光环/存在型效果，只关心是否至少存在一个激活实例 |
 
-如果你不显式注册第三方附魔，默认是 `DisallowDuplicate`。v2 也会对部分未注册但覆写了 `EnchantDamage*` / `EnchantBlock*` 的第三方附魔做 auto-detect，并注册为 `MergeAmount + SharedAcrossStack`；如果不希望这样，请显式注册自己的行为。
+如果你不显式注册第三方附魔，默认是 `DisallowDuplicate`。v2 会对两类未注册的第三方附魔做 auto-detect，并注册为 `MergeAmount + SharedAcrossStack`：
+
+1. 覆写 `IsStackable => true` 的类型（取该类型在 `ModelDb` 中的 canonical 实例读值）——对应原版 `CardCmd.Enchant` 的同类型 `Amount +=` 堆叠。若作者同时覆写了 `CanEnchant`，每次合并仍会先执行该覆写（原版就是每次施加都查一遍，堆叠上限通常写在这里）。
+2. 覆写 `EnchantDamage*` / `EnchantBlock*` 之一的类型。
+
+带 `[SavedProperty]` 成员的类型不参与 auto-detect（保持 `DisallowDuplicate`，Amount 语义由源 mod 自己掌控）。显式注册在两个方向上都优先：先注册则 auto-detect 直接跳过；后注册则替换掉 auto-detect 装入的默认行为。如果不希望被 auto-detect，请显式注册自己的行为。
 
 ### StatusAggregation：多实例状态怎么汇总
 

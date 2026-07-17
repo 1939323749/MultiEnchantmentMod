@@ -32,6 +32,20 @@ internal static class EnchantmentRegistry
     // EnsureRegistered, so AutoRegisteredTypes alone cannot tell "we guessed" from "the author
     // registered it." WasAutoRegistered reads THIS set instead.
     private static readonly ConcurrentDictionary<Type, byte> DefaultedTypes = new();
+
+    // Definition handles installed by EnsureRegistered's heuristics (Sync-guarded). Kept so a
+    // LATER explicit registration can replace the guessed default instead of tripping Install's
+    // one-Definition guard — "explicit registration always wins" must hold in both orders, not
+    // just explicit-first.
+    private static readonly Dictionary<Type, IDisposable> AutoInstalledDefinitionHandles = new();
+
+    // Subset of the IsStackable auto-registrations whose author ALSO overrides CanEnchant.
+    // Vanilla re-evaluates that override on every same-type re-application (CardCmd.Enchant gates
+    // each merge on CanEnchant, and every vanilla stackable enchantment encodes its stacking cap
+    // there), so the merge path must keep consulting it for these types. Explicit registrations
+    // never enter this set — an author who called Register() owns the merge policy outright.
+    private static readonly ConcurrentDictionary<Type, byte> AuthorGatedStackableTypes = new();
+
     // OrdinalIgnoreCase: vanilla DynamicVar.Name uses PascalCase ("Damage", "Block",
     // "CalculatedDamage", ...), but author-facing convention writes lowercase ("damage").
     // Compare case-insensitively so authors never have to mirror vanilla's exact casing.
@@ -75,6 +89,23 @@ internal static class EnchantmentRegistry
 
         lock (Sync)
         {
+            // A Definition entry installed by EnsureRegistered's heuristics yields to an explicit
+            // registration arriving later: dispose the auto handle (which uninstalls its entry,
+            // possibly emptying the type's list) so the author's Commit installs cleanly instead
+            // of tripping the one-Definition guard below. Auto entries carry no contributions,
+            // so the uninstall is cheap. Runs before the list fetch because Uninstall can remove
+            // the EntriesByType key. The auto branch itself never hits this: its handle is only
+            // recorded AFTER its own Commit returns.
+            if (entry.IsDefinitionEntry &&
+                AutoInstalledDefinitionHandles.Remove(typeof(TEnchantment), out IDisposable? autoHandle))
+            {
+                autoHandle.Dispose();
+                DefaultedTypes.TryRemove(typeof(TEnchantment), out _);
+                AuthorGatedStackableTypes.TryRemove(typeof(TEnchantment), out _);
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] {typeof(TEnchantment).FullName}: explicit registration replaced the auto-detected default.");
+            }
+
             if (!EntriesByType.TryGetValue(typeof(TEnchantment), out List<EnchantmentEntry>? list))
             {
                 list = new List<EnchantmentEntry>();
@@ -629,18 +660,28 @@ internal static class EnchantmentRegistry
     /// runtime is filling in defaults on their behalf.
     /// </summary>
     /// <remarks>
-    /// <para>Detection rules:</para>
+    /// <para>Detection rules, in the order the code checks them:</para>
     /// <list type="number">
     ///   <item>vanilla namespace (<c>MegaCrit.Sts2.*</c>) → leave alone (vanilla types are
     ///   pre-registered by <c>BuiltInRegistrations</c>; anything unregistered is by design).</item>
+    ///   <item>Declares <c>[SavedProperty]</c> members → <c>DisallowDuplicate</c>. The source mod
+    ///   owns its Amount/persistence semantics, so no merge behavior is guessed for it.</item>
+    ///   <item>Overrides <c>IsStackable</c> to return <c>true</c> (read off the type's canonical
+    ///   <c>ModelDb</c> instance) → <c>MergeAmount</c> + <c>SharedAcrossStack</c>. Rationale:
+    ///   base-game <c>CardCmd.Enchant</c> stacks a same-type <c>IsStackable</c> enchantment via
+    ///   <c>Amount += amount</c>, which is exactly MergeAmount, so third-party stackable
+    ///   enchantments keep their vanilla layer stacking. When the author also overrides
+    ///   <c>CanEnchant</c>, merges keep consulting that override — vanilla re-evaluates it on
+    ///   every application, and stacking caps live there.</item>
     ///   <item>Overrides one of <c>EnchantDamageAdditive</c> / <c>EnchantDamageMultiplicative</c>
     ///   / <c>EnchantBlockAdditive</c> / <c>EnchantBlockMultiplicative</c> →
     ///   <c>MergeAmount</c> + <c>SharedAcrossStack</c>. Rationale: the author opted into per-card
-    ///   value mutation, so stacking the same type should stack the value too. Authors can
-    ///   override by registering with <c>StackBehavior.DisallowDuplicate</c> before any card
-    ///   reaches this code path.</item>
+    ///   value mutation, so stacking the same type should stack the value too.</item>
     ///   <item>Otherwise → leave alone; the v1 fallback (DisallowDuplicate) applies.</item>
     /// </list>
+    /// <para>Explicit registration always wins, in both orders: a type already registered when
+    /// EnsureRegistered runs is skipped here, and an explicit registration arriving later
+    /// replaces the auto-installed default (see the replacement pre-step in Install).</para>
     /// </remarks>
     internal static void EnsureRegistered(Type enchantmentType)
     {
@@ -674,8 +715,8 @@ internal static class EnchantmentRegistry
             }
 
             // Past this point MultiEnchant is choosing the behavior itself (saved-props →
-            // DisallowDuplicate, value-modifier override → MergeAmount, or the plain
-            // DisallowDuplicate fallback). Mark the type as guessed so execution-mode resolution
+            // DisallowDuplicate, IsStackable=>true or value-modifier override → MergeAmount, or
+            // the plain DisallowDuplicate fallback). Mark the type as guessed so execution-mode resolution
             // can fire its hooks per live instance — we never saw the author's intent, so we
             // mustn't replay a hook MergedTotal times. Explicitly registered types returned at the
             // EntriesByType check above and never reach here.
@@ -689,27 +730,28 @@ internal static class EnchantmentRegistry
                 return;
             }
 
+            if (OverridesIsStackableToTrue(enchantmentType))
+            {
+                bool installed = TryAutoRegisterMergeAmountLocked(
+                    enchantmentType,
+                    $"[MultiEnchantment] {enchantmentType.FullName} declares IsStackable => true, " +
+                    "so its same-type applications stack their amount together (MergeAmount), matching base-game stacking.");
+                if (installed && OverridesCanEnchantVirtual(enchantmentType))
+                {
+                    // The author also overrides CanEnchant. Vanilla consults that override on
+                    // every same-type re-application (stacking caps live there), so mark the type:
+                    // the merge path re-runs the author's CanEnchant before merging.
+                    AuthorGatedStackableTypes.TryAdd(enchantmentType, 0);
+                }
+                return;
+            }
+
             if (OverridesValueModifierVirtual(enchantmentType))
             {
-                try
-                {
-                    MultiEnchantmentApi.Register(enchantmentType)
-                        .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
-                        .Commit();
-
-                    if (EntriesByType.ContainsKey(enchantmentType))
-                    {
-                        global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
-                            $"[MultiEnchantment] {enchantmentType.FullName} overrides EnchantDamage*/EnchantBlock*, " +
-                            $"so its same-type applications stack their amount together (MergeAmount).");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment] auto-register attempt for {enchantmentType.FullName} failed: " +
-                        $"{ex}");
-                }
+                TryAutoRegisterMergeAmountLocked(
+                    enchantmentType,
+                    $"[MultiEnchantment] {enchantmentType.FullName} overrides EnchantDamage*/EnchantBlock*, " +
+                    $"so its same-type applications stack their amount together (MergeAmount).");
                 return;
             }
 
@@ -717,6 +759,55 @@ internal static class EnchantmentRegistry
                 $"[MultiEnchantment] {enchantmentType.FullName} hasn't declared a stack behavior, so it's treated as " +
                 $"one-per-card (DisallowDuplicate) — the safe default, and usually exactly what's wanted.");
         }
+    }
+
+    /// <summary>
+    /// Shared auto-registration body for EnsureRegistered's MergeAmount heuristics. Caller must
+    /// hold <see cref="Sync"/>. Returns true when the Definition entry actually installed (false
+    /// when the registry was already sealed — Commit() no-ops then — or the registration threw).
+    /// </summary>
+    private static bool TryAutoRegisterMergeAmountLocked(Type enchantmentType, string installedLogMessage)
+    {
+        try
+        {
+            IDisposable handle = MultiEnchantmentApi.Register(enchantmentType)
+                .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
+                .Commit();
+
+            if (EntriesByType.ContainsKey(enchantmentType))
+            {
+                // Keep the handle so a later explicit registration can replace this guessed
+                // default (see the replacement pre-step in Install).
+                AutoInstalledDefinitionHandles[enchantmentType] = handle;
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(installedLogMessage);
+                return true;
+            }
+
+            // Commit() succeeds without installing when the registry is already sealed. Install
+            // logged the sealed rejection, but its remediation text blames a third-party Register
+            // call — this caller is the mod's own heuristic, so add the honest context.
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] auto-registration for {enchantmentType.FullName} was rejected (registry sealed); " +
+                "the type keeps the DisallowDuplicate fallback.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] auto-register attempt for {enchantmentType.FullName} failed: " +
+                $"{ex}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True when same-type merges for <paramref name="enchantmentType"/> must re-run the author's
+    /// <c>CanEnchant</c> override first (types the IsStackable heuristic swept in whose author
+    /// also overrides <c>CanEnchant</c> — see <see cref="AuthorGatedStackableTypes"/>).
+    /// </summary>
+    internal static bool RequiresAuthorCanEnchantGateOnMerge(Type enchantmentType)
+    {
+        return AuthorGatedStackableTypes.ContainsKey(enchantmentType);
     }
 
     private static readonly string[] ValueModifierMethodNames =
@@ -751,6 +842,78 @@ internal static class EnchantmentRegistry
         }
 
         return false;
+    }
+
+    private static bool OverridesCanEnchantVirtual(Type enchantmentType)
+    {
+        // Same enumeration idiom as OverridesValueModifierVirtual: GetMethod(name) throws
+        // AmbiguousMatchException when a subclass declares overloads/shadows of the name, so
+        // enumerate and match the vanilla `bool CanEnchant(CardModel)` shape explicitly.
+        MethodInfo[] methods = enchantmentType.GetMethods(
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        foreach (MethodInfo method in methods)
+        {
+            if (method.Name != "CanEnchant")
+            {
+                continue;
+            }
+
+            ParameterInfo[] parameters = method.GetParameters();
+            if (parameters.Length != 1 || parameters[0].ParameterType != typeof(CardModel))
+            {
+                continue;
+            }
+
+            if (method.DeclaringType != null &&
+                method.DeclaringType != typeof(EnchantmentModel) &&
+                IsNonVanillaEnchantmentType(method.DeclaringType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool OverridesIsStackableToTrue(Type enchantmentType)
+    {
+        try
+        {
+            // Stage 1 (cheap, pure reflection): is IsStackable overridden away from the vanilla
+            // `EnchantmentModel.IsStackable => false` by a non-vanilla subclass? Mirrors the
+            // DeclaringType test OverridesValueModifierVirtual uses, so the common case (a type
+            // that never touches IsStackable) pays a single property lookup and stops here.
+            MethodInfo? getter = enchantmentType
+                .GetProperty("IsStackable", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                ?.GetGetMethod(nonPublic: true);
+            if (getter?.DeclaringType is not { } declaringType ||
+                declaringType == typeof(EnchantmentModel) ||
+                !IsNonVanillaEnchantmentType(declaringType))
+            {
+                return false;
+            }
+
+            // Stage 2: read the VALUE off the game's canonical instance. Constructing a fresh
+            // sample can never work here: ModelDb.Init instantiates every concrete mod
+            // EnchantmentModel subtype at boot, and AbstractModel's constructor throws
+            // DuplicateModelException for any type already in ModelDb. The canonical instance is
+            // also the deterministic choice for lockstep multiplayer — both clients read the same
+            // boot-time object. A type with no canonical instance (never swept into ModelDb)
+            // cannot legitimately reach cards or saves, so it keeps the DisallowDuplicate
+            // fallback. The GetType() check is defensive: a same-name ModelId collision actually
+            // crashes ModelDb.Init at boot (second ctor throws, no catch), so it can only differ
+            // after Remove/Inject shenanigans — refuse rather than read another type's getter.
+            return ModelDb.GetByIdOrNull<EnchantmentModel>(ModelDb.GetId(enchantmentType)) is { } canonical
+                && canonical.GetType() == enchantmentType
+                && canonical.IsStackable;
+        }
+        catch (Exception ex)
+        {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] couldn't evaluate IsStackable on {enchantmentType.FullName}; " +
+                $"leaving it as DisallowDuplicate. {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
     private static bool IsNonVanillaEnchantmentType(Type type)
