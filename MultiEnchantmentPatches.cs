@@ -5,6 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
@@ -451,20 +452,24 @@ internal static class MultiEnchantmentPatches
     [HarmonyPatch]
     private static class CombatLossTelemetryPatch
     {
-        private static readonly FieldInfo? PendingLossField =
-            AccessTools.Field(typeof(CombatManager), "_pendingLoss");
-
         [HarmonyTargetMethod]
         private static MethodBase? TargetMethod() =>
-            AccessTools.Method(typeof(CombatManager), "ProcessPendingLoss", Type.EmptyTypes);
+            AccessTools.Method(typeof(CombatManager), "ProcessPendingLoss");
 
         [HarmonyPrefix]
-        private static void Prefix(CombatManager __instance, out ICombatState? __state)
+        private static void Prefix(object[] __args, out ICombatState? __state)
         {
             __state = null;
             try
             {
-                object? pendingLoss = PendingLossField?.GetValue(__instance);
+                // v0.110.0 moved the pending loss off CombatManager._pendingLoss and onto the
+                // per-combat CombatTurnState that ProcessPendingLoss now takes as its argument.
+                // Read it off the argument reflectively: CombatTurnState is internal to the game
+                // assembly, and binding to it would break this patch on the next reshuffle.
+                object? turnState = __args.Length > 0 ? __args[0] : null;
+                object? pendingLoss = turnState == null
+                    ? null
+                    : AccessTools.Property(turnState.GetType(), "PendingLoss")?.GetValue(turnState);
                 __state = AccessTools.Property(pendingLoss?.GetType(), "State")
                     ?.GetValue(pendingLoss) as ICombatState;
                 Telemetry.TelemetryCollector.NoteCombatLossProcessing(__state?.RunState);
@@ -2065,11 +2070,15 @@ internal static class MultiEnchantmentPatches
         }
     }
 
-    [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn", new[] { typeof(Player), typeof(HookPlayerChoiceContext) })]
+    // v0.110.0 prepended a CombatTurnState parameter. There is only ever one overload, so match by
+    // name and let Harmony bind `player` / `playerChoiceContext` positionally-by-name. The turnState
+    // itself stays an opaque object[] slot — CombatTurnState is internal.
+    [HarmonyPatch(typeof(CombatManager), "SetupPlayerTurn")]
     [HarmonyPrefix]
     [HarmonyPriority(Priority.Low)]
     private static bool SetupPlayerTurnPrefix(
         CombatManager __instance,
+        object[] __args,
         Player player,
         HookPlayerChoiceContext playerChoiceContext,
         ref Task __result)
@@ -2083,7 +2092,8 @@ internal static class MultiEnchantmentPatches
                     $"Player={GetSafePlayerId(player)}");
                 Perf.Dump($"player turn start (Player={GetSafePlayerId(player)})");
             }
-            __result = SetupPlayerTurnWithMultiEnchantments(__instance, player, playerChoiceContext);
+            object? turnState = __args.Length > 0 ? __args[0] : null;
+            __result = SetupPlayerTurnWithMultiEnchantments(__instance, turnState, player, playerChoiceContext);
             return false;
         }
         catch (Exception ex)
@@ -3735,37 +3745,61 @@ internal static class MultiEnchantmentPatches
 
     private static async Task SetupPlayerTurnWithMultiEnchantments(
         CombatManager combatManager,
+        object? turnState,
         Player player,
         HookPlayerChoiceContext playerChoiceContext)
     {
-        // Base-game source: CombatManager.SetupPlayerTurn.
+        // Base-game source: CombatManager.SetupPlayerTurn in STS2 v0.110.0.
         // Keep this method in lockstep with the base game.
         // The only intentional behavior change is checking all enchantments for bottom-of-draw-pile.
-        CombatState state = combatManager.DebugOnlyGetState()
-            ?? throw new InvalidOperationException("CombatManager state was null during SetupPlayerTurn.");
-
+        // CombatTurnState is internal, so Ct / State are read reflectively off the opaque argument.
         if (player.Creature.IsDead)
         {
             return;
         }
 
+        if (player.PlayerCombatState == null)
+        {
+            MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] Player combat state is null during SetupPlayerTurn. " +
+                $"Assuming the run has been cleaned up. (Player: {GetSafePlayerId(player)})");
+            return;
+        }
+
+        CombatState state =
+            (turnState == null
+                ? null
+                : AccessTools.Property(turnState.GetType(), "State")?.GetValue(turnState) as CombatState)
+            ?? combatManager.DebugOnlyGetState()
+            ?? throw new InvalidOperationException("CombatManager state was null during SetupPlayerTurn.");
+
+        CancellationToken ct = default;
+        if (turnState != null &&
+            AccessTools.Property(turnState.GetType(), "Ct")?.GetValue(turnState) is CancellationToken token)
+        {
+            ct = token;
+        }
+
         if (Hook.ShouldPlayerResetEnergy((ICombatState)state, player))
         {
             SfxCmd.Play("event:/sfx/ui/gain_energy");
-            player.PlayerCombatState!.ResetEnergy();
+            player.PlayerCombatState.ResetEnergy();
         }
         else
         {
-            player.PlayerCombatState!.AddMaxEnergyToCurrent();
+            player.PlayerCombatState.AddMaxEnergyToCurrent();
         }
 
         await Hook.AfterEnergyReset(state, player);
+        ct.ThrowIfCancellationRequested();
         await Hook.BeforeHandDraw(state, player, playerChoiceContext);
+        ct.ThrowIfCancellationRequested();
         decimal handDraw = Hook.ModifyHandDraw(state, player, 5m, out IEnumerable<AbstractModel> modifiers);
         await Hook.AfterModifyingHandDraw(state, modifiers);
+        ct.ThrowIfCancellationRequested();
         handDraw = MultiEnchantmentSupport.ApplyHandDrawContributions(state, player, handDraw);
 
-        if (state.RoundNumber == 1)
+        if (player.PlayerCombatState.TurnNumber == 1)
         {
             CardPile pile = PileType.Draw.GetPile(player);
             List<CardModel> bottomCards = pile.Cards
@@ -3788,10 +3822,11 @@ internal static class MultiEnchantmentPatches
             }
 
             handDraw = Math.Max(handDraw, innateCards.Count);
-            handDraw = Math.Min(handDraw, 10m);
+            handDraw = Math.Min(handDraw, CardPile.MaxCardsInHand);
         }
 
         await CardPileCmd.Draw(playerChoiceContext, handDraw, player, fromHandDraw: true);
+        ct.ThrowIfCancellationRequested();
         await Hook.AfterPlayerTurnStart(state, playerChoiceContext, player);
         MultiEnchantmentScopeSupport.OnPlayerTurnStarted(state, player);
     }

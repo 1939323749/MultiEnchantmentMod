@@ -37,10 +37,21 @@ public partial class MultiEnchantmentMod : Node
     /// </summary>
     public static bool RewriteIsChecks { get; private set; }
 
+    /// <summary>
+    /// When <c>true</c>, a third-party <c>CardModel.EnchantInternal</c> call that lands on a card
+    /// whose primary slot is already occupied is re-routed into an additional slot instead of
+    /// overwriting (and destroying) the existing enchantment. Detection and logging always run;
+    /// only the repair is gated. Default off — see
+    /// <see cref="MultiEnchantmentEnchantInternalGuard"/> for why both behaviors are lossy and this
+    /// one needs field evidence before becoming the default.
+    /// </summary>
+    public static bool GuardEnchantInternal { get; private set; }
+
     public static void Initialize()
     {
         VerboseLog = ReadManifestFlag("verboseLog", defaultValue: false);
         RewriteIsChecks = ReadManifestFlag("rewriteIsChecks", defaultValue: true);
+        GuardEnchantInternal = ReadManifestFlag("guardEnchantInternal", defaultValue: false);
         Perf.Enabled = VerboseLog;
         MultiEnchantmentSupport.Initialize();
 

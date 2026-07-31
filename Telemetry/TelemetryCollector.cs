@@ -123,13 +123,19 @@ internal static class TelemetryCollector
             var unregisteredMods = CollectUnregisteredEnchantmentMods();
             var registeredTypes = CollectRegisteredEnchantmentTypes();
             var apiCompatibilityResults = CollectApiCompatibilityResults();
+            var ilRewriteResults = CollectIsCheckRewriteResults();
             var catalogData = BuildModCatalogData(loadedMods, out string catalogHash);
+            // Adding il_rewrite_results to the hash input intentionally invalidates every existing
+            // cached environment hash once: the rewrite outcome is part of what "this environment"
+            // means, and without it an install that already uploaded would never send the new data.
+            // Costs one extra environment upload per install on the version that ships this.
             string environmentHash = ComputeStableHash(new
             {
                 catalog_hash = catalogHash,
                 harmony_conflicts = StableSortForHash(harmonyConflicts),
                 api_compatibility_results = StableSortForHash(apiCompatibilityResults),
                 unregistered_enchantment_mods = StableSortForHash(unregisteredMods),
+                il_rewrite_results = ilRewriteResults,
             });
 
             // Environment data (large JSONB) is stored once per unique hash in a
@@ -144,6 +150,9 @@ internal static class TelemetryCollector
                 harmony_conflict_count = harmonyConflicts.Count,
                 unregistered_enchantment_mods = unregisteredMods,
                 api_compatibility_results = apiCompatibilityResults,
+                il_rewrite_enabled = global::MultiEnchantmentMod.MultiEnchantmentMod.RewriteIsChecks,
+                il_rewrite_ran = MultiEnchantmentIsCheckRewriter.HasRun,
+                il_rewrite_results = ilRewriteResults,
             };
 
             // Session row is now slim — only scalars and hash references.
@@ -280,7 +289,8 @@ internal static class TelemetryCollector
             if (_totalApplications == 0
                 && _totalRemovals == 0
                 && _deserializationFailureCount == 0
-                && safeInvokerFailures.Count == 0)
+                && safeInvokerFailures.Count == 0
+                && MultiEnchantmentEnchantInternalGuard.InterceptCount == 0)
             {
                 return;
             }
@@ -412,6 +422,12 @@ internal static class TelemetryCollector
                 deserialization_failure_count = _deserializationFailureCount,
                 deserialization_failures = deserializationFailuresSnapshot,
                 event_bus_publish_count = _eventBusPublishCount,
+
+                // Third parties attaching onto an already-occupied primary slot. The caller list is
+                // the actionable part: it names which mod is replaying a destructive attach.
+                enchant_internal_intercepts = MultiEnchantmentEnchantInternalGuard.InterceptCount,
+                enchant_internal_rerouted = MultiEnchantmentEnchantInternalGuard.ReroutedCount,
+                enchant_internal_callers = MultiEnchantmentEnchantInternalGuard.ReportedCallerKeys.ToList(),
             });
 
             if (deckCardIds != null)
@@ -965,6 +981,58 @@ internal static class TelemetryCollector
         return StableSortForHash(result);
     }
 
+    /// <summary>
+    /// Per-(mod, IL pattern) outcome tallies from the load-time rewrite pass. This is the only way
+    /// to find out how much a additional rewrite pattern would actually buy across the player base
+    /// — locally the numbers only exist in godot.log, and the near-miss / generic-skipped counts in
+    /// particular are the direct measure of what the current pass still leaves primary-slot-only.
+    /// </summary>
+    private static List<object> CollectIsCheckRewriteResults()
+    {
+        var result = new List<object>();
+
+        try
+        {
+            var grouped = new Dictionary<
+                (string Mod, string Pattern),
+                Dictionary<MultiEnchantmentIsCheckRewriter.RewriteOutcome, int>>();
+
+            foreach ((MultiEnchantmentIsCheckRewriter.RewriteStatKey key, int count)
+                     in MultiEnchantmentIsCheckRewriter.GetStatsSnapshot())
+            {
+                (string, string) groupKey = (key.ModId, key.Pattern);
+                if (!grouped.TryGetValue(groupKey, out var outcomes))
+                {
+                    outcomes = new Dictionary<MultiEnchantmentIsCheckRewriter.RewriteOutcome, int>();
+                    grouped[groupKey] = outcomes;
+                }
+
+                outcomes[key.Outcome] = outcomes.GetValueOrDefault(key.Outcome) + count;
+            }
+
+            foreach (((string mod, string pattern), var outcomes) in grouped)
+            {
+                result.Add(new
+                {
+                    mod,
+                    pattern,
+                    rewritten = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.Rewritten),
+                    near_miss = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.NearMiss),
+                    branch_target = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.BranchTarget),
+                    patch_failed = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.PatchFailed),
+                    il_unreadable = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.IlUnreadable),
+                    generic_skipped = outcomes.GetValueOrDefault(MultiEnchantmentIsCheckRewriter.RewriteOutcome.GenericSkipped),
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"CollectIsCheckRewriteResults FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return StableSortForHash(result);
+    }
+
     private static List<object> CollectHarmonyConflicts()
     {
         var result = new List<object>();
@@ -1170,6 +1238,7 @@ internal static class TelemetryCollector
         harmony_conflicts = Array.Empty<object>(),
         api_compatibility_results = Array.Empty<object>(),
         unregistered_enchantment_mods = Array.Empty<object>(),
+        il_rewrite_results = Array.Empty<object>(),
     });
 
     internal static object BuildMinimalCrashEnvironmentData(string environmentHash) => new
@@ -1182,6 +1251,9 @@ internal static class TelemetryCollector
         harmony_conflict_count = 0,
         unregistered_enchantment_mods = Array.Empty<object>(),
         api_compatibility_results = Array.Empty<object>(),
+        il_rewrite_enabled = global::MultiEnchantmentMod.MultiEnchantmentMod.RewriteIsChecks,
+        il_rewrite_ran = MultiEnchantmentIsCheckRewriter.HasRun,
+        il_rewrite_results = Array.Empty<object>(),
     };
 
     internal static object BuildMinimalCrashCatalogData(string catalogHash) => new

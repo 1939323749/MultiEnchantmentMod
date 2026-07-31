@@ -96,6 +96,83 @@ internal static partial class MultiEnchantmentSupport
         return result;
     }
 
+    // ── Load-time rewrite shims ────────────────────────────────────────────────────────────────
+    // A mod that copies vanilla's damage/block math into its own method body (a common way to
+    // re-implement Hook.CalculateDamage) reads only card.Enchantment, so it applies the PRIMARY
+    // slot's contribution and silently ignores every additional one. The IL rewrite folds those
+    // sites onto these shims. Each returns the value the copied code's own operator expects — a
+    // delta for `+=`, a factor for `*=` — so the surrounding expression is left untouched.
+    //
+    // The factor helpers divide by the incoming value to invert the running-total form the vanilla
+    // loop uses. `decimal` division is exact base-10 with defined rounding and no FPU dependence,
+    // so both clients of a lockstep multiplayer session compute bit-identical results; this is a
+    // precision question, not a desync one.
+
+    /// <summary>
+    /// Total additive damage contributed by every active slot — the value a copied
+    /// <c>damage += enchantment.EnchantDamageAdditive(damage, props)</c> should add.
+    /// </summary>
+    internal static decimal AggregateDamageAdditiveDelta(CardModel? card, decimal damage, ValueProp props)
+    {
+        return ApplyDamageEnchantments(card, damage, props, ModifyDamageHookType.Additive) - damage;
+    }
+
+    /// <summary>
+    /// Combined multiplicative damage factor across every active slot — the value a copied
+    /// <c>damage *= enchantment.EnchantDamageMultiplicative(damage, props)</c> should multiply by.
+    /// Returns <c>1</c> for a zero input, where no factor can be recovered and none is needed.
+    /// </summary>
+    internal static decimal AggregateDamageMultiplicativeFactor(CardModel? card, decimal damage, ValueProp props)
+    {
+        if (damage == 0m)
+        {
+            return 1m;
+        }
+
+        return ApplyDamageEnchantments(card, damage, props, ModifyDamageHookType.Multiplicative) / damage;
+    }
+
+    /// <summary>Block counterpart of <see cref="AggregateDamageAdditiveDelta"/>.</summary>
+    internal static decimal AggregateBlockAdditiveDelta(CardModel? card, decimal block)
+    {
+        decimal result = block;
+        foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
+        {
+            CardModel? ownerCard = entry.Enchantment.Card;
+            if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
+            {
+                continue;
+            }
+
+            result += EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockAdditive(result));
+        }
+
+        return result - block;
+    }
+
+    /// <summary>Block counterpart of <see cref="AggregateDamageMultiplicativeFactor"/>.</summary>
+    internal static decimal AggregateBlockMultiplicativeFactor(CardModel? card, decimal block)
+    {
+        if (block == 0m)
+        {
+            return 1m;
+        }
+
+        decimal result = block;
+        foreach (OrderedEnchantmentEntry entry in GetOrderedEnchantmentEntries(card))
+        {
+            CardModel? ownerCard = entry.Enchantment.Card;
+            if (ownerCard == null || !MultiEnchantmentScopeSupport.IsActive(ownerCard, entry.Enchantment))
+            {
+                continue;
+            }
+
+            result *= EvaluateWithEffectiveAmount(entry, enchantment => enchantment.EnchantBlockMultiplicative(result));
+        }
+
+        return result / block;
+    }
+
     public static decimal ApplyBlockEnchantments(CardModel? card, decimal block, ValueProp props)
     {
         decimal result = block;

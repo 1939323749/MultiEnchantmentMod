@@ -500,6 +500,32 @@ internal static partial class MultiEnchantmentSupport
         return applied;
     }
 
+    /// <summary>
+    /// Attaches <paramref name="enchantment"/> to an additional slot on behalf of a foreign
+    /// <c>CardModel.EnchantInternal</c> call that arrived while the primary slot was already
+    /// occupied. Vanilla's <c>EnchantInternal</c> assigns the primary slot unconditionally — unlike
+    /// <c>AfflictInternal</c>, which throws — so such a call silently destroys whatever was there.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="modifyCard"/> is <c>false</c> to mirror <c>EnchantInternal</c>, which does not
+    /// call <c>ModifyCard</c> itself (its vanilla callers do that on the following line).
+    /// </remarks>
+    internal static EnchantmentModel AttachAdditionalForForeignEnchantInternal(
+        CardModel card,
+        EnchantmentModel enchantment,
+        int amount)
+    {
+        EnchantmentModel applied = AttachAdditionalEnchantmentState(
+            choiceContext: null,
+            card,
+            enchantment,
+            amount,
+            modifyCard: false,
+            triggerChanged: true);
+        AppendApplicationOrder(card, applied.Id);
+        return applied;
+    }
+
     private static EnchantmentModel AttachAdditionalEnchantmentState(
         PlayerChoiceContext? choiceContext,
         CardModel card,

@@ -90,7 +90,7 @@ internal static partial class MultiEnchantmentSupport
         ResourceInfo resources,
         bool skipCardPileVisuals)
     {
-        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.109.0.
+        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.110.0.
         // This copy stays intentionally close to vanilla. Functional changes are limited to the
         // stacked hook dispatches and executing additional enchantments beside the primary one.
         choiceContext.PushModel(card);
@@ -141,7 +141,9 @@ internal static partial class MultiEnchantmentSupport
         Perf.Count("Play.card");
 
         ulong playStartTime = Time.GetTicksMsec();
-        CombatManager.Instance.BeginCardOrPotionEffect(card.Owner);
+        // v0.110.0: the effect body is tagged with the combat it belongs to, so the teardown and
+        // empty-hand checks below can be dropped when that combat is no longer the running one.
+        CombatId? effectCombatId = CombatManager.Instance.BeginCardOrPotionEffect(card.Owner);
         try
         {
             for (int i = 0; i < playCount; i++)
@@ -187,8 +189,12 @@ internal static partial class MultiEnchantmentSupport
 
                 CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
 
+                // v0.110.0: vanilla now names the card as the branch source; it propagates into the
+                // HookPlayerChoiceContext created when a non-owner makes the choice, so omitting it
+                // would attribute multiplayer choices differently than the base game.
                 BranchingPlayerChoiceContext branchingChoiceContext = new(
-                    LocalContext.NetId ?? card.Owner.NetId,
+                    card,
+                    LocalContext.NetId!.Value,
                     GameActionType.Combat,
                     choiceContext);
                 branchingChoiceContext.PushModel(card);
@@ -261,7 +267,7 @@ internal static partial class MultiEnchantmentSupport
         }
         finally
         {
-            await CombatManager.Instance.EndCardOrPotionEffect(card.Owner);
+            await CombatManager.Instance.EndCardOrPotionEffect(effectCombatId, card.Owner);
         }
 
         if (!skipCardPileVisuals)
@@ -297,7 +303,7 @@ internal static partial class MultiEnchantmentSupport
             }
         }
 
-        await CombatManager.Instance.CheckForEmptyHand(choiceContext, originalOwner);
+        await CombatManager.Instance.CheckForEmptyHand(effectCombatId, choiceContext, originalOwner);
         if (card.EnergyCost.AfterCardPlayedCleanup())
         {
             card.InvokeEnergyCostChanged();
