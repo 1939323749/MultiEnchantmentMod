@@ -1,0 +1,63 @@
+# MultiEnchantmentMod
+
+> A Harmony-based Slay the Spire 2 mod and modding framework. It lets a single card carry
+> multiple enchantments at once, and gives third-party mods a stable API for declaring
+> stackable enchantments, lifecycle scopes, UI-only card markers and enchantment events.
+> Current release v2.5.2; requires Slay the Spire 2 0.110.0 or newer.
+
+The mod ships as `MultiEnchantmentMod.dll` + `MultiEnchantmentMod.json` (no `.pck`, no NuGet
+package). Downstream mods reference the DLL from the player's `mods/MultiEnchantmentMod/` folder
+and declare a manifest dependency. Public API changes are additive-only — signatures are never
+altered in place, because downstream mods would fail with `MissingMethodException`.
+
+Documentation is a mix of English and Chinese; every link below is tagged with its language, and
+oversized files are tagged with their size so you can decide whether to fetch them. All links
+resolve to raw Markdown.
+
+## Start here
+
+- [Quickstart (English)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/QUICKSTART.md): five steps from empty project to a working stackable enchantment. Read this first.
+- [Integrating MultiEnchantmentMod (English)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/integration.md): the recommended `.csproj` reference pattern, manifest dependency, and API version compatibility attribute.
+- [Developer Quick Start (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Developer-Quick-Start.md): the same path in wiki form, with the minimum enchantment template and the log lines that confirm registration worked.
+- [Mod manifest (JSON)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/MultiEnchantmentMod.json): current version, `min_game_version`, and the runtime flags `verboseLog` / `rewriteIsChecks` / `guardEnchantInternal`.
+
+## API reference
+
+- [v2 API guide (Chinese, ~74KB)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/v2-api-wiki.md): the main reference — registration (attribute and fluent), `StackBehavior`, `StatusAggregation`, keyword emission, dynamic vars, custom presentation, and per-version API notes.
+- [v2 lifecycle guide (Chinese, ~52KB)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/v2-lifecycle-wiki.md): when an enchantment applies, becomes active, fires callbacks and is removed; how to pick a `Scope` (until-turn-ends, until-combat-ends, linger-for-turns, trigger-count).
+- [Marker manual (English)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/marker-wiki.md): UI-only card badges that carry no gameplay effect, marker CRUD, and invisible enchantments (full gameplay, no badge).
+- [Marker manual (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/marker-wiki.zh.md): Chinese translation of the marker manual.
+- [Public API baseline (English)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/public-api.md): hand-maintained snapshot of the `MultiEnchantmentMod.Api` namespace, used to review public surface changes as a diff.
+
+## Concepts and behavior
+
+- [Stacking and enchantment behavior (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Stacking-and-Enchantment-Behavior.md): choosing between `MergeAmount` and `DuplicateInstance`, and how repeated application resolves.
+- [Lifecycle and temporary enchantments (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Lifecycle-and-Temporary-Enchantments.md): short version of the lifecycle guide — turn-only, combat-only and limited-use enchantments.
+- [Enchantment events and advanced card recipes (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Enchantment-Events-and-Advanced-Card-Recipes.md): reacting to enchant events, auto-play after enchant, copying and moving enchantments.
+- [Enchantment lifecycle internals (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/ENCHANTMENT_LIFECYCLE.md): end-to-end trace of one card from apply through save/load, combat resolution and UI refresh. Useful when debugging state that does not survive a reload.
+- [v2 release notes and migration (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/MIGRATION_V3.md): what each v2.x release added, plus the `ExtraIcon` to `Marker` rename table.
+
+## Source layout
+
+- [MultiEnchantmentMod.cs](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/MultiEnchantmentMod.cs): `[ModInitializer]` entry point and the manifest-driven runtime flags.
+- [MultiEnchantmentPatches.cs](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/MultiEnchantmentPatches.cs): Harmony patches against the game assembly (~170KB; the bulk of the mod).
+- [MultiEnchantmentIsCheckRewriter.cs](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/MultiEnchantmentIsCheckRewriter.cs): load-time IL rewrite that makes third-party `card.Enchantment is SomeEnchantment` checks see the extra enchantment slots, with no hard dependency on this mod.
+- [Api/ directory](https://github.com/1939323749/MultiEnchantmentMod/tree/master/Api): the public API surface — attributes, registration interfaces, event contexts, scopes.
+- [Samples/ directory](https://github.com/1939323749/MultiEnchantmentMod/tree/master/MultiEnchantmentMod.Samples/Samples): numbered, runnable examples covering merge stacking, per-instance state, custom merge deltas, keyword emission, custom presentation, runtime registration and each scope type.
+
+## For players
+
+- [Installation and downloads (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Player-Installation-and-Downloads.md): Steam Workshop and manual install, expected folder layout, version requirements.
+- [Troubleshooting and logs (wiki, English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Troubleshooting-and-Logs.md): where the log lives and what to search for when the mod does not load.
+- [Steam Workshop page](https://steamcommunity.com/sharedfiles/filedetails/?id=3747561525): recommended install path; Steam keeps it updated automatically.
+- [GitHub Releases](https://github.com/1939323749/MultiEnchantmentMod/releases): release zips for manual installs.
+- [Wiki home (English)](https://raw.githubusercontent.com/wiki/1939323749/MultiEnchantmentMod/Home-English.md): index of every wiki page, with a table routing common goals to pages.
+
+## Optional
+
+- [Slay the Spire 2 hooks reference (Chinese, ~188KB)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/hooks-reference.md): catalog of the game's own hooks across cards, powers, relics, combat, creatures, potions and rooms. This documents the base game rather than this mod — fetch only when you need a specific hook signature.
+- [Game version adaptation workflow (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/game-version-adaptation.md): how the mod is migrated after a Slay the Spire 2 update, including the three blind spots the compiler cannot catch.
+- [Roadmap (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/ROADMAP.md): planned API work and known gaps.
+- [CI setup (English)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/.github/CI-SETUP.md): the tag-triggered build, GitHub Release and NexusMods upload pipeline.
+- [Telemetry backend migration (Chinese)](https://raw.githubusercontent.com/1939323749/MultiEnchantmentMod/master/docs/axiom-migration.md): maintainer notes on the analytics backend; irrelevant to writing enchantments.
+- [API gap issue template](https://github.com/1939323749/MultiEnchantmentMod/issues/new?template=api-gap.yml): open this when an existing hook, query API or async entry point is not enough for your mod.
