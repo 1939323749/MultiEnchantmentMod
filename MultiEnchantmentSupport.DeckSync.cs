@@ -137,6 +137,11 @@ internal static partial class MultiEnchantmentSupport
         EnchantmentStackBehavior behavior,
         EnchantmentScope? scopeOverride)
     {
+        if (DeckSyncSuppression.IsSuppressed)
+        {
+            return;
+        }
+
         CardModel? deckVersion = card.DeckVersion;
         if (deckVersion == null || ReferenceEquals(deckVersion, card) || amount == 0)
         {
@@ -252,6 +257,11 @@ internal static partial class MultiEnchantmentSupport
         int? instanceOrdinal,
         int removedAmount)
     {
+        if (DeckSyncSuppression.IsSuppressed)
+        {
+            return;
+        }
+
         CardModel? deckVersion = card.DeckVersion;
         if (deckVersion == null || ReferenceEquals(deckVersion, card))
         {

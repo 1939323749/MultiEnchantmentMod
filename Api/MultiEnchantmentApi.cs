@@ -79,6 +79,37 @@ public static partial class MultiEnchantmentApi
         return (IEnchantmentRegistration)instance;
     }
 
+    /// <summary>
+    /// Suppresses combat-card → <see cref="CardModel.DeckVersion"/> mirroring until the returned
+    /// handle is disposed. Use for operations that are meant to live and die with the current combat
+    /// and must leave the player's deck untouched.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The canonical case is "swap this card's enchantment for the rest of the combat, then restore
+    /// the original". Mirroring is normally gated on the enchantment's effective scope, not on caller
+    /// intent — so an enchantment carrying an explicit <c>PermanentScope</c> override mirrors both the
+    /// removal and the restoring application into the deck version. For a <c>MergeAmount</c> stack the
+    /// removal decrements (or deletes) the deck-version copy, and the restore rebuilds it from whatever
+    /// amount the caller recorded; any drift between the two silently and permanently alters the deck.
+    /// Wrapping both halves in this scope makes the deck version a genuine no-op instead.
+    /// </para>
+    /// <para>
+    /// Scoped via <see cref="System.Threading.AsyncLocal{T}"/>, so it survives awaits and unwinds on
+    /// exceptions. Nesting is safe: disposal restores the previous value rather than clearing.
+    /// </para>
+    /// <example>
+    /// <code>
+    /// using (MultiEnchantmentApi.SuppressDeckVersionSync())
+    /// {
+    ///     MultiEnchantmentApi.RemoveEnchantment(card, original, RemovalReason.Replaced);
+    ///     MultiEnchantmentApi.Enchant(card, replacement, 1, EnchantmentScope.UntilCombatEnds);
+    /// }
+    /// </code>
+    /// </example>
+    /// </remarks>
+    public static IDisposable SuppressDeckVersionSync() => Internal.DeckSyncSuppression.Push();
+
     public static bool RemoveEnchantment(
         CardModel card,
         EnchantmentModel enchantment,
@@ -844,6 +875,7 @@ public static partial class MultiEnchantmentApi
         "RemoveWhen",
         "MaxActivations",
         "StackOverflowPolicy",
+        "SuppressDeckVersionSync",
     };
 
     /// <summary>
