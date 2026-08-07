@@ -110,6 +110,83 @@ public static partial class MultiEnchantmentApi
     /// </remarks>
     public static IDisposable SuppressDeckVersionSync() => Internal.DeckSyncSuppression.Push();
 
+    /// <summary>
+    /// Drops the <c>CanEnchant</c> veto until the returned handle is disposed: inside the scope every
+    /// application through this API succeeds regardless of what the enchantment thinks of the card.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Only the veto is skipped.</b> Stack behavior (<c>MergeAmount</c> vs. per-instance slots),
+    /// <c>MaxInstances</c> and the overflow policy, scope handling, application ordering, deck-version
+    /// mirroring and every notification behave exactly as in a normal application — a forced
+    /// enchantment stacks and merges like any other. This is a back door around "this enchantment
+    /// refuses this card", not around the stacking model.
+    /// </para>
+    /// <para>
+    /// The motivating case is card <b>type</b>: vanilla <c>EnchantmentModel.CanEnchant</c> rejects
+    /// Status / Curse / Quest outright, so "enchant a Burn" cannot be expressed through the normal
+    /// pipeline at all. Authors' own <c>CanEnchant</c> overrides are bypassed as well — the caller is
+    /// asserting that this specific application is intended. Neither vanilla's rules nor the author's
+    /// override actually runs while the scope is active (the check short-circuits), so an override
+    /// with side effects or one that throws cannot interfere.
+    /// </para>
+    /// <para>
+    /// Scoped via <see cref="System.Threading.AsyncLocal{T}"/>, so it covers
+    /// <see cref="EnchantAsync"/> across awaits and unwinds on exceptions. Nesting is safe. Applies to
+    /// every application entry point, so it also forces <see cref="CopyEnchantment"/> and
+    /// <see cref="MoveEnchantment"/> onto otherwise-illegal targets.
+    /// </para>
+    /// <para>
+    /// <see cref="CloneCompatibleEnchantments"/> is deliberately <b>not</b> affected: filtering to the
+    /// compatible subset is that method's entire purpose.
+    /// </para>
+    /// <example>
+    /// <code>
+    /// // Enchant a Status card, which vanilla CanEnchant would reject outright.
+    /// using (MultiEnchantmentApi.IgnoreCanEnchant())
+    /// {
+    ///     MultiEnchantmentApi.Enchant(burnCard, ModelDb.Enchantment&lt;Sharp&gt;().ToMutable(), 2);
+    /// }
+    /// </code>
+    /// </example>
+    /// </remarks>
+    public static IDisposable IgnoreCanEnchant() => Internal.CanEnchantBypass.Push();
+
+    /// <summary>
+    /// <see cref="Enchant"/> with the <c>CanEnchant</c> veto dropped for this one call — the common
+    /// case of <see cref="IgnoreCanEnchant"/>. Stacking, scope and notifications are unchanged; see
+    /// that method's remarks for exactly what is and is not bypassed.
+    /// </summary>
+    public static EnchantmentModel? ForceEnchant(
+        CardModel card,
+        EnchantmentModel enchantment,
+        decimal amount = 1,
+        EnchantmentScope? scopeOverride = null)
+    {
+        using (IgnoreCanEnchant())
+        {
+            return Enchant(card, enchantment, amount, scopeOverride);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="EnchantAsync"/> with the <c>CanEnchant</c> veto dropped for this one call.
+    /// The scope is <see cref="System.Threading.AsyncLocal{T}"/>-based, so it correctly spans the
+    /// awaited application; see <see cref="IgnoreCanEnchant"/> for what is and is not bypassed.
+    /// </summary>
+    public static async Task<EnchantmentModel?> ForceEnchantAsync(
+        PlayerChoiceContext? choiceContext,
+        CardModel card,
+        EnchantmentModel enchantment,
+        decimal amount = 1,
+        EnchantmentScope? scopeOverride = null)
+    {
+        using (IgnoreCanEnchant())
+        {
+            return await EnchantAsync(choiceContext, card, enchantment, amount, scopeOverride);
+        }
+    }
+
     public static bool RemoveEnchantment(
         CardModel card,
         EnchantmentModel enchantment,
@@ -876,6 +953,8 @@ public static partial class MultiEnchantmentApi
         "MaxActivations",
         "StackOverflowPolicy",
         "SuppressDeckVersionSync",
+        "IgnoreCanEnchant",
+        "ForceEnchant",
     };
 
     /// <summary>

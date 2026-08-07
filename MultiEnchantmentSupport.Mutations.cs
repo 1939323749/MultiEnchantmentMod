@@ -130,10 +130,15 @@ internal static partial class MultiEnchantmentSupport
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
 
+        // CanEnchantBypass first, and short-circuiting: while a force scope is active neither
+        // vanilla's rules nor the author's override runs at all, so an override with side effects
+        // (or one that throws) cannot interfere. Only the veto is skipped — stack behavior,
+        // MaxInstances, scope and notifications below are all unchanged.
         bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
-        bool canApply = isStackingExisting
-            ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
-            : enchantment.CanEnchant(card);
+        bool canApply = CanEnchantBypass.IsActive
+            || (isStackingExisting
+                ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
+                : enchantment.CanEnchant(card));
         if (!canApply)
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
@@ -245,10 +250,12 @@ internal static partial class MultiEnchantmentSupport
         enchantment.AssertMutable();
         int appliedAmount = ValidateAndConvertStackAmount(amount, nameof(amount));
 
+        // 见异步路径同处注释：只跳过否决权，堆叠模型完全不变。
         bool isStackingExisting = MultiEnchantmentStackSupport.CanStackOnto(card, enchantment.GetType());
-        bool canApply = isStackingExisting
-            ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
-            : enchantment.CanEnchant(card);
+        bool canApply = CanEnchantBypass.IsActive
+            || (isStackingExisting
+                ? MultiEnchantmentStackSupport.PassesMergeCanEnchantRules(enchantment, card)
+                : enchantment.CanEnchant(card));
         if (!canApply)
         {
             throw new InvalidOperationException($"Cannot enchant {card.Id} with {enchantment.Id}.");
