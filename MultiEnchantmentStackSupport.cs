@@ -272,7 +272,51 @@ internal static class MultiEnchantmentStackSupport
                    (card.Tags.Contains(CardTag.Strike) || card.Tags.Contains(CardTag.Defend));
         }
 
-        return true;
+        return PassesCardEnchantmentLimit(enchantment, card);
+    }
+
+    /// <summary>
+    /// Enforces the per-card enchantment cap registered through
+    /// <see cref="Api.MultiEnchantmentApi.SetCardEnchantmentLimit(ModelId, int?)"/> and friends.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Lives inside <see cref="PassesAdditionalCanEnchantRules"/> on purpose: that runs from the
+    /// vanilla <c>CanEnchant</c> postfix, so a capped card is filtered out of the enchant UI up front
+    /// instead of blowing up with <c>InvalidOperationException</c> halfway through an application.
+    /// It is therefore also bypassed by <see cref="Api.MultiEnchantmentApi.IgnoreCanEnchant"/> —
+    /// forcing ignores every veto, this one included.
+    /// </para>
+    /// <para>
+    /// The cap counts <b>slots</b> (distinct gameplay enchantments), not stacked amount. An
+    /// application that merges into an existing instance of the same type consumes no new slot and is
+    /// always allowed, so "one enchantment only" still permits Sharp 1 → Sharp 5. Non-gameplay
+    /// markers never count.
+    /// </para>
+    /// </remarks>
+    internal static bool PassesCardEnchantmentLimit(EnchantmentModel enchantment, CardModel card)
+    {
+        if (CardEnchantmentLimits.IsEmpty)
+        {
+            return true;
+        }
+
+        int? cap = CardEnchantmentLimits.Resolve(card);
+        if (cap is null)
+        {
+            return true;
+        }
+
+        Type enchantmentType = enchantment.GetType();
+        bool mergesIntoExisting =
+            GetBehavior(enchantmentType) == EnchantmentStackBehavior.MergeAmount &&
+            MultiEnchantmentSupport.GetEnchantment(card, enchantmentType) != null;
+        if (mergesIntoExisting)
+        {
+            return true;
+        }
+
+        return MultiEnchantmentSupport.GetGameplayEnchantments(card).Count() < cap.Value;
     }
 
     public static bool PassesCanEnchantRulesIgnoringDuplicate(EnchantmentModel enchantment, CardModel card)
