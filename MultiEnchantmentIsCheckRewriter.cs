@@ -474,6 +474,18 @@ internal static class MultiEnchantmentIsCheckRewriter
                     continue;
                 }
 
+                // The getter feeds a local that ComputeEnchantmentLocals already proved clean, so
+                // every isinst downstream is folded by the via-local branch at the top of the loop.
+                // Without this the getter itself is reported as an unrewritable near-miss even
+                // though every site it feeds was rewritten — a WARN that names another mod and
+                // tells its author to change working code (seen on PengoTarot's
+                // CardModel_TargetType_Patch.Prefix, which rewrote all 4 of its sites).
+                if (i + 1 < codes.Count &&
+                    enchantmentLocals.Contains(GetStoreLocalIndex(codes[i + 1])))
+                {
+                    continue;
+                }
+
                 // Still-unreachable shapes: the enchantment flows into the type test through
                 // something we cannot prove (a field, an array slot, a tainted local, a call
                 // result). Report so the author knows that site stays primary-slot-only.
