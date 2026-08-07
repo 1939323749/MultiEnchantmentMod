@@ -152,6 +152,89 @@ public static partial class MultiEnchantmentApi
     /// </remarks>
     public static IDisposable IgnoreCanEnchant() => Internal.CanEnchantBypass.Push();
 
+    // ── Per-card enchantment limits ───────────────────────────────────────────────────────────
+    //
+    // Caps how many enchantments a CARD may carry at once. Distinct from StackDefinition.MaxInstances,
+    // which caps one enchantment TYPE on a card; this one is the total slot count across all types.
+    //
+    // Resolution, most specific first: ModelId -> card CLR type (walking the base chain) -> dynamic
+    // rules (newest first) -> global default. null at any level means "no opinion, keep looking"; to
+    // say "this card is explicitly unlimited" while a stricter default is in force, pass int.MaxValue.
+    //
+    // The cap counts SLOTS (distinct gameplay enchantments), not stacked amount: merging into an
+    // existing instance of the same type consumes no new slot, so a limit of 1 still allows
+    // Sharp 1 -> Sharp 5. Enforced inside CanEnchant, so capped cards drop out of the enchant UI
+    // rather than throwing mid-application — and ForceEnchant / IgnoreCanEnchant bypass it, like
+    // every other veto.
+
+    /// <summary>
+    /// Sets the fallback cap applied to any card with no more specific registration.
+    /// <c>null</c> (the default) means uncapped.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// // Everything gets one enchantment, except Skyfire which may hold three.
+    /// MultiEnchantmentApi.SetDefaultCardEnchantmentLimit(1);
+    /// MultiEnchantmentApi.SetCardEnchantmentLimit&lt;Skyfire&gt;(3);
+    /// </code>
+    /// </example>
+    public static void SetDefaultCardEnchantmentLimit(int? max) =>
+        Internal.CardEnchantmentLimits.SetDefault(max);
+
+    /// <summary>
+    /// Caps one card model by <see cref="ModelId"/>. Use for base-game cards, or for another mod's
+    /// cards whose CLR type you cannot reference.
+    /// </summary>
+    public static void SetCardEnchantmentLimit(ModelId cardId, int? max) =>
+        Internal.CardEnchantmentLimits.Set(cardId, max);
+
+    /// <summary>
+    /// Caps one card by CLR type. Base classes are honoured — registering your mod's shared card base
+    /// caps every card in the family unless a more specific registration overrides it.
+    /// </summary>
+    public static void SetCardEnchantmentLimit<TCard>(int? max) where TCard : CardModel =>
+        Internal.CardEnchantmentLimits.Set(typeof(TCard), max);
+
+    /// <inheritdoc cref="SetCardEnchantmentLimit{TCard}(int?)"/>
+    public static void SetCardEnchantmentLimit(Type cardType, int? max)
+    {
+        ArgumentNullException.ThrowIfNull(cardType);
+        if (!typeof(CardModel).IsAssignableFrom(cardType))
+        {
+            throw new ArgumentException(
+                $"{cardType.FullName} is not a {nameof(CardModel)} subclass.", nameof(cardType));
+        }
+
+        Internal.CardEnchantmentLimits.Set(cardType, max);
+    }
+
+    /// <summary>
+    /// Registers a dynamic rule — return a cap for cards it wants to constrain, <c>null</c> to abstain.
+    /// Consulted after the id/type registrations, newest rule first. A rule that throws is logged once
+    /// and thereafter treated as abstaining, so a buggy rule cannot take the enchant pipeline down.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// // Rare cards may hold two, everything else falls through to the default.
+    /// MultiEnchantmentApi.AddCardEnchantmentLimitRule(c => c.Rarity == CardRarity.Rare ? 2 : null);
+    /// </code>
+    /// </example>
+    public static void AddCardEnchantmentLimitRule(Func<CardModel, int?> rule)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+        Internal.CardEnchantmentLimits.AddRule(rule);
+    }
+
+    /// <summary>
+    /// The cap currently in force for <paramref name="card"/>, or <c>null</c> when uncapped. For UI /
+    /// tooltips; the pipeline enforces this itself.
+    /// </summary>
+    public static int? GetCardEnchantmentLimit(CardModel? card) =>
+        Internal.CardEnchantmentLimits.Resolve(card);
+
+    /// <summary>Drops every per-card limit registration. Intended for tests and hot-reload.</summary>
+    public static void ClearCardEnchantmentLimits() => Internal.CardEnchantmentLimits.Clear();
+
     /// <summary>
     /// <see cref="Enchant"/> with the <c>CanEnchant</c> veto dropped for this one call — the common
     /// case of <see cref="IgnoreCanEnchant"/>. Stacking, scope and notifications are unchanged; see
@@ -955,6 +1038,7 @@ public static partial class MultiEnchantmentApi
         "SuppressDeckVersionSync",
         "IgnoreCanEnchant",
         "ForceEnchant",
+        "CardEnchantmentLimit",
     };
 
     /// <summary>
