@@ -27,11 +27,15 @@ namespace MultiEnchantmentMod;
 ///
 /// <para>Anything it cannot rewrite (generic methods, non-adjacent patterns such as multi-arm
 /// <c>switch</c>-on-enchantment or <c>card?.Enchantment</c>, or a Harmony patch failure) is left
-/// untouched, and MOST such shapes are logged as a warning telling the player that mod's
-/// enchantment detection may miss additional slots, with a pointer to the wiki's no-dependency
-/// compatibility bridge. The near-miss detection is a heuristic window, not dataflow analysis —
-/// a getter and isinst separated by many instructions (e.g. stored to a local, null-checked,
-/// then tested much later) can stay silent.</para>
+/// untouched. A shape is only WARNED about once we have actually seen the check in parsed IL —
+/// those warnings tell the player that mod's enchantment detection may miss additional slots, with
+/// a pointer to the wiki's no-dependency compatibility bridge. Sites we never got to parse (generic
+/// methods, unreadable bodies) are verbose-only Info instead: the byte pre-filter matches operand
+/// bytes too, so most methods reaching that point contain no enchantment check at all, and naming
+/// another mod there would be a guess that sends its author chasing code that may not exist. The
+/// near-miss detection is likewise a heuristic window, not dataflow analysis — a getter and isinst
+/// separated by many instructions (e.g. stored to a local, null-checked, then tested much later)
+/// can stay silent.</para>
 ///
 /// <para>Opt-out: a mod author declares an assembly-level attribute whose type is <b>named</b>
 /// <c>MultiEnchantmentNoRewriteAttribute</c> (declared in its own assembly — no reference to this
@@ -268,6 +272,24 @@ internal static class MultiEnchantmentIsCheckRewriter
             return;
         }
 
+        // Generic methods are a hard blind spot: PatchProcessor.ReadMethodBody cannot open them and
+        // Harmony cannot patch them either. Bail BEFORE parsing so the parse failure below stays
+        // reserved for genuinely surprising cases. Quiet by default (verbose-only): the pre-filter
+        // above is a single opcode byte that also matches operand bytes, so most methods reaching
+        // here contain no enchantment check at all — warning would name another mod, and tell its
+        // author to change code, over a check that may not exist.
+        if (method.ContainsGenericParameters || (method.DeclaringType?.ContainsGenericParameters ?? false))
+        {
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] is-check rewrite: {Describe(method)} ({modId}) is generic and cannot be " +
+                    "patched; any 'card.Enchantment is X' it contains stays primary-slot-only.");
+            }
+
+            return;
+        }
+
         int adjacentSites = 0;
         int nearMissSites = 0;
         try
@@ -306,8 +328,16 @@ internal static class MultiEnchantmentIsCheckRewriter
         }
         catch (Exception ex)
         {
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] is-check rewrite: could not read IL of {Describe(method)} ({modId}): {ex.Message}. {CompatAdvice}");
+            // Same reasoning as the generic skip above: we never got far enough to know whether this
+            // method contains an enchantment check, so an advisory naming the mod would be a guess.
+            // Verbose-only.
+            if (MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] is-check rewrite: skipped {Describe(method)} ({modId}); " +
+                    $"could not read IL: {ex.Message}.");
+            }
+
             return;
         }
 
@@ -321,15 +351,6 @@ internal static class MultiEnchantmentIsCheckRewriter
 
         if (adjacentSites == 0)
         {
-            return;
-        }
-
-        if (method.ContainsGenericParameters || (method.DeclaringType?.ContainsGenericParameters ?? false))
-        {
-            _unrewrittenSites += adjacentSites;
-            MultiEnchantmentMod.Logger.Warn(
-                $"[MultiEnchantment] {Describe(method)} ({modId}) contains {adjacentSites} 'card.Enchantment is X' " +
-                $"site(s) but is generic and cannot be Harmony-patched. {CompatAdvice}");
             return;
         }
 
