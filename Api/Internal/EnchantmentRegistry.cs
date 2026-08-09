@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 
 namespace MultiEnchantmentMod.Api.Internal;
@@ -691,31 +692,94 @@ internal static class EnchantmentRegistry
 
             if (OverridesValueModifierVirtual(enchantmentType))
             {
-                try
-                {
-                    MultiEnchantmentApi.Register(enchantmentType)
-                        .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack)
-                        .Commit();
+                // Overriding a value modifier says the author opted into per-card value mutation,
+                // but NOT that Amount is what their maths reads. Measure before merging: an
+                // enchantment whose effect comes from a dynamic var would otherwise merge into
+                // Amount 2 and change nothing the player can see.
+                (MergeDriver driver, string? varName, decimal perApplication) = ProbeMergeDriver(enchantmentType);
 
-                    if (EntriesByType.ContainsKey(enchantmentType))
-                    {
-                        global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
-                            $"[MultiEnchantment] {enchantmentType.FullName} overrides EnchantDamage*/EnchantBlock*, " +
-                            $"so its same-type applications stack their amount together (MergeAmount).");
-                    }
-                }
-                catch (Exception ex)
+                switch (driver)
                 {
-                    global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
-                        $"[MultiEnchantment] auto-register attempt for {enchantmentType.FullName} failed: " +
-                        $"{ex}");
+                    case MergeDriver.Amount:
+                        TryAutoRegisterMergeAmountLocked(
+                            enchantmentType,
+                            $"[MultiEnchantment] {enchantmentType.FullName} overrides a value modifier driven by " +
+                            "Amount, so its same-type applications stack their amount together (MergeAmount).");
+                        return;
+
+                    case MergeDriver.SingleDynamicVar:
+                        AmountDrivenVarByType[enchantmentType] = new AmountDrivenVar(varName!, perApplication);
+                        bool installed = TryAutoRegisterMergeAmountLocked(
+                            enchantmentType,
+                            $"[MultiEnchantment] {enchantmentType.FullName} overrides a value modifier driven by " +
+                            $"DynamicVars[\"{varName}\"] (worth {perApplication} per application), so its same-type " +
+                            "applications stack (MergeAmount) and the " +
+                            "merged total is written back into that var.",
+                            enchantment => SyncMergedAmountIntoVar(enchantment, varName!, perApplication));
+                        if (!installed)
+                        {
+                            AmountDrivenVarByType.TryRemove(enchantmentType, out _);
+                        }
+
+                        return;
+
+                    default:
+                        global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+                            $"[MultiEnchantment] {enchantmentType.FullName} overrides a value modifier, but growing " +
+                            "its amount changes nothing measurable, so stacking it would be a no-op — keeping " +
+                            "one-per-card (DisallowDuplicate) rather than accepting an application that does nothing.");
+                        return;
                 }
-                return;
             }
 
             global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
                 $"[MultiEnchantment] {enchantmentType.FullName} hasn't declared a stack behavior, so it's treated as " +
                 $"one-per-card (DisallowDuplicate) — the safe default, and usually exactly what's wanted.");
+        }
+    }
+
+    /// <summary>
+    /// Shared auto-registration body for EnsureRegistered's MergeAmount heuristics. Caller must
+    /// hold <see cref="Sync"/>. Returns true when the Definition entry actually installed (false
+    /// when the registry was already sealed — Commit() no-ops then — or the registration threw).
+    /// </summary>
+    private static bool TryAutoRegisterMergeAmountLocked(
+        Type enchantmentType,
+        string installedLogMessage,
+        Action<EnchantmentModel>? onMergedRefresh = null)
+    {
+        try
+        {
+            IEnchantmentRegistration registration = MultiEnchantmentApi.Register(enchantmentType)
+                .Stack(StackBehavior.MergeAmount, StatusAggregation.SharedAcrossStack);
+
+            if (onMergedRefresh != null)
+            {
+                registration = registration.OnMergedRefresh(onMergedRefresh);
+            }
+
+            registration.Commit();
+
+            if (EntriesByType.ContainsKey(enchantmentType))
+            {
+                global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(installedLogMessage);
+                return true;
+            }
+
+            // Commit() succeeds without installing when the registry is already sealed. Install
+            // logged the sealed rejection, but its remediation text blames a third-party Register
+            // call — this caller is the mod's own heuristic, so add the honest context.
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] auto-registration for {enchantmentType.FullName} was rejected (registry sealed); " +
+                "the type keeps the DisallowDuplicate fallback.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Warn(
+                $"[MultiEnchantment] auto-register attempt for {enchantmentType.FullName} failed: " +
+                $"{ex}");
+            return false;
         }
     }
 
@@ -725,7 +789,233 @@ internal static class EnchantmentRegistry
         "EnchantDamageMultiplicative",
         "EnchantBlockAdditive",
         "EnchantBlockMultiplicative",
+        // EnchantPlayCount belongs here for the same reason as the four above — it is per-card
+        // value mutation the author opted into. It was missing, which is why every third-party
+        // "replay N more times" enchantment (the Spiral shape: UniversalSpiral, GemEnchantment,
+        // DoubleEnchantment, TarEmpressUprightEnchantment) fell through to DisallowDuplicate and
+        // refused its own second application.
+        "EnchantPlayCount",
     };
+
+    /// <summary>
+    /// For auto-classified types whose effect is driven by one dynamic var rather than
+    /// <c>Amount</c>: which var carries the total, and what one application of it is worth.
+    ///
+    /// <para>The per-application value matters. Vanilla's built-in registrations write
+    /// <c>DynamicVars["Times"].BaseValue = Amount</c>, which is only correct because Glam and
+    /// Spiral both declare <c>IntVar("Times", 1)</c> — for them "one application" and "1" are the
+    /// same number. An author whose var defaults to 3 means "+3 per application", so assigning
+    /// Amount would silently rewrite their first application from +3 down to +1. Scale instead:
+    /// <c>BaseValue = PerApplication * Amount</c>, which reproduces the vanilla result exactly
+    /// when PerApplication is 1.</para>
+    /// </summary>
+    private readonly record struct AmountDrivenVar(string Name, decimal PerApplication);
+
+    private static readonly ConcurrentDictionary<Type, AmountDrivenVar> AmountDrivenVarByType = new();
+
+    internal static bool TryGetAmountDrivenVar(Type enchantmentType, out string varName, out decimal perApplication)
+    {
+        if (AmountDrivenVarByType.TryGetValue(enchantmentType, out AmountDrivenVar driven))
+        {
+            varName = driven.Name;
+            perApplication = driven.PerApplication;
+            return true;
+        }
+
+        varName = string.Empty;
+        perApplication = 0m;
+        return false;
+    }
+
+    /// <summary>What a merge would actually change for a type that overrides a value modifier.</summary>
+    private enum MergeDriver
+    {
+        /// <summary>Nothing observable moves when Amount grows — merging would be a silent no-op.</summary>
+        None,
+
+        /// <summary>The override reads <c>Amount</c>, so plain MergeAmount already works.</summary>
+        Amount,
+
+        /// <summary>Exactly one dynamic var drives it; MergeAmount works once that var tracks Amount.</summary>
+        SingleDynamicVar,
+    }
+
+    /// <summary>
+    /// Decides how (or whether) same-type applications of <paramref name="enchantmentType"/> can be
+    /// merged, by MEASURING the author's own override instead of guessing from names.
+    ///
+    /// <para>Evaluate the overridden virtual on the ModelDb canonical instance, then perturb one
+    /// input at a time: bump <c>Amount</c>, then each dynamic var. Whichever input moves the output
+    /// is the one a merge has to grow. Nothing moves → merging could only ever be a no-op, so the
+    /// type keeps DisallowDuplicate rather than accepting an application that does nothing (the
+    /// state a name-based rule shipped for every var-driven damage enchantment: Amount went 1→2
+    /// and the damage never changed). More than one var moves it → no single var can carry the
+    /// total, so stay conservative too.</para>
+    ///
+    /// <para>Every step is wrapped: a third-party override may assume a live <c>Card</c>, which the
+    /// canonical instance does not have. A throw means "cannot prove a merge does anything", which
+    /// is exactly the conservative answer.</para>
+    /// </summary>
+    private static (MergeDriver Driver, string? VarName, decimal PerApplication) ProbeMergeDriver(Type enchantmentType)
+    {
+        try
+        {
+            if (ModelDb.GetByIdOrNull<EnchantmentModel>(ModelDb.GetId(enchantmentType)) is not { } canonical ||
+                canonical.GetType() != enchantmentType)
+            {
+                return (MergeDriver.None, null, 0m);
+            }
+
+            Func<EnchantmentModel, decimal>? evaluate = BuildValueModifierEvaluator(enchantmentType);
+            if (evaluate == null)
+            {
+                return (MergeDriver.None, null, 0m);
+            }
+
+            // Probe a throwaway clone, never the canonical instance: AbstractModel.AssertMutable
+            // rejects every write to a canonical model, so perturbing Amount / a dynamic var on it
+            // throws CanonicalModelException before any measurement happens. MutableClone is the
+            // same idiom the enchant path itself uses.
+            EnchantmentModel sample = (EnchantmentModel)canonical.MutableClone();
+
+            decimal baseline = evaluate(sample);
+
+            int originalAmount = sample.Amount;
+            try
+            {
+                sample.Amount = originalAmount + 1;
+                if (evaluate(sample) != baseline)
+                {
+                    return (MergeDriver.Amount, null, 0m);
+                }
+            }
+            finally
+            {
+                sample.Amount = originalAmount;
+            }
+
+            string? driving = null;
+            decimal perApplication = 0m;
+            foreach (DynamicVar variable in sample.DynamicVars.Values)
+            {
+                decimal originalValue = variable.BaseValue;
+                bool moved;
+                try
+                {
+                    variable.BaseValue = originalValue + 1m;
+                    moved = evaluate(sample) != baseline;
+                }
+                finally
+                {
+                    variable.BaseValue = originalValue;
+                }
+
+                if (!moved)
+                {
+                    continue;
+                }
+
+                if (driving != null)
+                {
+                    // Two vars feed the effect; growing either one alone misrepresents the total.
+                    return (MergeDriver.None, null, 0m);
+                }
+
+                driving = variable.Name;
+                // What ONE application is worth, read before any perturbation — this is the
+                // author's declared per-application value, not necessarily 1.
+                perApplication = originalValue;
+            }
+
+            return driving == null
+                ? (MergeDriver.None, null, 0m)
+                : (MergeDriver.SingleDynamicVar, driving, perApplication);
+        }
+        catch (Exception ex)
+        {
+            global::MultiEnchantmentMod.MultiEnchantmentMod.Logger.Info(
+                $"[MultiEnchantment] could not probe merge behaviour for {enchantmentType.FullName} " +
+                $"({ex.GetType().Name}); keeping the one-per-card default.");
+            return (MergeDriver.None, null, 0m);
+        }
+    }
+
+    /// <summary>
+    /// A single call into whichever value modifier the type overrides, returning a comparable
+    /// number. Argument-free virtuals come first so the probe avoids inventing a
+    /// <c>ValueProp</c> when it does not have to.
+    /// </summary>
+    private static Func<EnchantmentModel, decimal>? BuildValueModifierEvaluator(Type enchantmentType)
+    {
+        if (OverridesNamed(enchantmentType, "EnchantPlayCount"))
+        {
+            return static enchantment => enchantment.EnchantPlayCount(0);
+        }
+
+        if (OverridesNamed(enchantmentType, "EnchantBlockAdditive"))
+        {
+            return static enchantment => enchantment.EnchantBlockAdditive(10m);
+        }
+
+        if (OverridesNamed(enchantmentType, "EnchantBlockMultiplicative"))
+        {
+            return static enchantment => enchantment.EnchantBlockMultiplicative(10m);
+        }
+
+        if (OverridesNamed(enchantmentType, "EnchantDamageAdditive"))
+        {
+            return static enchantment => enchantment.EnchantDamageAdditive(10m, default);
+        }
+
+        if (OverridesNamed(enchantmentType, "EnchantDamageMultiplicative"))
+        {
+            return static enchantment => enchantment.EnchantDamageMultiplicative(10m, default);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Same enumeration idiom as <see cref="OverridesValueModifierVirtual"/> — a declared overload
+    /// of one of these names would make GetMethod(name) throw AmbiguousMatchException.
+    /// </summary>
+    private static bool OverridesNamed(Type enchantmentType, string methodName)
+    {
+        foreach (MethodInfo method in enchantmentType.GetMethods(
+                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        {
+            if (!string.Equals(method.Name, methodName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (method.DeclaringType != null &&
+                method.DeclaringType != typeof(EnchantmentModel) &&
+                IsNonVanillaEnchantmentType(method.DeclaringType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Merge refresh for a type whose effect reads <paramref name="varName"/> instead of
+    /// <c>Amount</c>: push the merged total into that var, mirroring what the built-in
+    /// registrations do by hand for Glam and Spiral.
+    /// </summary>
+    private static void SyncMergedAmountIntoVar(
+        EnchantmentModel enchantment, string varName, decimal perApplication)
+    {
+        enchantment.RecalculateValues();
+        if (enchantment.DynamicVars.TryGetValue(varName, out DynamicVar variable))
+        {
+            variable.BaseValue = perApplication * enchantment.Amount;
+        }
+
+        enchantment.Card?.DynamicVars.RecalculateForUpgradeOrEnchant();
+    }
 
     private static bool OverridesValueModifierVirtual(Type enchantmentType)
     {

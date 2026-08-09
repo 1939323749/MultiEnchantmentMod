@@ -960,6 +960,19 @@ internal static partial class MultiEnchantmentSupport
             {
                 times.BaseValue = enchantment.Amount;
             }
+
+            return;
+        }
+
+        // Third-party enchantments of the same shape, found by measurement rather than by name:
+        // the registry probes which input actually drives the author's value modifier, so a var
+        // called "PlayCount" or "Bonus" is handled exactly like vanilla's "Times". Without this
+        // the merged total would be re-applied in full on every slice.
+        if (Api.Internal.EnchantmentRegistry.TryGetAmountDrivenVar(
+                enchantment.GetType(), out string varName, out decimal perApplication) &&
+            enchantment.DynamicVars.TryGetValue(varName, out var driven))
+        {
+            driven.BaseValue = perApplication * enchantment.Amount;
         }
     }
 
