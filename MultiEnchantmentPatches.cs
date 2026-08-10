@@ -167,6 +167,218 @@ internal static class MultiEnchantmentPatches
         }
     }
 
+    // Nesting depth of CardSelectCmd.FromDeckForEnchantment — the game's one API for "let the player
+    // pick a card to enchant". See EnchantSelectionScopePatch for why the counter is enough.
+    [ThreadStatic]
+    private static int _enchantSelectionDepth;
+
+    /// <summary>
+    /// True while the game is building or validating an enchant-selection screen's card list, i.e.
+    /// while a <c>CanEnchant</c> call means "may the player choose this card" rather than "have I
+    /// already enchanted it".
+    /// </summary>
+    private static bool InEnchantSelection => _enchantSelectionDepth > 0;
+
+    /// <summary>
+    /// Widens <see cref="EnchantmentModel.CanEnchant"/> for enchant-selection screens only.
+    ///
+    /// <para>Vanilla overloads <c>CanEnchant</c> with two meanings. Auto-applying relics
+    /// (FresnelLens, Glitter, SilkenTress, WingCharm, the egg relics …) call it from
+    /// <c>TryModifyCardRewardOptionsLate</c> / <c>TryModifyCardBeingAddedToDeck</c> /
+    /// <c>ModifyMerchantCardCreationResults</c>, hooks that re-fire on the same card, and rely on a
+    /// false once they have already enchanted it — that is the dedup
+    /// <see cref="MultiEnchantmentStackSupport.CanApply"/> exists to preserve. Player-facing pickers
+    /// (GnarledHammer, Kifuda, BeautifulBracelet, SelfHelpBook, StoneOfAllTime …) call it through
+    /// <c>CardSelectCmd.FromDeckForEnchantment</c> to decide which cards are offered, and there a
+    /// card that already carries the type is exactly what this mod exists to allow another
+    /// application onto.</para>
+    ///
+    /// <para>The two meanings are indistinguishable inside <c>CanEnchant</c>, so the picker path is
+    /// marked at the call site and only that path relaxes. Not one of the re-firing relics goes
+    /// through <c>FromDeckForEnchantment</c>, so their dedup is untouched. The predicate mirrors
+    /// <c>ApplyEnchantment</c>'s own merge gate, so a card offered here cannot be refused by the
+    /// <c>CardCmd.Enchant</c> that follows the selection.</para>
+    /// </summary>
+    private static bool AllowsSelectionRestack(EnchantmentModel enchantment, CardModel card)
+    {
+        return InEnchantSelection && MultiEnchantmentStackSupport.CanMergeOnto(enchantment, card);
+    }
+
+    /// <summary>
+    /// Marks the <c>CardSelectCmd.FromDeckForEnchantment</c> overloads as enchant-selection context.
+    /// </summary>
+    /// <remarks>
+    /// <para>All three overloads are targeted by name: the two public entry points evaluate
+    /// <c>CanEnchant</c> themselves (deck filter, then an "all cards must be enchantable" assertion),
+    /// and they chain into one another, so a depth counter rather than a bool keeps nesting honest.</para>
+    /// <para>These are <c>async</c> methods, so Harmony patches the state-machine stub: the prefix runs
+    /// before the body, and the postfix runs when the stub returns the Task — i.e. at the first await.
+    /// Both <c>CanEnchant</c> passes happen in the synchronous prologue before that await, so the scope
+    /// covers exactly them and is gone again while the selection screen is open. <c>[ThreadStatic]</c>
+    /// (not <c>AsyncLocal</c>) is deliberate for the same reason: the flag must not flow into the
+    /// continuation that resumes after the player picks.</para>
+    /// </remarks>
+    [HarmonyPatch]
+    private static class EnchantSelectionScopePatch
+    {
+        [HarmonyTargetMethods]
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            List<MethodBase> targets = AccessTools.GetDeclaredMethods(typeof(CardSelectCmd))
+                .Where(method => method.Name == nameof(CardSelectCmd.FromDeckForEnchantment))
+                .Cast<MethodBase>()
+                .ToList();
+
+            // An empty target list is a silent no-op in Harmony, and the symptom would be the
+            // subtle "picker skips already-enchanted cards" bug this scope exists to fix. Say so.
+            if (targets.Count == 0)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    "[MultiEnchantment] CardSelectCmd.FromDeckForEnchantment not found; enchant-selection " +
+                    "screens will keep vanilla's strict no-same-type-twice filter.");
+            }
+
+            return targets;
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static void Prefix() => _enchantSelectionDepth++;
+
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix()
+        {
+            if (_enchantSelectionDepth > 0)
+            {
+                _enchantSelectionDepth--;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adds back the mergeable deck cards a caller dropped by running its own <c>CanEnchant</c> filter
+    /// <em>before</em> handing the list to the picker.
+    /// </summary>
+    /// <remarks>
+    /// <para>The scope above only covers <c>CanEnchant</c> calls made <b>inside</b>
+    /// <c>FromDeckForEnchantment</c>. Some callers filter first and pass the survivors to the
+    /// list-taking overload — RoyalStamp and SapphireSeed do in vanilla, and any mod may — so their
+    /// filter ran while the strict gate was still in force and the already-enchanted cards never
+    /// reach the screen. Every picker funnels through this one overload, so repairing the list here
+    /// covers all of them without naming any.</para>
+    /// <para>The repair is conditional, because a caller's filter can also encode intent this mod must
+    /// not override (a card type, a rarity, a tag). Re-running the caller's own predicate answers that:
+    /// if every card it <em>could</em> have taken is present, <c>CanEnchant</c> was its only filter and
+    /// widening restores what the strict gate removed; if anything is missing, the caller narrowed the
+    /// list for a reason not visible from here and the list is left exactly as passed.</para>
+    /// </remarks>
+    [HarmonyPatch]
+    private static class EnchantSelectionWideningPatch
+    {
+        // Plural form on purpose: a null from [HarmonyTargetMethod] throws out of PatchAll and would
+        // take every other patch in the assembly with it, whereas an empty list is a quiet no-op.
+        [HarmonyTargetMethods]
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            MethodBase? target = AccessTools.GetDeclaredMethods(typeof(CardSelectCmd))
+                .FirstOrDefault(method =>
+                    method.Name == nameof(CardSelectCmd.FromDeckForEnchantment) &&
+                    method.GetParameters() is { Length: > 0 } parameters &&
+                    parameters[0].ParameterType == typeof(IReadOnlyList<CardModel>));
+
+            if (target == null)
+            {
+                MultiEnchantmentMod.Logger.Warn(
+                    "[MultiEnchantment] CardSelectCmd.FromDeckForEnchantment(IReadOnlyList<CardModel>, …) not " +
+                    "found; pickers that pre-filter their own card list will keep skipping already-enchanted cards.");
+                return Array.Empty<MethodBase>();
+            }
+
+            return new[] { target };
+        }
+
+        [HarmonyPrefix]
+        private static void Prefix(ref IReadOnlyList<CardModel> cards, EnchantmentModel enchantment)
+        {
+            try
+            {
+                cards = WithMergeableDeckCards(cards, enchantment);
+            }
+            catch (Exception ex)
+            {
+                LogNonFatalPatchFailure(
+                    $"enchant-selection widening for Enchantment={GetSafeEnchantmentId(enchantment)}", ex);
+            }
+        }
+
+        private static IReadOnlyList<CardModel> WithMergeableDeckCards(
+            IReadOnlyList<CardModel> cards,
+            EnchantmentModel enchantment)
+        {
+            // The owner is only reachable through the cards themselves, so an empty list cannot be
+            // widened. Harmless: the overloads that take a Player filter under the scope already.
+            if (cards.Count == 0)
+            {
+                return cards;
+            }
+
+            // CardModel does not override Equals, so the default comparer is reference identity —
+            // which is what we want: two copies of the same card Id are different cards.
+            HashSet<CardModel> offered = new(cards);
+            List<CardModel> deck = PileType.Deck.GetPile(cards[0].Owner).Cards.ToList();
+
+            if (CallerNarrowedTheList(deck, offered, enchantment))
+            {
+                return cards;
+            }
+
+            List<CardModel>? widened = null;
+            foreach (CardModel card in deck)
+            {
+                if (offered.Contains(card) ||
+                    !MultiEnchantmentStackSupport.CanMergeOnto(enchantment, card))
+                {
+                    continue;
+                }
+
+                (widened ??= new List<CardModel>(cards)).Add(card);
+            }
+
+            if (widened != null && MultiEnchantmentMod.VerboseLog)
+            {
+                MultiEnchantmentMod.Logger.Info(
+                    $"[MultiEnchantment] enchant-selection widened by {widened.Count - cards.Count} " +
+                    $"already-enchanted card(s) for Enchantment={GetSafeEnchantmentId(enchantment)}.");
+            }
+
+            return widened ?? cards;
+        }
+
+        /// <summary>
+        /// Did the caller drop a card that its own <c>CanEnchant</c> filter would have kept? Evaluated
+        /// with the selection scope suspended so <c>CanEnchant</c> answers exactly what the caller saw
+        /// — the strict same-type gate included, but the mod's ordinary "distinct extra enchantment"
+        /// relaxation still applied.
+        /// </summary>
+        private static bool CallerNarrowedTheList(
+            List<CardModel> deck,
+            HashSet<CardModel> offered,
+            EnchantmentModel enchantment)
+        {
+            int previousDepth = _enchantSelectionDepth;
+            _enchantSelectionDepth = 0;
+            try
+            {
+                return deck.Any(card => !offered.Contains(card) && enchantment.CanEnchant(card));
+            }
+            finally
+            {
+                _enchantSelectionDepth = previousDepth;
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(EnchantmentModel), nameof(EnchantmentModel.CanEnchant))]
     [HarmonyPostfix]
     [HarmonyPriority(Priority.Low)]
@@ -199,17 +411,22 @@ internal static class MultiEnchantmentPatches
                 // "no same-type already present" semantics here for ALL stack policies: once the card
                 // holds this type anywhere, CanEnchant reports false.
                 //
-                // This is the gate that external re-firing relics depend on. FresnelLens / Kifuda
-                // call EnchantmentModel.CanEnchant from multiple lifecycle hooks (card-reward-shown +
-                // card-added-to-deck; merchant-results re-modified on every shop purchase) and expect
-                // a false once they've already enchanted the card. If we relax for stackable types,
-                // they re-clone and re-merge on every hook — e.g. Nimble stacking +2 per shop
-                // purchase (the duplicate-enchantment bug this fix restores the guard against).
+                // This is the gate that external re-firing relics depend on. FresnelLens (and Glitter,
+                // SilkenTress, WingCharm, the egg relics) call EnchantmentModel.CanEnchant from
+                // multiple lifecycle hooks (card-reward-shown + card-added-to-deck; merchant-results
+                // re-modified on every shop purchase) and expect a false once they've already
+                // enchanted the card. If we relax for stackable types, they re-clone and re-merge on
+                // every hook — e.g. Nimble stacking +2 per shop purchase (the duplicate-enchantment
+                // bug this fix restores the guard against).
                 //
                 // Do NOT relax for MergeAmount / DuplicateInstance / ExistenceStack: deliberate mod
                 // stacking goes through ApplyEnchantment's isStackingExisting path, which bypasses
-                // CanEnchant entirely, so tightening here cannot block a legitimate merge.
-                if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType()))
+                // CanEnchant entirely, so tightening here cannot block a legitimate merge. The one
+                // exception is an enchant-selection screen, where CanEnchant decides what the player
+                // is allowed to pick and there is no other path to reach the merge —
+                // see AllowsSelectionRestack.
+                if (!MultiEnchantmentStackSupport.CanApply(card, __instance.GetType())
+                    && !AllowsSelectionRestack(__instance, card))
                 {
                     __result = false;
                     MultiEnchantmentMod.Logger.Info(
@@ -244,17 +461,21 @@ internal static class MultiEnchantmentPatches
             // enchantment onto an already-enchanted card" feature.
             //
             // Do NOT re-allow an already-present same type just because its policy is stackable: that
-            // is the FresnelLens / Kifuda re-fire path that produced duplicate Nimble stacks, and a
-            // deliberate same-type merge already bypasses CanEnchant via ApplyEnchantment's
-            // isStackingExisting branch — so it never reaches this gate.
+            // is the FresnelLens re-fire path that produced duplicate Nimble stacks, and a deliberate
+            // same-type merge already bypasses CanEnchant via ApplyEnchantment's isStackingExisting
+            // branch — so it never reaches this gate. An enchant-selection screen is the exception:
+            // there CanEnchant is the picker's eligibility filter, and refusing means the player can
+            // never reach the merge at all (GnarledHammer's Sharp +3 offered no already-Sharp card).
             bool relaxed = MultiEnchantmentStackSupport.CanApply(card, __instance.GetType());
-            if (relaxed)
+            bool restacked = !relaxed && AllowsSelectionRestack(__instance, card);
+            if (relaxed || restacked)
             {
                 __result = true;
                 if (MultiEnchantmentMod.VerboseLog)
                 {
                     MultiEnchantmentMod.Logger.Info(
-                        $"[MultiEnchantment] CanEnchant postfix re-allowed for distinct extra enchantment. " +
+                        $"[MultiEnchantment] CanEnchant postfix re-allowed for " +
+                        $"{(restacked ? "same-type restack on an enchant-selection screen" : "distinct extra enchantment")}. " +
                         $"Card={GetSafeCardId(card)} Enchantment={GetSafeEnchantmentId(__instance)}");
                 }
             }

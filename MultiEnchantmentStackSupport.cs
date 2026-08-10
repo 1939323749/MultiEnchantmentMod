@@ -168,7 +168,7 @@ internal static class MultiEnchantmentStackSupport
         // Base-game source: EnchantmentModel.CanEnchant
         // sts2.dll @ min_game_version 0.105.1
         // Match vanilla's "no existing same-type enchantment" semantics. External callers
-        // (FresnelLens / Kifuda-style relics that re-fire enchant logic from multiple hooks —
+        // (FresnelLens-style relics that re-fire enchant logic from multiple hooks —
         // card reward + card-being-added-to-deck — and the UI's "is this card enchantable"
         // filters) treat "already has a same-type enchantment" as "not enchantable"; otherwise
         // the relic re-enchants on every hook and Amount / merged stack badges double up.
@@ -327,6 +327,18 @@ internal static class MultiEnchantmentStackSupport
         CardPile? pile = card.Pile;
         if (pile != null && pile.Type == PileType.Deck && card.Keywords.Contains(CardKeyword.Unplayable)) return false;
         return PassesAdditionalCanEnchantRules(enchantment, card);
+    }
+
+    /// <summary>
+    /// Would another application of this type merge onto a card that already carries it? This is
+    /// <c>ApplyEnchantment</c>'s own <c>isStackingExisting</c> gate, re-exposed so the enchant-selection
+    /// filter can be asked the same question the apply will be asked: a card offered to the player
+    /// must not then be refused by the <c>CardCmd.Enchant</c> that follows the selection.
+    /// </summary>
+    public static bool CanMergeOnto(EnchantmentModel enchantment, CardModel card)
+    {
+        return CanStackOnto(card, enchantment.GetType())
+            && PassesCanEnchantRulesIgnoringDuplicate(enchantment, card);
     }
 
     public static int GetEnchantmentCount(CardModel? card, Type enchantmentType)
