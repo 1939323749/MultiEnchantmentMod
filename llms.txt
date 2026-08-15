@@ -3,7 +3,7 @@
 > A Harmony-based Slay the Spire 2 mod and modding framework. It lets a single card carry
 > multiple enchantments at once, and gives third-party mods a stable API for declaring
 > stackable enchantments, lifecycle scopes, UI-only card markers and enchantment events.
-> Current release v2.5.2; requires Slay the Spire 2 0.110.0 or newer.
+> Current release v2.5.4; requires Slay the Spire 2 0.111.0 or newer.
 
 The mod ships as `MultiEnchantmentMod.dll` + `MultiEnchantmentMod.json` (no `.pck`, no NuGet
 package). Downstream mods reference the DLL from the player's `mods/MultiEnchantmentMod/` folder

@@ -90,7 +90,7 @@ internal static partial class MultiEnchantmentSupport
         ResourceInfo resources,
         bool skipCardPileVisuals)
     {
-        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.110.0.
+        // Base-game source: CardModel.OnPlayWrapper in STS2 v0.111.0.
         // This copy stays intentionally close to vanilla. Functional changes are limited to the
         // stacked hook dispatches and executing additional enchantments beside the primary one.
         choiceContext.PushModel(card);
@@ -187,7 +187,12 @@ internal static partial class MultiEnchantmentSupport
                     return;
                 }
 
-                CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
+                // v0.111.0: history entries are only recorded while the combat that opened this
+                // effect is still the live one, so a combat that ends mid-replay stops writing.
+                if (CombatManager.Instance.IsCurrentLiveCombat(effectCombatId))
+                {
+                    CombatManager.Instance.History.CardPlayStarted(combatState, cardPlay);
+                }
 
                 // v0.110.0: vanilla now names the card as the branch source; it propagates into the
                 // HookPlayerChoiceContext created when a non-owner makes the choice, so omitting it
@@ -248,7 +253,11 @@ internal static partial class MultiEnchantmentSupport
                     affliction.InvokeExecutionFinished();
                 }
 
-                CombatManager.Instance.History.CardPlayFinished(combatState, cardPlay);
+                if (CombatManager.Instance.IsCurrentLiveCombat(effectCombatId))
+                {
+                    CombatManager.Instance.History.CardPlayFinished(combatState, cardPlay);
+                }
+
                 if (CombatManager.Instance.IsInProgress)
                 {
                     await Hook.AfterCardPlayed(combatState, choiceContext, cardPlay);
@@ -277,29 +286,34 @@ internal static partial class MultiEnchantmentSupport
         }
 
         Player originalOwner = card.Owner;
-        if (originalOwner != resultLocation.player && resultLocation.pileType != PileType.None)
+        // v0.111.0: the card only lands in its result pile when the combat that opened this effect
+        // is still running. A combat that ended mid-play leaves the card where it is.
+        if (CombatManager.Instance.CurrentCombatId == effectCombatId)
         {
-            await CardPileCmd.GiveToAnotherPlayer(
-                card,
-                resultLocation.player,
-                resultLocation.pileType,
-                resultLocation.position);
-        }
-
-        CardPile? pile = card.Pile;
-        if (pile != null && pile.Type == PileType.Play)
-        {
-            switch (resultLocation.pileType)
+            if (originalOwner != resultLocation.player && resultLocation.pileType != PileType.None)
             {
-                case PileType.None:
-                    await CardPileCmd.RemoveFromCombat(card, skipCardPileVisuals);
-                    break;
-                case PileType.Exhaust:
-                    await CardCmd.Exhaust(choiceContext, card, causedByEthereal: false, skipCardPileVisuals);
-                    break;
-                default:
-                    await CardPileCmd.Add(card, resultLocation.pileType, resultLocation.position, null, skipCardPileVisuals);
-                    break;
+                await CardPileCmd.GiveToAnotherPlayer(
+                    card,
+                    resultLocation.player,
+                    resultLocation.pileType,
+                    resultLocation.position);
+            }
+
+            CardPile? pile = card.Pile;
+            if (pile != null && pile.Type == PileType.Play)
+            {
+                switch (resultLocation.pileType)
+                {
+                    case PileType.None:
+                        await CardPileCmd.RemoveFromCombat(card, skipCardPileVisuals);
+                        break;
+                    case PileType.Exhaust:
+                        await CardCmd.Exhaust(choiceContext, card, causedByEthereal: false, skipCardPileVisuals);
+                        break;
+                    default:
+                        await CardPileCmd.Add(card, resultLocation.pileType, resultLocation.position, null, skipCardPileVisuals);
+                        break;
+                }
             }
         }
 
